@@ -1267,6 +1267,7 @@ func AccessPlanUpdateRouteTargets(accessPlanID int, targets []model.AccessRouteT
 				SystemPromptOverride:  strings.TrimSpace(target.SystemPromptOverride),
 				PromptOverrideMode:    target.PromptOverrideMode,
 				PromptOverrideEnabled: target.PromptOverrideEnabled,
+				PromptAudience:        target.PromptAudience,
 			}
 			// 整表保存会删掉重建规则。已有的请求模型沿用原来的系统提示词（方案页不再带），
 			// 只有这次新加的请求模型才用请求里带的值。
@@ -1794,6 +1795,7 @@ func flattenAccessPlan(plan *model.AccessPlan) {
 				target.SystemPromptOverride = rule.SystemPromptOverride
 				target.PromptOverrideMode = rule.PromptOverrideMode
 				target.PromptOverrideEnabled = rule.PromptOverrideEnabled
+				target.PromptAudience = rule.PromptAudience
 				target.PriorityOverridden = rule.PriorityOverridden
 				normalizeAccessRouteTarget(&target)
 				plan.RouteTargets = append(plan.RouteTargets, target)
@@ -2017,6 +2019,7 @@ func keepPlanPrompt(plan *model.AccessPlan, existing model.AccessPlan) {
 	plan.SystemPromptOverride = existing.SystemPromptOverride
 	plan.PromptOverrideMode = existing.PromptOverrideMode
 	plan.PromptOverrideEnabled = existing.PromptOverrideEnabled
+	plan.PromptAudience = existing.PromptAudience
 }
 
 // keepRulePrompt is keepPlanPrompt for a route rule.
@@ -2024,17 +2027,28 @@ func keepRulePrompt(rule *model.AccessRouteRule, existing model.AccessRouteRule)
 	rule.SystemPromptOverride = existing.SystemPromptOverride
 	rule.PromptOverrideMode = existing.PromptOverrideMode
 	rule.PromptOverrideEnabled = existing.PromptOverrideEnabled
+	rule.PromptAudience = existing.PromptAudience
 }
 
-func promptPatchColumns(patch model.PromptOverridePatch, text string, mode model.PromptOverrideMode, enabled bool) (map[string]any, error) {
+func promptPatchColumns(patch model.PromptOverridePatch, text string, mode model.PromptOverrideMode, enabled bool, audience model.PromptAudience) (map[string]any, error) {
 	text, mode, enabled, err := patch.Apply(text, mode, enabled)
 	if err != nil {
 		return nil, err
+	}
+	if patch.PromptAudience != nil {
+		if !model.ValidPromptAudience(*patch.PromptAudience) || *patch.PromptAudience == "" {
+			return nil, fmt.Errorf("invalid prompt audience")
+		}
+		audience = *patch.PromptAudience
+	}
+	if audience == "" {
+		audience = model.PromptAudienceAll
 	}
 	return map[string]any{
 		"system_prompt_override":  text,
 		"prompt_override_mode":    mode,
 		"prompt_override_enabled": enabled,
+		"prompt_audience":        audience,
 	}, nil
 }
 
@@ -2048,7 +2062,7 @@ func AccessPlanUpdatePrompt(planID int, patch model.PromptOverridePatch, ctx con
 	if err := db.GetDB().WithContext(ctx).First(&existing, planID).Error; err != nil {
 		return model.AccessPlan{}, err
 	}
-	cols, err := promptPatchColumns(patch, existing.SystemPromptOverride, existing.PromptOverrideMode, existing.PromptOverrideEnabled)
+	cols, err := promptPatchColumns(patch, existing.SystemPromptOverride, existing.PromptOverrideMode, existing.PromptOverrideEnabled, existing.PromptAudience)
 	if err != nil {
 		return model.AccessPlan{}, err
 	}
@@ -2070,7 +2084,7 @@ func AccessRouteRuleUpdatePrompt(ruleID int, patch model.PromptOverridePatch, ct
 	if err := db.GetDB().WithContext(ctx).First(&existing, ruleID).Error; err != nil {
 		return err
 	}
-	cols, err := promptPatchColumns(patch, existing.SystemPromptOverride, existing.PromptOverrideMode, existing.PromptOverrideEnabled)
+	cols, err := promptPatchColumns(patch, existing.SystemPromptOverride, existing.PromptOverrideMode, existing.PromptOverrideEnabled, existing.PromptAudience)
 	if err != nil {
 		return err
 	}

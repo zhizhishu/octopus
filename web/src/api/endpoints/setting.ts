@@ -89,6 +89,7 @@ export const SettingKey = {
     PromptOverrideSystem: 'prompt_override_system',
     PromptOverrideMode: 'prompt_override_mode',
     PromptOverrideEnabled: 'prompt_override_enabled',
+    PromptAudience: 'prompt_audience',
     EmailVerificationEnabled: 'email_verification_enabled',
     EmailProvider: 'email_provider',
     EmailSMTPHost: 'email_smtp_host',

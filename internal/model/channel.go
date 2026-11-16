@@ -94,6 +94,7 @@ type Channel struct {
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
 	// PromptOverrideEnabled is the 启用 switch of this channel's system prompt layer.
 	PromptOverrideEnabled bool    `json:"prompt_override_enabled" gorm:"not null;default:false"`
+	PromptAudience        PromptAudience `json:"prompt_audience" gorm:"not null;default:'all'"`
 	ChannelProxy          *string `json:"channel_proxy"`
 	OpenAIChatPath        string  `json:"openai_chat_path"`
 	OpenAIModelsPath      string  `json:"openai_models_path"`
@@ -275,6 +276,7 @@ type ChannelUpdateRequest struct {
 	SystemPromptOverride  *string                `json:"system_prompt_override,omitempty"`
 	PromptOverrideMode    *PromptOverrideMode    `json:"prompt_override_mode,omitempty"`
 	PromptOverrideEnabled *bool                  `json:"prompt_override_enabled,omitempty"`
+	PromptAudience        *PromptAudience        `json:"prompt_audience,omitempty"`
 	MatchRegex            *string                `json:"match_regex,omitempty"`
 	ModelMapping          *map[string]string     `json:"model_mapping,omitempty"`
 	OpenAIChatPath        *string                `json:"openai_chat_path,omitempty"`

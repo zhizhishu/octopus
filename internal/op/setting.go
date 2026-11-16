@@ -111,7 +111,7 @@ func settingSetStringLocked(key model.SettingKey, value string) error {
 		}
 		value = model.NormalizeRouteModeOverride(value)
 	}
-	if key == model.SettingKeyPromptOverrideMode || key == model.SettingKeyPromptOverrideEnabled {
+	if key == model.SettingKeyPromptOverrideMode || key == model.SettingKeyPromptOverrideEnabled || key == model.SettingKeyPromptAudience {
 		if err := (&model.Setting{Key: key, Value: value}).Validate(); err != nil {
 			return err
 		}

@@ -137,6 +137,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		metrics:             metrics,
 		apiKeyID:            apiKeyID,
 		userID:              userID,
+		promptIsAdmin:       apiKeyID > 0 && c.GetString("user_role") == string(dbmodel.UserRoleAdmin) && !c.GetBool(dbmodel.APIKeyGuestContextKey),
 		requestModel:        requestModel,
 		clientSessionKey:    clientSessionKey,
 		clientSessionSource: clientSession.Source,
@@ -542,7 +543,7 @@ attemptChannels:
 			// mapping, leave modelMapped=false, and skip the client-name restore — leaking
 			// the upstream model name to the client.
 			base.restore(internalRequest, item.ModelName)
-			promptSnapshot := applyPromptOverrides(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel)
+			promptSnapshot := applyPromptOverridesForAudience(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel, req.promptIsAdmin)
 			if len(promptSnapshot.Sources) > 0 {
 				clearResponsesRawPromptShape(internalRequest)
 			}

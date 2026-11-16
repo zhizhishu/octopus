@@ -3,7 +3,7 @@ import { apiClient, API_BASE_URL } from '../client';
 import { logger } from '@/lib/logger';
 import { formatCount, formatMoney, formatTime } from '@/lib/utils';
 import { StatsChannel, type StatsMetricsFormatted } from './stats';
-import type { PromptOverrideMode } from './access-plan';
+import type { PromptOverrideMode, PromptAudience } from './access-plan';
 import type { ModelTestResponse } from './model';
 import { useAuthStore } from './user';
 import { channelCapabilitiesPayload } from '@/lib/channel-capabilities';
@@ -102,6 +102,7 @@ export type Channel = {
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
     prompt_override_enabled?: boolean | null;
+    prompt_audience?: PromptAudience | null;
     channel_proxy?: string | null;
     openai_chat_path: string;
     openai_models_path: string;
@@ -164,6 +165,7 @@ export type CreateChannelRequest = {
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
     prompt_override_enabled?: boolean | null;
+    prompt_audience?: PromptAudience | null;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
 };
@@ -207,6 +209,7 @@ export type UpdateChannelRequest = {
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
     prompt_override_enabled?: boolean | null;
+    prompt_audience?: PromptAudience | null;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
     // keys diff
@@ -254,6 +257,7 @@ export type ChannelTestConfig = {
     system_prompt_override?: string | null;
     prompt_override_mode?: PromptOverrideMode | null;
     prompt_override_enabled?: boolean | null;
+    prompt_audience?: PromptAudience | null;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
 };

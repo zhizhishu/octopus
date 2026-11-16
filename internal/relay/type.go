@@ -268,6 +268,7 @@ type relayRequest struct {
 	metrics             *RelayMetrics
 	apiKeyID            int
 	userID              int
+	promptIsAdmin       bool // trusted API-key principal; guest keys never qualify
 	requestModel        string
 	clientSessionKey    string
 	clientSessionSource string

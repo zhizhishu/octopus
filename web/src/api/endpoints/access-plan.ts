@@ -8,6 +8,8 @@ export type RouteFallbackMode = 'none' | 'failover' | 'return_group';
 // 旧值 append_system / replace_system 已由后端 migration 026 改成「开 + before」（有文字时）。
 /** 系统提示词位置：before = 放在请求自带的系统提示词前面，after = 放在后面。是否生效看 prompt_override_enabled。 */
 export type PromptOverrideMode = 'before' | 'after';
+/** The rule's target requests, independent of which VIP/SVIP plan is selected. */
+export type PromptAudience = 'all' | 'admin_only';
 
 export interface AccessPlanBillingRule {
     id?: number;
@@ -36,6 +38,7 @@ export interface AccessPlanRouteTarget {
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
     prompt_override_enabled?: boolean;
+    prompt_audience?: PromptAudience;
 }
 
 export interface AccessPlan {
@@ -49,6 +52,7 @@ export interface AccessPlan {
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
     prompt_override_enabled?: boolean;
+    prompt_audience?: PromptAudience;
     sort?: number;
     billing_rules: AccessPlanBillingRule[];
     route_targets: AccessPlanRouteTarget[];
@@ -82,6 +86,7 @@ export type PromptOverridePatch = {
     system_prompt_override?: string;
     prompt_override_mode?: PromptOverrideMode;
     prompt_override_enabled?: boolean;
+    prompt_audience?: PromptAudience;
 };
 
 export type UpdateAccessPlanPromptRequest = PromptOverridePatch & { id: number };

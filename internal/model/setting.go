@@ -182,6 +182,7 @@ const (
 	SettingKeyPromptOverrideSystem    SettingKey = "prompt_override_system"
 	SettingKeyPromptOverrideMode      SettingKey = "prompt_override_mode"
 	SettingKeyPromptOverrideEnabled   SettingKey = "prompt_override_enabled"
+	SettingKeyPromptAudience          SettingKey = "prompt_audience"
 	SettingKeyUpstreamErrorStatusPass SettingKey = "upstream_error_status_passthrough"
 	SettingKeyUpstreamErrorBodyMode   SettingKey = "upstream_error_body_mode"
 	SettingKeyUpstreamErrorCustom     SettingKey = "upstream_error_custom_message"
@@ -651,6 +652,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeBefore)},
 		{Key: SettingKeyPromptOverrideEnabled, Value: "false"}, // 全局提示词开关: 默认关; 开=按 prompt_override_mode(before/after)加 prompt_override_system
+		{Key: SettingKeyPromptAudience, Value: string(PromptAudienceAll)}, // 默认全用户；管理员专用须显式配置
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
 		{Key: SettingKeyUpstreamErrorBodyMode, Value: "redacted_upstream"},
 		{Key: SettingKeyUpstreamErrorCustom, Value: "Upstream request failed. Please try again later."},
@@ -1040,6 +1042,11 @@ func (s *Setting) Validate() error {
 			return nil
 		}
 		return fmt.Errorf("prompt override enabled must be true or false")
+	case SettingKeyPromptAudience:
+		if ValidPromptAudience(PromptAudience(s.Value)) && s.Value != "" {
+			return nil
+		}
+		return fmt.Errorf("invalid prompt audience")
 	case SettingKeyProxyURL:
 		if s.Value == "" {
 			return nil

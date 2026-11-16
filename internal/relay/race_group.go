@@ -126,7 +126,7 @@ func buildGroupRaceCandidate(
 		return groupRaceCandidate{}, false
 	}
 	template.Model = item.ModelName
-	snapshot := applyPromptOverrides(template, route.AccessPlan, route.AccessRouteRule, channel)
+	snapshot := applyPromptOverridesForAudience(template, route.AccessPlan, route.AccessRouteRule, channel, req.promptIsAdmin)
 	if len(snapshot.Sources) > 0 {
 		clearResponsesRawPromptShape(template)
 	}

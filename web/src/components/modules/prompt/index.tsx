@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { createContext, useContext, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import {
     ArrowRight,
     ChevronDown,
@@ -14,12 +14,14 @@ import {
     Save,
     Search,
     ShieldCheck,
+    WandSparkles,
     X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ApiError } from '@/api/types';
 import {
     type AccessPlan,
+    type PromptAudience,
     type PromptOverrideMode,
     useAccessPlanList,
     useUpdateAccessPlanPrompt,
@@ -40,6 +42,9 @@ import { cn } from '@/lib/utils';
 import { matchesPromptSearch, planRouteRows, sortChannelsStable, type RoutePromptRow } from './prompt-rows';
 import { normalizePromptMode, promptEnabledFromSaved, promptLayerActive, promptStatus } from './prompt-mode';
 import { PromptLayerControls } from './PromptLayerControls';
+import { PromptIdentityBuilder } from './PromptIdentityBuilder';
+import { appendIdentityPreset, buildIdentityPreset, type IdentityPresetMode } from './prompt-identity';
+import { acceptPromptSave, channelIDsForPlan, channelPlanNames, editPromptDraft, groupChannelsByType, normalizeAudience, promptValuesEqual, type PromptDraftMap, type PromptValue } from './prompt-ui-state';
 
 // 提示词页是系统提示词唯一的编辑入口：全局、每个方案、方案里的每条路由、每个渠道。
 // 「方案」页只管方案和路由，不再出现提示词；保存时各写各的字段，互不覆盖。
@@ -48,10 +53,11 @@ function apiErrorMessage(error: unknown): string | undefined {
     return (error as ApiError | undefined)?.message;
 }
 
-type PromptValue = { text: string; mode: PromptOverrideMode; enabled: boolean };
+const IdentityTemplateContext = createContext('');
+const PromptDraftsContext = createContext<{ drafts: PromptDraftMap; setDrafts: Dispatch<SetStateAction<PromptDraftMap>> } | null>(null);
 
-function savedValue(enabled: boolean | null | undefined, mode: string | null | undefined, text: string | null | undefined): PromptValue {
-    return { text: text ?? '', mode: normalizePromptMode(mode), enabled: promptEnabledFromSaved(enabled, mode, text) };
+function savedValue(enabled: boolean | null | undefined, mode: string | null | undefined, text: string | null | undefined, audience?: string | null): PromptValue {
+    return { text: text ?? '', mode: normalizePromptMode(mode), enabled: promptEnabledFromSaved(enabled, mode, text), audience: normalizeAudience(audience) };
 }
 
 function PromptStatusBadge({ value }: { value: PromptValue }) {
@@ -69,6 +75,7 @@ function PromptStatusBadge({ value }: { value: PromptValue }) {
 
 /** 一层提示词的编辑区：启用 + 前面/后面 + 文本 + 保存。关掉时文本框变灰、文字保留。 */
 function PromptEditor({
+    scopeKey,
     saved,
     onSave,
     saving,
@@ -76,6 +83,7 @@ function PromptEditor({
     placeholder,
     size = 'min-h-24',
 }: {
+    scopeKey: string;
     saved: PromptValue;
     onSave: (next: PromptValue) => Promise<unknown>;
     saving: boolean;
@@ -83,11 +91,26 @@ function PromptEditor({
     placeholder: string;
     size?: string;
 }) {
-    const [value, setValue] = useState<PromptValue>(saved);
-    const dirty = value.text.trim() !== saved.text.trim() || value.mode !== saved.mode || value.enabled !== saved.enabled;
+    const identityPreset = useContext(IdentityTemplateContext);
+    const draftsStore = useContext(PromptDraftsContext);
+    const [localValue, setLocalValue] = useState<PromptValue>(saved);
+    const draft = draftsStore?.drafts[scopeKey];
+    const value = draftsStore ? (draft?.value ?? saved) : localValue;
+    const baseline = draft?.baseline ?? saved;
+    const dirty = !promptValuesEqual(value, baseline);
+    const remoteConflict = Boolean(draft && dirty && !promptValuesEqual(saved, draft.baseline) && !promptValuesEqual(saved, value));
+    const setValue = (update: (current: PromptValue) => PromptValue) => {
+        if (draftsStore) {
+            draftsStore.setDrafts((current) => editPromptDraft(current, scopeKey, saved, update));
+        } else {
+            setLocalValue(update);
+        }
+    };
     const save = async () => {
+        const submitted = { ...value, text: value.text.trim() };
         try {
-            await onSave({ ...value, text: value.text.trim() });
+            await onSave(submitted);
+            draftsStore?.setDrafts((current) => acceptPromptSave(current, scopeKey, submitted));
             toast.success(`${label} 已保存`);
         } catch (error) {
             toast.error(`${label} 保存失败`, { description: apiErrorMessage(error) });
@@ -95,7 +118,7 @@ function PromptEditor({
     };
     return (
         <div className="grid gap-2.5">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
                 <PromptLayerControls
                     enabled={value.enabled}
                     onEnabledChange={(enabled) => setValue((v) => ({ ...v, enabled }))}
@@ -103,6 +126,18 @@ function PromptEditor({
                     onModeChange={(mode) => setValue((v) => ({ ...v, mode }))}
                     label={label}
                 />
+                <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="min-h-11 shrink-0 rounded-xl px-2.5 sm:min-h-8"
+                    disabled={saving || !identityPreset}
+                    onClick={() => setValue((current) => ({ ...current, text: appendIdentityPreset(current.text, identityPreset) }))}
+                    title="只填入这一层的草稿，不自动保存、启用或删除原提示词"
+                >
+                    <WandSparkles className="size-4" />
+                    插入模板
+                </Button>
                 <Button
                     type="button"
                     size="sm"
@@ -116,6 +151,21 @@ function PromptEditor({
                     {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                     <span className="hidden sm:inline">{dirty ? '保存' : '已保存'}</span>
                 </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <label htmlFor={`audience-${scopeKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`}>影响对象</label>
+                <select
+                    id={`audience-${scopeKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
+                    value={value.audience}
+                    disabled={saving}
+                    onChange={(event) => setValue((current) => ({ ...current, audience: event.target.value as PromptAudience }))}
+                    className="min-h-11 max-w-full rounded-xl border border-input bg-background px-3 text-sm text-foreground sm:min-h-9"
+                >
+                    <option value="all">全部用户（含管理员）</option>
+                    <option value="admin_only">仅管理员 API Key 请求</option>
+                </select>
+                {dirty ? <span className="font-medium text-amber-600">有未保存草稿</span> : null}
+                {remoteConflict ? <span className="text-destructive">服务端已更新，请核对后保存</span> : null}
             </div>
             <textarea
                 value={value.text}
@@ -132,10 +182,6 @@ function PromptEditor({
             />
         </div>
     );
-}
-
-function promptKey(value: PromptValue) {
-    return `${value.enabled ? 1 : 0}|${value.mode}|${value.text}`;
 }
 
 /** 可折叠的一行（路由 / 渠道）：收起时显示状态和文字预览，展开是编辑区。 */
@@ -281,8 +327,12 @@ function SectionHeader({ icon: Icon, title, tip, right }: { icon: LucideIcon; ti
 function GlobalSection({ settings }: { settings: Array<{ key: string; value: string }> | undefined }) {
     const setSetting = useSetSetting();
     const get = (key: string) => settings?.find((item) => item.key === key)?.value;
-    const saved = savedValue(get(SettingKey.PromptOverrideEnabled) === 'true', get(SettingKey.PromptOverrideMode), get(SettingKey.PromptOverrideSystem));
+    const saved = savedValue(get(SettingKey.PromptOverrideEnabled) === 'true', get(SettingKey.PromptOverrideMode), get(SettingKey.PromptOverrideSystem), get(SettingKey.PromptAudience));
     const save = async (next: PromptValue) => {
+        if (next.audience === 'admin_only') {
+            await setSetting.mutateAsync({ key: SettingKey.PromptOverrideEnabled, value: 'false' });
+        }
+        await setSetting.mutateAsync({ key: SettingKey.PromptAudience, value: next.audience });
         await setSetting.mutateAsync({ key: SettingKey.PromptOverrideMode, value: next.mode });
         await setSetting.mutateAsync({ key: SettingKey.PromptOverrideSystem, value: next.text });
         await setSetting.mutateAsync({ key: SettingKey.PromptOverrideEnabled, value: next.enabled ? 'true' : 'false' });
@@ -296,7 +346,7 @@ function GlobalSection({ settings }: { settings: Array<{ key: string; value: str
                 right={<PromptStatusBadge value={saved} />}
             />
             <PromptEditor
-                key={promptKey(saved)}
+                scopeKey="global"
                 saved={saved}
                 onSave={save}
                 saving={setSetting.isPending}
@@ -310,7 +360,7 @@ function GlobalSection({ settings }: { settings: Array<{ key: string; value: str
 
 function RouteRow({ row, defaultOpen }: { row: RoutePromptRow; defaultOpen: boolean }) {
     const update = useUpdateAccessPlanRoutePrompt();
-    const saved: PromptValue = { text: row.text, mode: row.mode, enabled: row.enabled };
+    const saved: PromptValue = { text: row.text, mode: row.mode, enabled: row.enabled, audience: row.audience };
     const upstream = row.upstreamModels.join(' / ');
     return (
         <LayerRow
@@ -326,7 +376,7 @@ function RouteRow({ row, defaultOpen }: { row: RoutePromptRow; defaultOpen: bool
             }
         >
             <PromptEditor
-                key={promptKey(saved)}
+                scopeKey={`route:${row.plan.id}:${row.requestModel.toLowerCase()}`}
                 saved={saved}
                 onSave={(next) => update.mutateAsync({
                     access_plan_id: row.plan.id,
@@ -334,6 +384,7 @@ function RouteRow({ row, defaultOpen }: { row: RoutePromptRow; defaultOpen: bool
                     system_prompt_override: next.text,
                     prompt_override_mode: next.mode,
                     prompt_override_enabled: next.enabled,
+                    prompt_audience: next.audience,
                 })}
                 saving={update.isPending}
                 label={`${row.plan.display_name || row.plan.slug} · ${row.requestModel} 提示词`}
@@ -358,13 +409,16 @@ function SubLabel({ icon: Icon, label, tip, right }: { icon: LucideIcon; label: 
 
 function PlanCard({ plan, routes, totalRoutes, query, onlyFilled }: { plan: AccessPlan; routes: RoutePromptRow[]; totalRoutes: number; query: string; onlyFilled: boolean }) {
     const update = useUpdateAccessPlanPrompt();
+    const [open, setOpen] = useState(false);
     const setActiveItem = useNavStore((state) => state.setActiveItem);
-    const saved = savedValue(plan.prompt_override_enabled, plan.prompt_override_mode, plan.system_prompt_override);
+    const saved = savedValue(plan.prompt_override_enabled, plan.prompt_override_mode, plan.system_prompt_override, plan.prompt_audience);
     const routeOn = routes.filter((row) => promptLayerActive(row.enabled, row.mode, row.text)).length;
     const name = plan.display_name || plan.slug;
     return (
         <article className="rounded-2xl border border-border bg-background/50">
-            <header className="flex min-w-0 items-center gap-2 border-b border-border/70 px-3 py-2.5 sm:px-4">
+            <header className="border-b border-border/70 px-3 sm:px-4">
+                <button type="button" aria-expanded={open} aria-label={`展开或收起 ${name} 方案`} onClick={() => setOpen((current) => !current)} className="flex min-h-11 w-full min-w-0 items-center gap-2 py-2.5 text-left">
+                <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
                 <span className="truncate text-sm font-semibold">{name}</span>
                 <span className="hidden font-mono text-xs text-muted-foreground sm:inline">{plan.slug}</span>
                 {plan.is_default ? <Badge className="shrink-0">默认</Badge> : null}
@@ -372,8 +426,9 @@ function PlanCard({ plan, routes, totalRoutes, query, onlyFilled }: { plan: Acce
                 <span className="ml-auto shrink-0 text-xs text-muted-foreground" title={`${totalRoutes} 条路由，其中 ${routeOn} 条的提示词已启用`}>
                     路由 {routeOn}/{totalRoutes}
                 </span>
+                </button>
             </header>
-            <div className="grid gap-4 p-3 sm:p-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            {open ? <div className="grid gap-4 p-3 sm:p-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
                 <div className="min-w-0">
                     <SubLabel
                         icon={Layers3}
@@ -382,13 +437,14 @@ function PlanCard({ plan, routes, totalRoutes, query, onlyFilled }: { plan: Acce
                         right={<PromptStatusBadge value={saved} />}
                     />
                     <PromptEditor
-                        key={promptKey(saved)}
+                        scopeKey={`plan:${plan.id}`}
                         saved={saved}
                         onSave={(next) => update.mutateAsync({
                             id: plan.id,
                             system_prompt_override: next.text,
                             prompt_override_mode: next.mode,
                             prompt_override_enabled: next.enabled,
+                            prompt_audience: next.audience,
                         })}
                         saving={update.isPending}
                         label={`${name} 方案提示词`}
@@ -415,34 +471,45 @@ function PlanCard({ plan, routes, totalRoutes, query, onlyFilled }: { plan: Acce
                     ) : (
                         <div className="grid gap-2">
                             {routes.map((row) => (
-                                <RouteRow key={`${plan.id}-${row.requestModel}-${promptKey(row)}`} row={row} defaultOpen={row.text.trim().length > 0} />
+                                <RouteRow key={`${plan.id}-${row.requestModel}`} row={row} defaultOpen={false} />
                             ))}
                         </div>
                     )}
                 </div>
-            </div>
+            </div> : null}
         </article>
     );
 }
 
-function ChannelRow({ channel }: { channel: Channel }) {
+function ChannelRow({ channel, relatedPlans }: { channel: Channel; relatedPlans: string[] }) {
     const update = useUpdateChannel();
-    const saved = savedValue(channel.prompt_override_enabled, channel.prompt_override_mode, channel.system_prompt_override);
+    const saved = savedValue(channel.prompt_override_enabled, channel.prompt_override_mode, channel.system_prompt_override, channel.prompt_audience);
     return (
         <LayerRow
             saved={saved}
-            defaultOpen={saved.text.trim().length > 0}
+            defaultOpen={false}
             title={<>#{channel.id} {channel.name}</>}
-            meta={!channel.enabled ? <Badge variant="outline">渠道已停用</Badge> : null}
+            meta={
+                <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                    {!channel.enabled ? <Badge variant="outline">渠道已停用</Badge> : null}
+                    {relatedPlans.length ? <span className="truncate" title={relatedPlans.join('、')}>关联 {relatedPlans.join('、')}</span> : null}
+                </span>
+            }
         >
+            {relatedPlans.length > 1 ? (
+                <p className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-5">
+                    此渠道被 {relatedPlans.join('、')} 共同引用。修改渠道级规则会影响所有命中此渠道的方案，按套餐筛选不代表仅对该套餐生效。
+                </p>
+            ) : null}
             <PromptEditor
-                key={promptKey(saved)}
+                scopeKey={`channel:${channel.id}`}
                 saved={saved}
                 onSave={(next) => update.mutateAsync({
                     id: channel.id,
                     system_prompt_override: next.text,
                     prompt_override_mode: next.mode,
                     prompt_override_enabled: next.enabled,
+                    prompt_audience: next.audience,
                 })}
                 saving={update.isPending}
                 label={`${channel.name} 渠道提示词`}
@@ -514,9 +581,22 @@ function AdminPromptView() {
     const [query, setQuery] = useState('');
     const [layer, setLayer] = useState<LayerFilter>('all');
     const [onlyFilled, setOnlyFilled] = useState(false);
+    const [drafts, setDrafts] = useState<PromptDraftMap>({});
+    const draftContext = useMemo(() => ({ drafts, setDrafts }), [drafts]);
+    const [focusedPlanId, setFocusedPlanId] = useState('all');
+    const [channelStatusFilter, setChannelStatusFilter] = useState<'all' | 'active' | 'configured' | 'empty'>('all');
+    const [expandedChannelTypes, setExpandedChannelTypes] = useState<Set<number>>(new Set());
+    const [groupPageSize, setGroupPageSize] = useState<Record<number, number>>({});
+    const [identityMode, setIdentityMode] = useState<IdentityPresetMode>('brand');
+    const [identityName, setIdentityName] = useState('Octopus 助手');
+    const [identityStyle, setIdentityStyle] = useState('专业、清晰、简洁');
+    const identityPreset = useMemo(
+        () => buildIdentityPreset({ mode: identityMode, displayName: identityName, style: identityStyle }),
+        [identityMode, identityName, identityStyle]
+    );
 
     const get = (key: string) => settings?.find((item) => item.key === key)?.value;
-    const globalSaved = savedValue(get(SettingKey.PromptOverrideEnabled) === 'true', get(SettingKey.PromptOverrideMode), get(SettingKey.PromptOverrideSystem));
+    const globalSaved = savedValue(get(SettingKey.PromptOverrideEnabled) === 'true', get(SettingKey.PromptOverrideMode), get(SettingKey.PromptOverrideSystem), get(SettingKey.PromptAudience));
     const globalActive = promptLayerActive(globalSaved.enabled, globalSaved.mode, globalSaved.text);
 
     const planRows = useMemo(() => plans.map((plan) => ({ plan, routes: planRouteRows(plan) })), [plans]);
@@ -534,10 +614,20 @@ function AdminPromptView() {
             return { plan, routes: shown, total: routes.length, visible };
         })
         .filter((row) => row.visible);
-    const visibleChannels = channels.filter((channel) =>
-        (!onlyFilled || (channel.system_prompt_override ?? '').trim().length > 0)
-        && matchesPromptSearch(query, channel.name, `#${channel.id}`, channel.system_prompt_override)
-    );
+    const planRelations = useMemo(() => channelPlanNames(plans), [plans]);
+    const focusedPlan = useMemo(() => plans.find((plan) => String(plan.id) === focusedPlanId), [plans, focusedPlanId]);
+    const focusedChannelIds = useMemo(() => channelIDsForPlan(focusedPlan), [focusedPlan]);
+    const visibleChannels = channels.filter((channel) => {
+        const hasText = Boolean(channel.system_prompt_override?.trim());
+        const active = promptLayerActive(channel.prompt_override_enabled, channel.prompt_override_mode, channel.system_prompt_override);
+        return (!onlyFilled || hasText)
+            && (focusedPlanId === 'all' || focusedChannelIds.has(channel.id))
+            && (channelStatusFilter === 'all' || (channelStatusFilter === 'active' && active)
+                || (channelStatusFilter === 'configured' && hasText)
+                || (channelStatusFilter === 'empty' && !hasText))
+            && matchesPromptSearch(query, channel.name, `#${channel.id}`, channel.system_prompt_override, (planRelations.get(channel.id) ?? []).join(' '));
+    });
+    const channelGroups = groupChannelsByType(visibleChannels);
     const showGlobal = (layer === 'all' || layer === 'global')
         && (!onlyFilled || globalSaved.text.trim().length > 0)
         && matchesPromptSearch(query, '全局', 'global', globalSaved.text);
@@ -578,7 +668,32 @@ function AdminPromptView() {
     );
 
     return (
+        <PromptDraftsContext.Provider value={draftContext}>
+        <IdentityTemplateContext.Provider value={identityPreset}>
         <PageWrapper className="h-full min-h-0 overflow-y-auto overscroll-contain space-y-4 rounded-t-3xl pb-[calc(7rem+env(safe-area-inset-bottom))] md:pb-4">
+            <details className="rounded-3xl border border-border bg-card">
+                <summary className="flex min-h-12 cursor-pointer items-center gap-2 px-4 py-3 text-sm font-medium">
+                    <WandSparkles className="size-4 text-muted-foreground" />
+                    助手身份与中性模板
+                    <span className="ml-auto text-xs text-muted-foreground">按需展开</span>
+                </summary>
+                <div className="border-t border-border/70 p-2 sm:p-3">
+                    <PromptIdentityBuilder
+                        mode={identityMode}
+                        onModeChange={setIdentityMode}
+                        displayName={identityName}
+                        onDisplayNameChange={setIdentityName}
+                        style={identityStyle}
+                        onStyleChange={setIdentityStyle}
+                        preview={identityPreset}
+                    />
+                </div>
+            </details>
+            {Object.values(drafts).filter((draft) => !promptValuesEqual(draft.value, draft.baseline)).length > 0 ? (
+                <p className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
+                    有未保存的提示词草稿；折叠和切换筛选不会丢失，保存后才会生效。
+                </p>
+            ) : null}
             <section className={cn(SECTION, 'grid gap-3 py-3 sm:py-4')}>
                 <div className="flex min-w-0 items-center gap-1">
                     <p className="min-w-0 truncate text-sm text-muted-foreground">每层可单独开关，放在请求自带提示词的前面或后面。</p>
@@ -640,7 +755,7 @@ function AdminPromptView() {
                 </div>
             </section>
 
-            {showGlobal ? (settingsLoading ? loading : <GlobalSection key={promptKey(globalSaved)} settings={settings} />) : null}
+            {showGlobal ? (settingsLoading ? loading : <GlobalSection settings={settings} />) : null}
 
             {showPlans ? (
                 <section className={SECTION}>
@@ -664,23 +779,79 @@ function AdminPromptView() {
                 <section className={SECTION}>
                     <SectionHeader
                         icon={Radio}
-                        title="渠道"
-                        tip="最终转发到这个上游渠道时生效，排在最外面。适合供应商特定的约束。"
+                        title="渠道级规则"
+                        tip="一个渠道可能同时被 VIP / SVIP 多个方案使用。渠道级策略按最终实际转发渠道生效，不随页面筛选变成套餐专属。"
                         right={<Badge variant="outline" className="shrink-0">{visibleChannels.length}/{channels.length}</Badge>}
                     />
+                    <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                        <label className="grid gap-1 text-xs text-muted-foreground">
+                            关联方案（仅筛选，不改变作用域）
+                            <select value={focusedPlanId} onChange={(event) => setFocusedPlanId(event.target.value)} className="min-h-11 rounded-xl border border-input bg-background px-3 text-sm text-foreground">
+                                <option value="all">全部方案的渠道</option>
+                                {plans.map((plan) => <option key={plan.id} value={String(plan.id)}>{plan.display_name || plan.slug}</option>)}
+                            </select>
+                        </label>
+                        <label className="grid gap-1 text-xs text-muted-foreground">
+                            提示词状态
+                            <select value={channelStatusFilter} onChange={(event) => setChannelStatusFilter(event.target.value as typeof channelStatusFilter)} className="min-h-11 rounded-xl border border-input bg-background px-3 text-sm text-foreground">
+                                <option value="all">全部状态</option>
+                                <option value="active">已启用</option>
+                                <option value="configured">已填写</option>
+                                <option value="empty">未配置</option>
+                            </select>
+                        </label>
+                    </div>
                     {channelsLoading ? loading : visibleChannels.length === 0 ? empty('没有符合条件的渠道') : (
-                        <div className="grid items-start gap-2 lg:grid-cols-2">
-                            {visibleChannels.map((channel) => (
-                                <ChannelRow
-                                    key={`${channel.id}-${channel.system_prompt_override ?? ''}-${channel.prompt_override_mode ?? ''}-${channel.prompt_override_enabled ? 1 : 0}`}
-                                    channel={channel}
-                                />
-                            ))}
+                        <div className="grid gap-2">
+                            {channelGroups.map((group) => {
+                                const open = expandedChannelTypes.has(group.type) || Boolean(query.trim());
+                                const count = groupPageSize[group.type] ?? 25;
+                                const shown = group.channels.slice(0, count);
+                                const active = group.channels.filter((ch) => promptLayerActive(ch.prompt_override_enabled, ch.prompt_override_mode, ch.system_prompt_override)).length;
+                                return (
+                                    <div key={group.type} className="overflow-hidden rounded-2xl border border-border bg-background/50">
+                                        <button
+                                            type="button"
+                                            aria-expanded={open}
+                                            aria-label={`展开或收起 ${group.label} 渠道组`}
+                                            onClick={() => setExpandedChannelTypes((old) => {
+                                                const next = new Set(old);
+                                                if (next.has(group.type)) next.delete(group.type);
+                                                else next.add(group.type);
+                                                return next;
+                                            })}
+                                            className="flex min-h-12 w-full min-w-0 items-center gap-2 px-3 py-2 text-left sm:px-4"
+                                        >
+                                            <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+                                            <span className="min-w-0 truncate text-sm font-medium">{group.label}</span>
+                                            <span className="ml-auto shrink-0 text-xs text-muted-foreground">{active} 已启用 / {group.channels.length} 渠道</span>
+                                        </button>
+                                        {open ? (
+                                            <div className="grid gap-2 border-t border-border/70 p-2 sm:p-3 lg:grid-cols-2">
+                                                {shown.map((channel) => (
+                                                    <ChannelRow key={channel.id} channel={channel} relatedPlans={planRelations.get(channel.id) ?? []} />
+                                                ))}
+                                                {count < group.channels.length ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setGroupPageSize((old) => ({ ...old, [group.type]: count + 25 }))}
+                                                        className="min-h-11 rounded-xl border border-dashed border-border px-3 text-sm text-muted-foreground hover:text-foreground"
+                                                    >
+                                                        显示更多（已显示 {shown.length}/{group.channels.length}）
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                );
+                            })}
                         </div>
                     )}
                 </section>
             ) : null}
         </PageWrapper>
+        </IdentityTemplateContext.Provider>
+        </PromptDraftsContext.Provider>
     );
 }
 

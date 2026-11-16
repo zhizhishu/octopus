@@ -255,6 +255,9 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 	if req.PromptOverrideMode != nil && !model.ValidPromptOverrideMode(*req.PromptOverrideMode) {
 		return nil, fmt.Errorf("invalid prompt override mode")
 	}
+	if req.PromptAudience != nil && (!model.ValidPromptAudience(*req.PromptAudience) || *req.PromptAudience == "") {
+		return nil, fmt.Errorf("invalid prompt audience")
+	}
 	resetRuntimeStats := channelRuntimeIdentityChanged(oldChannel, req)
 
 	tx := db.GetDB().WithContext(ctx).Begin()
@@ -416,6 +419,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 	if req.PromptOverrideEnabled != nil {
 		selectFields = append(selectFields, "prompt_override_enabled")
 		updates.PromptOverrideEnabled = *req.PromptOverrideEnabled
+	}
+	if req.PromptAudience != nil {
+		selectFields = append(selectFields, "prompt_audience")
+		updates.PromptAudience = *req.PromptAudience
 	}
 	if req.MatchRegex != nil {
 		selectFields = append(selectFields, "match_regex")

@@ -23,6 +23,31 @@ const (
 
 type PromptOverrideMode string
 
+// PromptAudience is a server-enforced request audience, not a UI permission or plan tier.
+// Existing rows are all-user by default; missing/unrecognized values never grant an
+// admin-only audience to an unauthenticated or guest request.
+type PromptAudience string
+
+const (
+	PromptAudienceAll       PromptAudience = "all"
+	PromptAudienceAdminOnly PromptAudience = "admin_only"
+)
+
+func ValidPromptAudience(audience PromptAudience) bool {
+	return audience == "" || audience == PromptAudienceAll || audience == PromptAudienceAdminOnly
+}
+
+func PromptAudienceAllows(audience PromptAudience, authenticatedAdmin bool) bool {
+	switch audience {
+	case "", PromptAudienceAll:
+		return true
+	case PromptAudienceAdminOnly:
+		return authenticatedAdmin
+	default:
+		return false
+	}
+}
+
 // 系统提示词注入：每层（全局 / 方案 / 模型路由 / 渠道）一个开关 + 一个位置。
 //
 //	prompt_override_enabled = false → 这一层什么都不加，请求原样不动
@@ -99,6 +124,7 @@ type AccessPlan struct {
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
 	// PromptOverrideEnabled is the per-layer 启用 switch (false = this layer adds nothing).
 	PromptOverrideEnabled bool `json:"prompt_override_enabled" gorm:"not null;default:false"`
+	PromptAudience        PromptAudience `json:"prompt_audience" gorm:"not null;default:'all'"`
 	// AutoSyncChannels is retained for API compatibility. Reconciliation no longer
 	// gates on this flag: every plan with a route profile is synced.
 	AutoSyncChannels bool `json:"auto_sync_channels" gorm:"default:false"`
@@ -128,6 +154,7 @@ type AccessRouteRule struct {
 	SystemPromptOverride  string                   `json:"system_prompt_override"`
 	PromptOverrideMode    PromptOverrideMode       `json:"prompt_override_mode" gorm:"default:append_system"`
 	PromptOverrideEnabled bool                     `json:"prompt_override_enabled" gorm:"not null;default:false"`
+	PromptAudience        PromptAudience           `json:"prompt_audience" gorm:"not null;default:'all'"`
 	// PriorityOverridden marks a rule whose channel priorities are hand-tuned and must
 	// not be re-derived or re-sorted by the flat API. True for every pre-migration rule
 	// (backfilled by db migration 013) so historical ordering is preserved.
@@ -153,6 +180,7 @@ type AccessRouteTarget struct {
 	SystemPromptOverride  string                   `json:"system_prompt_override,omitempty" gorm:"-"`
 	PromptOverrideMode    PromptOverrideMode       `json:"prompt_override_mode,omitempty" gorm:"-"`
 	PromptOverrideEnabled bool                     `json:"prompt_override_enabled,omitempty" gorm:"-"`
+	PromptAudience        PromptAudience           `json:"prompt_audience,omitempty" gorm:"-"`
 	// PriorityOverridden on AccessRouteTarget is a flat-API-only echo of
 	// AccessRouteRule.PriorityOverridden (never persisted; see gorm:"-").
 	PriorityOverridden bool `json:"priority_overridden,omitempty" gorm:"-"`
@@ -223,11 +251,12 @@ type PromptOverridePatch struct {
 	SystemPromptOverride  *string             `json:"system_prompt_override,omitempty"`
 	PromptOverrideMode    *PromptOverrideMode `json:"prompt_override_mode,omitempty"`
 	PromptOverrideEnabled *bool               `json:"prompt_override_enabled,omitempty"`
+	PromptAudience        *PromptAudience     `json:"prompt_audience,omitempty"`
 }
 
 // Empty reports whether the patch changes nothing.
 func (p PromptOverridePatch) Empty() bool {
-	return p.SystemPromptOverride == nil && p.PromptOverrideMode == nil && p.PromptOverrideEnabled == nil
+	return p.SystemPromptOverride == nil && p.PromptOverrideMode == nil && p.PromptOverrideEnabled == nil && p.PromptAudience == nil
 }
 
 // Apply merges the patch onto the stored (text, mode, enabled) triple and returns the

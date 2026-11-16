@@ -37,12 +37,18 @@ type promptOverrideLayer struct {
 //
 // i.e. the more specific a layer is, the further out it sits.
 func applyPromptOverrides(req *transformerModel.InternalLLMRequest, plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel) promptOverrideSnapshot {
+	return applyPromptOverridesForAudience(req, plan, rule, channel, false)
+}
+
+// Only the authenticated API-key principal can opt into administrator rules.
+// The legacy entry point above is deliberately non-admin for direct test callers.
+func applyPromptOverridesForAudience(req *transformerModel.InternalLLMRequest, plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel, authenticatedAdmin bool) promptOverrideSnapshot {
 	snapshot := promptOverrideSnapshot{}
 	if req == nil || !req.IsChatRequest() {
 		return snapshot
 	}
 	before, after := false, false
-	for _, layer := range promptOverrideLayers(plan, rule, channel) {
+	for _, layer := range promptOverrideLayersForAudience(plan, rule, channel, authenticatedAdmin) {
 		mode := dbmodel.NormalizePromptOverrideMode(layer.mode)
 		applyPromptOverrideText(req, strings.TrimSpace(layer.text), mode)
 		snapshot.Sources = append(snapshot.Sources, layer.source)
@@ -234,20 +240,32 @@ func clearResponsesRawPromptShape(req *transformerModel.InternalLLMRequest) {
 
 // promptOverrideLayers returns only the layers that will add something (switch on, text set).
 func promptOverrideLayers(plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel) []promptOverrideLayer {
+	return promptOverrideLayersForAudience(plan, rule, channel, false)
+}
+
+func promptOverrideLayersForAudience(plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel, authenticatedAdmin bool) []promptOverrideLayer {
 	layers := make([]promptOverrideLayer, 0, 4)
-	if text, mode, enabled := globalPromptOverride(); dbmodel.PromptOverrideActive(enabled, mode, text) {
+	if text, mode, enabled := globalPromptOverride(); dbmodel.PromptOverrideActive(enabled, mode, text) && dbmodel.PromptAudienceAllows(globalPromptAudience(), authenticatedAdmin) {
 		layers = append(layers, promptOverrideLayer{source: "global", mode: mode, text: text})
 	}
-	if plan != nil && dbmodel.PromptOverrideActive(plan.PromptOverrideEnabled, plan.PromptOverrideMode, plan.SystemPromptOverride) {
+	if plan != nil && dbmodel.PromptAudienceAllows(plan.PromptAudience, authenticatedAdmin) && dbmodel.PromptOverrideActive(plan.PromptOverrideEnabled, plan.PromptOverrideMode, plan.SystemPromptOverride) {
 		layers = append(layers, promptOverrideLayer{source: "access_plan:" + plan.Slug, mode: plan.PromptOverrideMode, text: plan.SystemPromptOverride})
 	}
-	if rule != nil && dbmodel.PromptOverrideActive(rule.PromptOverrideEnabled, rule.PromptOverrideMode, rule.SystemPromptOverride) {
+	if rule != nil && dbmodel.PromptAudienceAllows(rule.PromptAudience, authenticatedAdmin) && dbmodel.PromptOverrideActive(rule.PromptOverrideEnabled, rule.PromptOverrideMode, rule.SystemPromptOverride) {
 		layers = append(layers, promptOverrideLayer{source: "route_rule:" + rule.RequestModel, mode: rule.PromptOverrideMode, text: rule.SystemPromptOverride})
 	}
-	if channel != nil && dbmodel.PromptOverrideActive(channel.PromptOverrideEnabled, channel.PromptOverrideMode, channel.SystemPromptOverride) {
+	if channel != nil && dbmodel.PromptAudienceAllows(channel.PromptAudience, authenticatedAdmin) && dbmodel.PromptOverrideActive(channel.PromptOverrideEnabled, channel.PromptOverrideMode, channel.SystemPromptOverride) {
 		layers = append(layers, promptOverrideLayer{source: "channel:" + channel.Name, mode: channel.PromptOverrideMode, text: channel.SystemPromptOverride})
 	}
 	return layers
+}
+
+func globalPromptAudience() dbmodel.PromptAudience {
+	value, err := op.SettingGetString(dbmodel.SettingKeyPromptAudience)
+	if err != nil {
+		return dbmodel.PromptAudienceAll
+	}
+	return dbmodel.PromptAudience(value)
 }
 
 func globalPromptOverride() (string, dbmodel.PromptOverrideMode, bool) {
