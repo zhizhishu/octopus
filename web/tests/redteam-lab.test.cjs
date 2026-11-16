@@ -37,7 +37,7 @@ test('发送需要启用、保存、选择目标并勾选付费确认', () => {
     assert.match(lab, /setConfirmed\(false\)/);
     assert.match(lab, /maxLength=\{3000\}/);
     assert.match(lab, /maxLength=\{160\}/);
-    assert.match(lab, /最多 8 个测试案例/);
+    assert.match(lab, /最多保存 8 个测试案例/);
 });
 
 test('类型4永久退役，系统决策和嵌入渠道不出现在可运行列表', () => {
