@@ -651,7 +651,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
 		{Key: SettingKeyPromptOverrideMode, Value: string(PromptOverrideModeBefore)},
-		{Key: SettingKeyPromptOverrideEnabled, Value: "false"}, // 全局提示词开关: 默认关; 开=按 prompt_override_mode(before/after)加 prompt_override_system
+		{Key: SettingKeyPromptOverrideEnabled, Value: "false"},            // 全局提示词开关: 默认关; 开=按 prompt_override_mode(before/after)加 prompt_override_system
 		{Key: SettingKeyPromptAudience, Value: string(PromptAudienceAll)}, // 默认全用户；管理员专用须显式配置
 		{Key: SettingKeyUpstreamErrorStatusPass, Value: "false"},
 		{Key: SettingKeyUpstreamErrorBodyMode, Value: "redacted_upstream"},

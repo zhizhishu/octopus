@@ -93,11 +93,11 @@ type Channel struct {
 	SystemPromptOverride string             `json:"system_prompt_override"`
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
 	// PromptOverrideEnabled is the 启用 switch of this channel's system prompt layer.
-	PromptOverrideEnabled bool    `json:"prompt_override_enabled" gorm:"not null;default:false"`
+	PromptOverrideEnabled bool           `json:"prompt_override_enabled" gorm:"not null;default:false"`
 	PromptAudience        PromptAudience `json:"prompt_audience" gorm:"not null;default:'all'"`
-	ChannelProxy          *string `json:"channel_proxy"`
-	OpenAIChatPath        string  `json:"openai_chat_path"`
-	OpenAIModelsPath      string  `json:"openai_models_path"`
+	ChannelProxy          *string        `json:"channel_proxy"`
+	OpenAIChatPath        string         `json:"openai_chat_path"`
+	OpenAIModelsPath      string         `json:"openai_models_path"`
 	// OpenAIEmbeddingsPath 是嵌入端点的逃生口（与 OpenAIChatPath 同款）：火山这类
 	// 上游的嵌入路径是 /api/v3/embeddings，用 JoinOpenAIPath 拼会变成
 	// /api/v3/v1/embeddings。空 = 走标准 /v1/embeddings 拼接，存量渠道行为不变。

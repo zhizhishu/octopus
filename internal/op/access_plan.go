@@ -2048,7 +2048,7 @@ func promptPatchColumns(patch model.PromptOverridePatch, text string, mode model
 		"system_prompt_override":  text,
 		"prompt_override_mode":    mode,
 		"prompt_override_enabled": enabled,
-		"prompt_audience":        audience,
+		"prompt_audience":         audience,
 	}, nil
 }
 

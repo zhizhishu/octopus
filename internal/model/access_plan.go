@@ -123,7 +123,7 @@ type AccessPlan struct {
 	SystemPromptOverride string             `json:"system_prompt_override"`
 	PromptOverrideMode   PromptOverrideMode `json:"prompt_override_mode" gorm:"default:append_system"`
 	// PromptOverrideEnabled is the per-layer 启用 switch (false = this layer adds nothing).
-	PromptOverrideEnabled bool `json:"prompt_override_enabled" gorm:"not null;default:false"`
+	PromptOverrideEnabled bool           `json:"prompt_override_enabled" gorm:"not null;default:false"`
 	PromptAudience        PromptAudience `json:"prompt_audience" gorm:"not null;default:'all'"`
 	// AutoSyncChannels is retained for API compatibility. Reconciliation no longer
 	// gates on this flag: every plan with a route profile is synced.

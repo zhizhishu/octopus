@@ -849,6 +849,16 @@ function AdminPromptView() {
                     )}
                 </section>
             ) : null}
+            <details className="rounded-2xl border border-border/70 bg-card">
+                <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-4 text-sm text-muted-foreground">
+                    <ShieldCheck className="size-4" />
+                    高级实验接口（预留）
+                    <span className="ml-auto text-xs">尚未启用</span>
+                </summary>
+                <p className="border-t border-border/60 px-4 py-3 text-xs leading-5 text-muted-foreground">
+                    仅为后续经授权的独立模型评估沙箱预留管理入口；目前没有执行接口，不会更改业务提示词、生产转发、模型检测证据或产生额外上游费用。
+                </p>
+            </details>
         </PageWrapper>
         </IdentityTemplateContext.Provider>
         </PromptDraftsContext.Provider>
