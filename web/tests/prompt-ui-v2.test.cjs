@@ -5,7 +5,7 @@ const path = require('node:path');
 const { load } = require('./load-typescript.cjs');
 
 const {
-    normalizeAudience, promptValuesEqual, editPromptDraft, acceptPromptSave,
+    normalizeAudience, promptValuesEqual, previewPromptLayer, editPromptDraft, acceptPromptSave,
     channelPlanNames, channelIDsForPlan, groupChannelsByType, CHANNEL_TYPE_LABELS,
 } = load('src/components/modules/prompt/prompt-ui-state.ts');
 
@@ -19,6 +19,14 @@ test('作用域默认沿用旧版全部用户，仅管理员需显式选择', ()
     assert.equal(normalizeAudience('admin_only'), 'admin_only');
     assert.equal(promptValuesEqual(val(' a '), val('a')), true);
     assert.equal(promptValuesEqual(val('x'), val('x', true, 'admin_only')), false);
+});
+
+test('离线合并预览与实际本层前后插入语义相符，关闭不影响客户端原文', () => {
+    const client = '客户端原有system';
+    assert.equal(previewPromptLayer({ ...val('品牌A'), mode: 'before' }, client), '品牌A\n客户端原有system');
+    assert.equal(previewPromptLayer({ ...val('品牌A'), mode: 'after' }, client), '客户端原有system\n品牌A');
+    assert.equal(previewPromptLayer(val('保留的关闭草稿', false), client), client);
+    assert.equal(previewPromptLayer(val('   '), client), client);
 });
 
 test('折叠/取消筛选后仍保留草稿，async server refetch 不覆盖用户文字', () => {
@@ -80,5 +88,7 @@ test('管理UI只改普通提示词配置、包含折叠与管理者专用范围
     assert.match(source, /option value="admin_only"/);
     assert.match(source, /relatedPlans\.length > 1/);
     assert.match(source, /prompt_audience: next\.audience/);
+    assert.match(source, /previewPromptLayer\(value,/);
+    assert.doesNotMatch(source, /disabled=\{!value\.enabled\}/, '关闭状态也要允许编辑文本草稿');
     assert.doesNotMatch(source, /applyPromptOverrides\(/, 'UI不能本地自造relay规则');
 });

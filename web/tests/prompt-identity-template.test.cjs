@@ -4,13 +4,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { load } = require('./load-typescript.cjs');
 
-const { buildIdentityPreset, appendIdentityPreset } = load('src/components/modules/prompt/prompt-identity.ts');
+const { buildIdentityPreset, appendIdentityPreset, upsertIdentityPreset } = load('src/components/modules/prompt/prompt-identity.ts');
 
 test('品牌模板只是助手显示名称，不冒充底层模型', () => {
     const text = buildIdentityPreset({ mode: 'brand', displayName: 'Octopus 助手 · 专业版', style: '准确、简洁' });
     assert.match(text, /Octopus 助手 · 专业版/);
     assert.match(text, /不代表底层模型/);
     assert.match(text, /准确、简洁/);
+    assert.match(text, /用户询问“你是谁”/);
+    assert.match(text, /不主动将底层模型名称当作品牌名称/);
+    assert.match(text, /明确询问底层模型或提供商.*如实说明/);
 });
 
 test('中性模板既不带品牌名，也不删除原提示词', () => {
@@ -34,6 +37,16 @@ test('插入纯文本：不覆盖旧规则、不重复、不自动开启任何�
     assert.equal(appendIdentityPreset('旧规则', ''), '旧规则');
 });
 
+test('快捷品牌草稿可重复替换自己标记的身份段，不动原有工具规则', () => {
+    const first = upsertIdentityPreset('原有工具规则', buildIdentityPreset({ mode: 'brand', displayName: 'Brand A', style: '专业' }));
+    const again = upsertIdentityPreset(first, buildIdentityPreset({ mode: 'brand', displayName: 'Brand B', style: '简洁' }));
+    assert.match(again, /原有工具规则/);
+    assert.doesNotMatch(again, /Brand A/);
+    assert.match(again, /Brand B/);
+    assert.equal((again.match(/【Octopus 助手身份预设开始】/g) ?? []).length, 1);
+    assert.equal(upsertIdentityPreset(again, ''), again);
+});
+
 test('UI插入仍走已有每层保存按钮且只在管理员视图', () => {
     const source = fs.readFileSync(path.join(__dirname, '../src/components/modules/prompt/index.tsx'), 'utf8');
     const builder = fs.readFileSync(path.join(__dirname, '../src/components/modules/prompt/PromptIdentityBuilder.tsx'), 'utf8');
@@ -41,5 +54,7 @@ test('UI插入仍走已有每层保存按钮且只在管理员视图', () => {
     assert.match(source, /<PromptIdentityBuilder/);
     assert.match(source, /appendIdentityPreset\(current\.text, identityPreset\)/);
     assert.match(source, /onSave=\{save\}|onClick=\{save\}/);
-    assert.match(builder, /中性模式不会删除客户端原有 system\/developer/);
+    assert.match(builder, /中性模式不会删除原有 system\/developer/);
+    assert.match(builder, /onApplyGlobal/);
+    assert.match(source, /upsertIdentityPreset\(/);
 });

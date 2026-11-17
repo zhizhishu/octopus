@@ -19,6 +19,13 @@ export function promptValuesEqual(a: PromptValue, b: PromptValue): boolean {
         && a.mode === b.mode && a.enabled === b.enabled && a.audience === b.audience;
 }
 
+/** Offline single-layer preview: not a request and not a model response. */
+export function previewPromptLayer(value: PromptValue, clientSystem: string): string {
+    if (!value.enabled || !value.text.trim()) return clientSystem;
+    const text = value.text.trim();
+    return value.mode === 'after' ? `${clientSystem}\n${text}` : `${text}\n${clientSystem}`;
+}
+
 /** Changes are kept above collapsible rows, so unmount/refetch does not discard them. */
 export function editPromptDraft(map: PromptDraftMap, key: string, saved: PromptValue, mutate: (value: PromptValue) => PromptValue): PromptDraftMap {
     const existing = map[key] ?? { value: saved, baseline: saved };

@@ -56,7 +56,8 @@ test('提示词只在提示词页改：方案页和渠道表单里没有提示�
     for (const hook of ['useUpdateAccessPlanPrompt', 'useUpdateAccessPlanRoutePrompt', 'useUpdateChannel', 'SettingKey.PromptOverrideEnabled']) {
         assert.ok(promptPage.includes(hook), `提示词页要能改：${hook}`);
     }
-    assert.ok(/disabled=\{!value\.enabled\}/.test(promptPage), '关掉时文本框要变灰');
+    assert.ok(!/disabled=\{!value\.enabled\}/.test(promptPage), '关闭只影响生效，仍可编辑与保存草稿');
+    assert.ok(promptPage.includes("!value.enabled && 'border-dashed bg-muted/20'"), '关闭后用浅色虚线区分草稿状态');
     assert.ok(!/fill_missing|append_system|replace_system/.test(promptPage), '提示词页不再有旧模式');
 
     const planRaw = read('src/components/modules/access-plan/index.tsx');

@@ -11,7 +11,10 @@ const api = fs.readFileSync(path.join(root, 'api/endpoints/redteam-lab-v2.ts'), 
 test('V2 is a separate tabbed workspace without replacing the legacy single-case lab', () => {
     assert.match(host, /<RedTeamV2 enabled=\{saved\.enabled\}/);
     assert.match(host, /旧版单题实验与兼容配置/);
-    assert.match(host, /<details className/);
+    assert.match(host, /<details open className/);
+    assert.match(host, /快速单题测试/);
+    assert.match(host, /高级案例库与多轮评估（可选）/);
+    assert.ok(host.indexOf('快速单题测试') < host.indexOf('高级案例库与多轮评估（可选）'), 'quick experiment must appear before advanced V2');
     assert.match(ui, /01 案例库/);
     assert.match(ui, /02 新建评估/);
     assert.match(ui, /03 任务与结果/);

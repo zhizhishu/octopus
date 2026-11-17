@@ -44,8 +44,8 @@ import { normalizePromptMode, promptEnabledFromSaved, promptLayerActive, promptS
 import { PromptLayerControls } from './PromptLayerControls';
 import { PromptIdentityBuilder } from './PromptIdentityBuilder';
 import { RedTeamLab } from './RedTeamLab';
-import { appendIdentityPreset, buildIdentityPreset, type IdentityPresetMode } from './prompt-identity';
-import { acceptPromptSave, channelIDsForPlan, channelPlanNames, editPromptDraft, groupChannelsByType, normalizeAudience, promptValuesEqual, type PromptDraftMap, type PromptValue } from './prompt-ui-state';
+import { appendIdentityPreset, buildIdentityPreset, upsertIdentityPreset, type IdentityPresetMode } from './prompt-identity';
+import { acceptPromptSave, channelIDsForPlan, channelPlanNames, editPromptDraft, groupChannelsByType, normalizeAudience, previewPromptLayer, promptValuesEqual, type PromptDraftMap, type PromptValue } from './prompt-ui-state';
 
 // 提示词页是系统提示词唯一的编辑入口：全局、每个方案、方案里的每条路由、每个渠道。
 // 「方案」页只管方案和路由，不再出现提示词；保存时各写各的字段，互不覆盖。
@@ -74,7 +74,7 @@ function PromptStatusBadge({ value }: { value: PromptValue }) {
     );
 }
 
-/** 一层提示词的编辑区：启用 + 前面/后面 + 文本 + 保存。关掉时文本框变灰、文字保留。 */
+/** 一层提示词的编辑区：启用 + 前面/后面 + 文本 + 保存。关闭后仍可编辑草稿。 */
 function PromptEditor({
     scopeKey,
     saved,
@@ -173,14 +173,22 @@ function PromptEditor({
                 onChange={(event) => setValue((v) => ({ ...v, text: event.target.value }))}
                 placeholder={placeholder}
                 aria-label={label}
-                disabled={!value.enabled}
-                title={value.enabled ? undefined : '已关闭，文字保留；打开「启用」后才能改、才会生效。'}
+                title={value.enabled ? undefined : '已关闭，可先修改文字并保存草稿；只有启用并保存后才会生效。'}
                 className={cn(
                     size,
                     'w-full rounded-xl border border-border bg-background px-3 py-2 text-sm leading-6 text-foreground transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    !value.enabled && 'bg-muted/40 text-muted-foreground opacity-60'
+                    !value.enabled && 'border-dashed bg-muted/20'
                 )}
             />
+            <details className="rounded-xl border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <summary className="cursor-pointer select-none font-medium">查看本层提示词合并预览（不发送请求）</summary>
+                <div className="mt-3 whitespace-pre-wrap break-words rounded-lg border border-border bg-background p-3 text-sm leading-6" aria-label={`${label} 合并预览`}>
+                    {previewPromptLayer(value, '客户端原始 system / developer 指令（示例）')}
+                </div>
+                <p className="mt-2 leading-5 text-muted-foreground">
+                    仅演示本层文字和顺序，不代表模型实测回复。实际请求还会叠加适用的其他层；模型检测与破甲实验不会插入品牌规则。
+                </p>
+            </details>
         </div>
     );
 }
@@ -599,6 +607,25 @@ function AdminPromptView() {
     const get = (key: string) => settings?.find((item) => item.key === key)?.value;
     const globalSaved = savedValue(get(SettingKey.PromptOverrideEnabled) === 'true', get(SettingKey.PromptOverrideMode), get(SettingKey.PromptOverrideSystem), get(SettingKey.PromptAudience));
     const globalActive = promptLayerActive(globalSaved.enabled, globalSaved.mode, globalSaved.text);
+    const applyIdentityToGlobalDraft = () => {
+        if (!identityPreset.trim()) return;
+        try {
+            // Validate before scheduling state updates so malformed markers are caught here.
+            const nextText = upsertIdentityPreset(drafts.global?.value.text ?? globalSaved.text, identityPreset);
+            setDrafts((current) => editPromptDraft(current, 'global', globalSaved, (value) => ({
+                ...value,
+                text: nextText,
+                enabled: true,
+                mode: 'after',
+            })));
+            setLayer('global');
+            setOnlyFilled(false);
+            setQuery('');
+            toast.success('已填入全局草稿；请核对影响对象，再点保存');
+        } catch (error) {
+            toast.error('未修改全局草稿', { description: apiErrorMessage(error) ?? String(error) });
+        }
+    };
 
     const planRows = useMemo(() => plans.map((plan) => ({ plan, routes: planRouteRows(plan) })), [plans]);
     const planOn = plans.filter((plan) => promptLayerActive(plan.prompt_override_enabled, plan.prompt_override_mode, plan.system_prompt_override)).length;
@@ -672,24 +699,16 @@ function AdminPromptView() {
         <PromptDraftsContext.Provider value={draftContext}>
         <IdentityTemplateContext.Provider value={identityPreset}>
         <PageWrapper className="h-full min-h-0 overflow-y-auto overscroll-contain space-y-4 rounded-t-3xl pb-[calc(7rem+env(safe-area-inset-bottom))] md:pb-4">
-            <details className="rounded-3xl border border-border bg-card">
-                <summary className="flex min-h-12 cursor-pointer items-center gap-2 px-4 py-3 text-sm font-medium">
-                    <WandSparkles className="size-4 text-muted-foreground" />
-                    助手身份与中性模板
-                    <span className="ml-auto text-xs text-muted-foreground">按需展开</span>
-                </summary>
-                <div className="border-t border-border/70 p-2 sm:p-3">
-                    <PromptIdentityBuilder
-                        mode={identityMode}
-                        onModeChange={setIdentityMode}
-                        displayName={identityName}
-                        onDisplayNameChange={setIdentityName}
-                        style={identityStyle}
-                        onStyleChange={setIdentityStyle}
-                        preview={identityPreset}
-                    />
-                </div>
-            </details>
+            <PromptIdentityBuilder
+                mode={identityMode}
+                onModeChange={setIdentityMode}
+                displayName={identityName}
+                onDisplayNameChange={setIdentityName}
+                style={identityStyle}
+                onStyleChange={setIdentityStyle}
+                preview={identityPreset}
+                onApplyGlobal={applyIdentityToGlobalDraft}
+            />
             {Object.values(drafts).filter((draft) => !promptValuesEqual(draft.value, draft.baseline)).length > 0 ? (
                 <p className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
                     有未保存的提示词草稿；折叠和切换筛选不会丢失，保存后才会生效。
@@ -863,11 +882,11 @@ function AdminPromptWorkspace() {
             <div role="tablist" aria-label="提示词管理工作区" className="mx-3 mb-2 mt-2 flex shrink-0 flex-wrap items-center gap-2 rounded-2xl border border-border bg-card p-1.5 sm:mx-4">
                 <button type="button" role="tab" aria-selected={tab === 'rules'} onClick={() => setTab('rules')}
                     className={cn('min-h-11 flex-1 rounded-xl px-4 text-sm font-medium sm:flex-none', tab === 'rules' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50')}>
-                    提示词策略
+                    品牌提示词
                 </button>
                 <button type="button" role="tab" aria-selected={tab === 'redteam'} onClick={() => setTab('redteam')}
                     className={cn('min-h-11 flex-1 rounded-xl px-4 text-sm font-medium sm:flex-none', tab === 'redteam' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50')}>
-                    <ShieldCheck className="mr-1 inline size-4" />破甲专门设定
+                    <ShieldCheck className="mr-1 inline size-4" />破甲实验
                 </button>
                 <span className="hidden text-xs text-muted-foreground md:ml-auto md:block">隔离实验 · 仅管理员可编辑和运行</span>
             </div>

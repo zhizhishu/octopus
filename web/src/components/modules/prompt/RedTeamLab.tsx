@@ -194,8 +194,8 @@ export function RedTeamLab() {
                 <div className="flex min-w-0 items-start gap-3">
                     <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-border bg-muted/40"><ShieldAlert className="size-5" /></span>
                     <div>
-                        <h2 className="text-lg font-semibold tracking-tight">破甲专门设定 <span className="text-sm font-normal text-muted-foreground">/ 授权对抗评估</span></h2>
-                        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">独立保存案例、选择单个渠道测试、检查可见原文与标记判据。仅管理员手动触发，不修改普通用户提示词或模型真伪报告。</p>
+                        <h2 className="text-lg font-semibold tracking-tight">破甲提示词实验 <span className="text-sm font-normal text-muted-foreground">/ 仅限授权测试</span></h2>
+                        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">写一条测试提示词、选择渠道和模型、确认费用后手动发送。结果原样留存；不叠加业务品牌规则，也不进入模型身份检测。</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -207,10 +207,8 @@ export function RedTeamLab() {
             {configQuery.isError ? <div className="rounded-xl border border-destructive/30 p-3 text-sm text-destructive">无法读取实验配置；请使用管理员账号登录并检查后端版本。<Button variant="outline" size="sm" onClick={() => void configQuery.refetch()}>重试</Button></div> : null}
             {configQuery.isLoading ? <p className="text-sm text-muted-foreground">正在读取实验配置…</p> : null}
 
-            <RedTeamV2 enabled={saved.enabled} dirtyConfig={dirty} onToggleEnabled={() => void toggleV2Enabled()} toggling={save.isPending} />
-
-            <details className="rounded-3xl border border-border bg-muted/10 p-3 sm:p-4">
-                <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-semibold">旧版单题实验与兼容配置 <span className="text-xs font-normal text-muted-foreground">展开编辑已有 8 案例与旧历史</span></summary>
+            <details open className="rounded-3xl border border-border bg-muted/10 p-3 sm:p-4">
+                <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-semibold">快速单题测试 <span className="text-xs font-normal text-muted-foreground">旧版单题实验与兼容配置 · 最多保存 8 个常用提示词</span></summary>
             <div className="mt-4 grid items-start gap-4 xl:grid-cols-[minmax(0,1.13fr)_minmax(0,0.87fr)]">
                 <section className={card}>
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -328,6 +326,15 @@ export function RedTeamLab() {
                     </div>
                 )}
             </section>
+            </details>
+            <details className="rounded-3xl border border-border bg-muted/10 p-3 sm:p-4">
+                <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-semibold">
+                    高级案例库与多轮评估（可选）
+                    <span className="ml-auto text-xs font-normal text-muted-foreground">需要版本历史或多轮时再展开</span>
+                </summary>
+                <div className="mt-3">
+                    <RedTeamV2 enabled={saved.enabled} dirtyConfig={dirty} onToggleEnabled={() => void toggleV2Enabled()} toggling={save.isPending} />
+                </div>
             </details>
         </PageWrapper>
     );
