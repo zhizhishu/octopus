@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/samber/lo"
+	"github.com/zhizhishu/octopus/internal/modelcatalog"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
@@ -34,6 +35,12 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	originalReasoningEffort := request.ReasoningEffort
 	originalMaxTokens := request.MaxTokens
 	originalMaxCompletionTokens := request.MaxCompletionTokens
+	originalTopP := request.TopP
+	originalLogprobs := request.Logprobs
+	originalTopLogprobs := request.TopLogprobs
+	originalN := request.N
+	originalPromptCacheRetention := request.PromptCacheRetention
+	originalPromptCacheOptions := request.PromptCacheOptions
 	// 🔴 EnableThinking / ThinkingBudget 必须一起保存恢复。
 	// 投影会写这两个字段，而 relay 在 channel/key 重试之间复用同一个 request。
 	// 漏了它们的后果实测过：第一次 Qwen 生成 enable_thinking=true + 预算，
@@ -50,6 +57,12 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		request.ReasoningEffort = originalReasoningEffort
 		request.MaxTokens = originalMaxTokens
 		request.MaxCompletionTokens = originalMaxCompletionTokens
+		request.TopP = originalTopP
+		request.Logprobs = originalLogprobs
+		request.TopLogprobs = originalTopLogprobs
+		request.N = originalN
+		request.PromptCacheRetention = originalPromptCacheRetention
+		request.PromptCacheOptions = originalPromptCacheOptions
 		request.EnableThinking = originalEnableThinking
 		request.ThinkingBudget = originalThinkingBudget
 	}()
@@ -111,7 +124,7 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 	// the OpenAI Chat Completions surface (max_completion_tokens, no temperature,
 	// and system->developer for most of them). Apply that rewrite first so the
 	// generic developer->system demotion below does NOT run on these models.
-	if isOpenAIReasoningChatModel(request.Model) && isOpenAIOfficialChatBase(baseUrl) {
+	if (isOpenAIReasoningChatModel(request.Model) || isGPT62ReasoningModel(request.Model)) && isOpenAIOfficialChatBase(baseUrl) {
 		// Only the genuine OpenAI chat base is known to require the o/gpt-5 body shape
 		// (max_completion_tokens, no temperature, first system->developer). A third-party
 		// OpenAI-compatible provider that happens to serve a gpt-5-/o-named model may still
@@ -119,6 +132,31 @@ func transformChatRequest(ctx context.Context, request *model.InternalLLMRequest
 		// path below to avoid a regression. (oct serves genuine OpenAI over /responses, so
 		// this chat path is a safety net for the rare official-chat case.)
 		applyOpenAIReasoningChatCompat(request)
+		if isGPT62ReasoningModel(request.Model) {
+			// GPT-6.2 Chat permits text; function tools require Responses.
+			// A Chat outbound cannot change endpoint without changing the relay decoder.
+			if len(request.Tools) > 0 || request.ToolChoice != nil {
+				return nil, fmt.Errorf("%s tools require a Responses-type upstream channel", request.Model)
+			}
+			if request.N != nil {
+				if *request.N != 1 {
+					return nil, fmt.Errorf("%s supports a single Chat choice; omit n or use one response", request.Model)
+				}
+				request.N = nil
+			}
+			request.TopP = nil
+			request.Logprobs = nil
+			request.TopLogprobs = nil
+			if request.PromptCacheRetention != nil {
+				if len(request.PromptCacheOptions) == 0 {
+					request.PromptCacheOptions = json.RawMessage(`{"ttl":"30m"}`)
+				}
+				request.PromptCacheRetention = nil
+			}
+			if effort := model.CanonicalEffort(request.ReasoningEffort); effort == "none" || effort == "minimal" {
+				request.ReasoningEffort = "low"
+			}
+		}
 	} else {
 		// Convert developer role to system role for compatibility with
 		// non-reasoning OpenAI-compatible chat upstreams that reject "developer".
@@ -201,6 +239,12 @@ func isDeepSeekModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "deepseek")
 }
 
+// isGPT62ReasoningModel recognizes only documented Astra/Sol IDs and date snapshots.
+// Other GPT-6.2 variant names are not assumed to have the same capabilities.
+func isGPT62ReasoningModel(name string) bool {
+	return modelcatalog.IsGPT62Model(name)
+}
+
 // isOpenAIReasoningChatModel reports whether the model name targets an OpenAI
 // o-series or gpt-5 family chat model that rejects max_tokens / temperature
 // (and, for most of them, expects the first system message as role=developer).
@@ -244,7 +288,7 @@ func openAIReasoningUsesDeveloperRole(name string) bool {
 	if strings.HasPrefix(lower, "o1-mini") || strings.HasPrefix(lower, "o1-preview") {
 		return false
 	}
-	return isOpenAIReasoningChatModel(name)
+	return isOpenAIReasoningChatModel(name) || isGPT62ReasoningModel(name)
 }
 
 // applyOpenAIReasoningChatCompat rewrites a chat/completions body for o-series
@@ -356,6 +400,7 @@ func applyThirdPartyChatParamCompat(request *model.InternalLLMRequest, baseUrl s
 	request.Store = nil
 	request.PromptCacheKey = nil
 	request.PromptCacheRetention = nil
+	request.PromptCacheOptions = nil
 	request.SafetyIdentifier = nil
 	// service_tier is OpenAI Responses residue; vercel AI Gateway / z.ai chat 400
 	// on unknown top-level fields (live log id 1787047851119 carried service_tier).

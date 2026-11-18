@@ -131,6 +131,9 @@ type InternalLLMRequest struct {
 	// The retention policy for the prompt cache. Supported by OpenAI Chat
 	// Completions and Responses. Valid values are provider-defined.
 	PromptCacheRetention *string `json:"prompt_cache_retention,omitempty"`
+	// Newer OpenAI cache controls (e.g. GPT-6.2 ttl). Preserve opaque shape
+	// across Chat and Responses without interpreting provider-specific options.
+	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
 
 	// PreviousResponseID is the OpenAI Responses conversation cursor. It must only
 	// be forwarded to Responses upstreams that can own that response id.

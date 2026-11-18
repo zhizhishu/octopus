@@ -16,6 +16,38 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
+// applyGPT62ResponsesCompat updates only the genuine OpenAI Responses wire
+// dialect. Third-party Responses proxies and other model generations retain
+// their existing request shapes and CLI-specific fields.
+func applyGPT62ResponsesCompat(req *ResponsesRequest, baseURL string) {
+	if req == nil || !isGPT62ReasoningModel(req.Model) || !isOpenAIOfficialChatBase(baseURL) {
+		return
+	}
+	req.Temperature = nil
+	req.TopP = nil
+	if req.Reasoning != nil {
+		effort := model.CanonicalEffort(req.Reasoning.Effort)
+		if effort == "none" || effort == "minimal" {
+			req.Reasoning.Effort = "low"
+		}
+	}
+	if len(req.Include) > 0 {
+		filtered := make([]string, 0, len(req.Include))
+		for _, value := range req.Include {
+			if value != "message.output_text.logprobs" {
+				filtered = append(filtered, value)
+			}
+		}
+		req.Include = filtered
+	}
+	if req.PromptCacheRetention != nil {
+		if len(req.PromptCacheOptions) == 0 {
+			req.PromptCacheOptions = json.RawMessage(`{"ttl":"30m"}`)
+		}
+		req.PromptCacheRetention = nil
+	}
+}
+
 // ResponseOutbound implements the Outbound interface for OpenAI Responses API.
 type ResponseOutbound struct {
 	// Stream state tracking
@@ -46,6 +78,7 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 
 	// Convert to Responses API request format
 	responsesReq := ConvertToResponsesRequest(request)
+	applyGPT62ResponsesCompat(responsesReq, baseUrl)
 
 	// encodeJSONNoHTMLEscape, not json.Marshal: a captured genuine Codex CLI body keeps
 	// <, > and & raw, and the encoder is what makes them raw again on the way out.
@@ -681,6 +714,7 @@ type ResponsesRequest struct {
 	ServiceTier          *string               `json:"service_tier,omitempty"`
 	User                 *string               `json:"user,omitempty"`
 	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   json.RawMessage       `json:"prompt_cache_options,omitempty"`
 	PreviousResponseID   *string               `json:"previous_response_id,omitempty"`
 	Metadata             map[string]string     `json:"metadata,omitempty"`
 	MaxOutputTokens      *int64                `json:"max_output_tokens,omitempty"`
@@ -1213,6 +1247,7 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 		User:                 req.User,
 		PromptCacheKey:       req.PromptCacheKey,
 		PromptCacheRetention: req.PromptCacheRetention,
+		PromptCacheOptions:   cloneRawMessage(req.PromptCacheOptions),
 		PreviousResponseID:   req.PreviousResponseID,
 		Metadata:             req.Metadata,
 		ClientMetadata:       cloneRawMessage(req.ClientMetadata),

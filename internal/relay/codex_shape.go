@@ -5,9 +5,10 @@ import (
 	"strings"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modelcatalog"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
-	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
+	"github.com/zhizhishu/octopus/internal/utils/log"
 )
 
 const codexReasoningEncryptedContentInclude = "reasoning.encrypted_content"
@@ -373,7 +374,7 @@ func normalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	//   - "max" is NOT downgraded to "xhigh": the upstream's own error message lists
 	//     "max" as supported for gpt-6, so the generic non-5.6 max→xhigh remap below
 	//     must not run for this family.
-	if isGPT6Model(req.Model) {
+	if isGPT6Model(req.Model) || modelcatalog.IsGPT62Model(req.Model) {
 		if effort != "" {
 			if !codexEffortAllowSet[effort] {
 				req.ReasoningEffort = "low"

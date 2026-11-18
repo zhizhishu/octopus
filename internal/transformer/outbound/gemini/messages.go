@@ -450,6 +450,7 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 					}
 					content.Parts = append(content.Parts, &model.GeminiPart{
 						FunctionCall: &model.GeminiFunctionCall{
+							ID:   toolCall.ID,
 							Name: toolCall.Function.Name,
 							Args: args,
 						},
@@ -478,7 +479,10 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 	config := &model.GeminiGenerationConfig{}
 	hasConfig := false
 
-	if request.MaxTokens != nil {
+	if request.MaxCompletionTokens != nil {
+		config.MaxOutputTokens = int(*request.MaxCompletionTokens)
+		hasConfig = true
+	} else if request.MaxTokens != nil {
 		config.MaxOutputTokens = int(*request.MaxTokens)
 		hasConfig = true
 	}
@@ -901,6 +905,7 @@ func convertLLMToolResultToGeminiContent(msg *model.Message, toolCallNamesByID m
 	}
 
 	fp := &model.GeminiFunctionResponse{
+		ID:       lo.FromPtrOr(msg.ToolCallID, ""),
 		Name:     name,
 		Response: responseData,
 	}
@@ -910,6 +915,13 @@ func convertLLMToolResultToGeminiContent(msg *model.Message, toolCallNamesByID m
 	}
 
 	return content
+}
+
+func geminiResponseToolCallID(upstreamID, name string, index int) string {
+	if upstreamID != "" {
+		return upstreamID
+	}
+	return fmt.Sprintf("call_%s_%d", name, index)
 }
 
 func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse, isStream bool) *model.InternalLLMResponse {
@@ -1016,7 +1028,7 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 					toolCallIndex := len(toolCalls)
 					toolCall := model.ToolCall{
 						Index: toolCallIndex,
-						ID:    fmt.Sprintf("call_%s_%d", part.FunctionCall.Name, toolCallIndex),
+						ID:    geminiResponseToolCallID(part.FunctionCall.ID, part.FunctionCall.Name, toolCallIndex),
 						Type:  "function",
 						Function: model.FunctionCall{
 							Name:      part.FunctionCall.Name,

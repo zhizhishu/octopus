@@ -2,7 +2,10 @@
 // It does not select channels, grant model access, rewrite model IDs, or choose wire fields.
 package modelcatalog
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Metadata is descriptive only. An empty Tokenizer means it is unknown; a family
 // match is not evidence that a model uses another model's tokenizer.
@@ -14,6 +17,9 @@ type Metadata struct {
 }
 
 var entries = map[string]Metadata{
+	"gpt-6.2-astra":                    {Family: "openai", Reasoning: true},
+	"gpt-6.2-sol":                      {Family: "openai", Reasoning: true},
+	"gemini-3.8-flash":                 {Family: "google", Reasoning: true},
 	"gemini-4-argon":                   {Family: "google", Reasoning: true},
 	"gemini-4-carbon":                  {Family: "google", Reasoning: true},
 	"gemini-4-hydrogen":                {Family: "google", Reasoning: true},
@@ -30,6 +36,26 @@ var entries = map[string]Metadata{
 	"imagen-4.0-fast-generate-001":     {Family: "google", ImageGeneration: true},
 }
 
+// IsGPT62Model matches the documented GPT-6.2 Astra/Sol identifiers and date
+// snapshots only. Do not assume unlisted variants share the same wire contract.
+func IsGPT62Model(id string) bool {
+	name := strings.ToLower(strings.TrimSpace(id))
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:]
+	}
+	for _, base := range []string{"gpt-6.2-astra", "gpt-6.2-sol"} {
+		if name == base {
+			return true
+		}
+		if date, ok := strings.CutPrefix(name, base+"-"); ok {
+			if _, err := time.Parse(time.DateOnly, date); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Lookup recognizes a model ID, including a provider path, for metadata lookup
 // only. Callers must keep the original ID when storing or forwarding a request.
 // In particular, -high and -xhigh are part of the full model ID here; they do not
@@ -41,6 +67,13 @@ func Lookup(modelID string) (Metadata, bool) {
 	}
 	if metadata, ok := entries[name]; ok {
 		return metadata, true
+	}
+	if IsGPT62Model(name) {
+		for _, base := range []string{"gpt-6.2-astra", "gpt-6.2-sol"} {
+			if strings.HasPrefix(name, base) {
+				return entries[base], true
+			}
+		}
 	}
 	for _, base := range []string{"gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen"} {
 		if suffix, ok := strings.CutPrefix(name, base); ok && knownGemini4Suffix(suffix) {

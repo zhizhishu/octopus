@@ -427,7 +427,10 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 		}
 		if part.FunctionCall != nil && role == "assistant" {
 			args, _ := json.Marshal(part.FunctionCall.Args)
-			callID := geminiToolCallID(part.FunctionCall.Name, contentIndex, partIndex)
+			callID := part.FunctionCall.ID
+			if callID == "" {
+				callID = geminiToolCallID(part.FunctionCall.Name, contentIndex, partIndex)
+			}
 			msg.ToolCalls = append(msg.ToolCalls, model.ToolCall{
 				ID:    callID,
 				Type:  "function",
@@ -450,7 +453,9 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 			response, _ := json.Marshal(part.FunctionResponse.Response)
 			responseText := string(response)
 			toolCallID := part.FunctionResponse.Name
-			if ids := callIDsByName[part.FunctionResponse.Name]; len(ids) > 0 {
+			if part.FunctionResponse.ID != "" {
+				toolCallID = part.FunctionResponse.ID
+			} else if ids := callIDsByName[part.FunctionResponse.Name]; len(ids) > 0 {
 				toolCallID = ids[0]
 				callIDsByName[part.FunctionResponse.Name] = ids[1:]
 			}
@@ -715,6 +720,7 @@ func convertMessageToGeminiContent(msg *model.Message) *model.GeminiContent {
 	for _, toolCall := range msg.ToolCalls {
 		content.Parts = append(content.Parts, &model.GeminiPart{
 			FunctionCall: &model.GeminiFunctionCall{
+				ID:   toolCall.ID,
 				Name: toolCall.Function.Name,
 				Args: parseToolCallArgsObject(toolCall.Function.Arguments),
 			},

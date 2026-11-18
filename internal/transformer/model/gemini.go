@@ -88,12 +88,14 @@ type GeminiVideoMetadata struct {
 
 // GeminiFunctionCall represents a function call from the model
 type GeminiFunctionCall struct {
+	ID   string                 `json:"id,omitempty"`
 	Name string                 `json:"name"`
 	Args map[string]interface{} `json:"args,omitempty"`
 }
 
 // GeminiFunctionResponse represents a function call result
 type GeminiFunctionResponse struct {
+	ID       string                 `json:"id,omitempty"`
 	Name     string                 `json:"name"`
 	Response map[string]interface{} `json:"response"`
 }

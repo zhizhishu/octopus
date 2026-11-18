@@ -1727,6 +1727,7 @@ type ResponsesRequest struct {
 	User                 *string               `json:"user,omitempty"`
 	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   json.RawMessage       `json:"prompt_cache_options,omitempty"`
 	PreviousResponseID   *string               `json:"previous_response_id,omitempty"`
 	Metadata             map[string]string     `json:"metadata,omitempty"`
 	ClientMetadata       json.RawMessage       `json:"client_metadata,omitempty"`
@@ -2166,6 +2167,7 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 		User:                 req.User,
 		PromptCacheKey:       req.PromptCacheKey,
 		PromptCacheRetention: req.PromptCacheRetention,
+		PromptCacheOptions:   cloneRawMessage(req.PromptCacheOptions),
 		PreviousResponseID:   req.PreviousResponseID,
 		Metadata:             req.Metadata,
 		ClientMetadata:       cloneRawMessage(req.ClientMetadata),
