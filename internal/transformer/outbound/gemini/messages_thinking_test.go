@@ -1,6 +1,10 @@
 package gemini
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/zhizhishu/octopus/internal/transformer/model"
@@ -300,5 +304,155 @@ func TestGeminiOutboundUnknownEffortEmitsNoThinkingConfig(t *testing.T) {
 	if converted.GenerationConfig != nil && converted.GenerationConfig.ThinkingConfig != nil {
 		t.Fatalf("unknown effort must not produce a thinkingConfig, got %#v",
 			converted.GenerationConfig.ThinkingConfig)
+	}
+}
+
+// Gemini 4 rejects thinkingBudget outright; Gemini 3 rejects it when sent
+// alongside thinkingLevel. Tests assert the serialized WIRE shape, not only
+// the intermediate struct, so a future override can't silently reintroduce it.
+func TestGeminiModernThinkingLevelOnlyWire(t *testing.T) {
+	text := "hello"
+	budget := int64(2048)
+	cases := []struct {
+		name, modelName, effort, wantLevel string
+		budget                             *int64
+	}{
+		{"argon_high", "gemini-4-argon", "high", "HIGH", nil},
+		{"carbon_xhigh_clamped", "gemini-4-carbon", "xhigh", "HIGH", nil},
+		{"carbon_high_alias", "gemini-4-carbon-high", "max", "HIGH", nil},
+		{"hydrogen_xhigh", "gemini-4-hydrogen", "x-high", "XHIGH", nil},
+		{"hydrogen_qualifier", "google/gemini-4-hydrogen-xhigh-20261112", "max", "XHIGH", nil},
+		{"argon_budget_only", "models/gemini-4-argon", "", "MEDIUM", &budget},
+		{"argon_budget_and_effort", "gemini-4-argon", "high", "HIGH", &budget},
+		{"gemini_3_dual_config", "gemini-3.1-pro-preview", "high", "HIGH", &budget},
+		{"gemini_3_budget_only", "gemini-3.8-flash", "", "MEDIUM", &budget},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &model.InternalLLMRequest{
+				Model:           tc.modelName,
+				Messages:        []model.Message{{Role: "user", Content: model.MessageContent{Content: &text}}},
+				ReasoningEffort: tc.effort,
+				ReasoningBudget: tc.budget,
+			}
+			converted := convertLLMToGeminiRequest(req)
+			if converted.GenerationConfig == nil || converted.GenerationConfig.ThinkingConfig == nil {
+				t.Fatal("missing modern thinkingConfig")
+			}
+			tcWire := converted.GenerationConfig.ThinkingConfig
+			if tcWire.ThinkingLevel != tc.wantLevel || tcWire.ThinkingBudget != nil {
+				t.Fatalf("modern thinking mismatch: %#v; wanted level %q without budget", tcWire, tc.wantLevel)
+			}
+			body, err := json.Marshal(converted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), "thinkingBudget") ||
+				!strings.Contains(string(body), `"thinkingLevel":"`+tc.wantLevel+`"`) {
+				t.Fatalf("invalid Gemini 3/4 wire shape: %s", body)
+			}
+		})
+	}
+	t.Run("gemini_25_preserves_legacy_budget", func(t *testing.T) {
+		req := &model.InternalLLMRequest{
+			Model:           "gemini-2.5-pro",
+			Messages:        []model.Message{{Role: "user", Content: model.MessageContent{Content: &text}}},
+			ReasoningEffort: "high",
+		}
+		tcWire := convertLLMToGeminiRequest(req).GenerationConfig.ThinkingConfig
+		if tcWire == nil || tcWire.ThinkingBudget == nil || *tcWire.ThinkingBudget <= 0 {
+			t.Fatalf("Gemini 2.5 budget unexpectedly removed: %#v", tcWire)
+		}
+	})
+}
+
+func TestGeminiFourParallelThoughtSignatureFirstCallOnly(t *testing.T) {
+	sig := model.TagGeminiThoughtSignature("gemini-sig-123")
+	calls := []model.ToolCall{
+		{ID: "call1", Type: "function", Function: model.FunctionCall{Name: "first", Arguments: "{}"}},
+		{ID: "call2", Type: "function", Function: model.FunctionCall{Name: "second", Arguments: "{}"}},
+	}
+	for _, name := range []string{"gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen"} {
+		t.Run(name, func(t *testing.T) {
+			req := &model.InternalLLMRequest{
+				Model:    name,
+				Messages: []model.Message{{Role: "assistant", ReasoningSignature: &sig, ToolCalls: calls}},
+			}
+			body := convertLLMToGeminiRequest(req)
+			if len(body.Contents) != 1 || len(body.Contents[0].Parts) != 2 {
+				t.Fatalf("unexpected parallel-call contents: %#v", body.Contents)
+			}
+			parts := body.Contents[0].Parts
+			if parts[0].ThoughtSignature != "gemini-sig-123" || parts[1].ThoughtSignature != "" {
+				t.Fatalf("Gemini 4 requires a signature only on the first functionCall: %#v", parts)
+			}
+			encoded, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(encoded), "thoughtSignature") != 1 {
+				t.Fatalf("duplicate parallel thought signatures: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestGeminiFourTextThoughtSignatureIsReplayed(t *testing.T) {
+	sig := model.TagGeminiThoughtSignature("gemini-text-sig")
+	text := "The result is 42."
+	for _, name := range []string{"gemini-4-hydrogen", "gemini-3.1-pro-preview"} {
+		t.Run(name, func(t *testing.T) {
+			req := &model.InternalLLMRequest{
+				Model:    name,
+				Messages: []model.Message{{Role: "assistant", ReasoningSignature: &sig, Content: model.MessageContent{Content: &text}}},
+			}
+			part := convertLLMToGeminiRequest(req).Contents[0].Parts[0]
+			want := "gemini-text-sig"
+			if !strings.Contains(name, "gemini-4") {
+				want = "" // no broad signature behavior change for Gemini 3
+			}
+			if part.ThoughtSignature != want {
+				t.Fatalf("replayed text signature got %q, want %q", part.ThoughtSignature, want)
+			}
+		})
+	}
+}
+
+// Exercise the actual outbound HTTP request builder, including endpoint and
+// streaming differences. A channel connectivity probe typically has no
+// thinking effort; real client traffic does, and previously hit HTTP 400.
+func TestGeminiFourOutboundHTTPUsesValidThinkingShape(t *testing.T) {
+	content := "Compute 2 + 2"
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non_stream", true: "stream"}[stream], func(t *testing.T) {
+			outboundRequest, err := (&MessagesOutbound{}).TransformRequest(context.Background(), &model.InternalLLMRequest{
+				Model:           "gemini-4-carbon",
+				Messages:        []model.Message{{Role: "user", Content: model.MessageContent{Content: &content}}},
+				Stream:          &stream,
+				ReasoningEffort: "high",
+			}, "https://generativelanguage.googleapis.com", "fixture-key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer outboundRequest.Body.Close()
+			wantMethod := "generateContent"
+			if stream {
+				wantMethod = "streamGenerateContent"
+				if outboundRequest.URL.Query().Get("alt") != "sse" {
+					t.Fatal("streaming request did not ask for SSE")
+				}
+			}
+			if !strings.HasSuffix(outboundRequest.URL.Path, ":"+wantMethod) {
+				t.Fatalf("wrong native Gemini method: %s", outboundRequest.URL.Path)
+			}
+			body, err := io.ReadAll(outboundRequest.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), "thinkingBudget") ||
+				!strings.Contains(string(body), `"thinkingLevel":"HIGH"`) {
+				t.Fatalf("invalid upstream Gemini 4 payload: %s", body)
+			}
+		})
 	}
 }

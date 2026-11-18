@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -41,6 +42,11 @@ func isEligibleForInterventionRescue(err error) bool {
 		// ...) is a deterministic client error and fast-fails.
 		sc := upErr.StatusCode()
 		if sc == http.StatusTooManyRequests {
+			// A provider-declared depleted quota is not a transient rate limit.
+			// Avoid exhausting the client's own deadline by retrying it in a loop.
+			if isExhaustedQuotaWithoutRetryWindow(upErr) {
+				return false
+			}
 			return true
 		}
 		// 401 也救（用户定 2026-10-27）。
@@ -67,6 +73,27 @@ func isEligibleForInterventionRescue(err error) bool {
 	}
 	// Network errors, timeouts, transient stream endings, etc.
 	return true
+}
+
+// isExhaustedQuotaWithoutRetryWindow matches only specific provider quota
+// refusals. A bare 429, concurrency limit or Retry-After is still recoverable.
+func isExhaustedQuotaWithoutRetryWindow(upErr *upstreamError) bool {
+	if upErr == nil || upErr.StatusCode() != http.StatusTooManyRequests || upErr.hasRetryAfter {
+		return false
+	}
+	body := strings.ToLower(upErr.Body())
+	if strings.Contains(body, "try again") || strings.Contains(body, "retry after") ||
+		strings.Contains(body, "retry-after") {
+		return false
+	}
+	if strings.Contains(body, "resource has been exhausted (e.g. check quota)") {
+		return true
+	}
+	switch normalizeErrorCode(extractUpstreamErrorCode([]byte(upErr.Body()))) {
+	case "quota_exhausted", "insufficient_quota":
+		return true
+	}
+	return false
 }
 
 // isRescueableHeldRequest evaluates whether a request whose automatic attempts/fallbacks

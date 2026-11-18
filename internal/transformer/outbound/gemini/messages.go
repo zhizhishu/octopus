@@ -224,6 +224,102 @@ func geminiThinkingLevel(effort string) string {
 	}
 }
 
+// geminiFourFamily recognizes the wire model, not the client's route alias.
+// Keep the version qualifier intact: a -high/-xhigh suffix is not itself a
+// reasoning-effort instruction. Gemini 4 accepts only thinkingLevel; sending
+// thinkingBudget is a hard 400 (unlike the older Gemini 2.5 API).
+func geminiFourFamily(modelName string) string {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if index := strings.LastIndexByte(name, '/'); index >= 0 {
+		name = name[index+1:]
+	}
+	for _, family := range []string{"argon", "carbon", "hydrogen"} {
+		prefix := "gemini-4-" + family
+		if name == prefix || strings.HasPrefix(name, prefix+"-") {
+			return family
+		}
+	}
+	return ""
+}
+
+func geminiThreeOrFour(modelName string) bool {
+	if geminiFourFamily(modelName) != "" {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if index := strings.LastIndexByte(name, '/'); index >= 0 {
+		name = name[index+1:]
+	}
+	return strings.HasPrefix(name, "gemini-3.") || strings.HasPrefix(name, "gemini-3-")
+}
+
+// Modern Gemini models must not receive thinkingLevel and thinkingBudget
+// together. Gemini 4 rejects thinkingBudget even by itself. A numeric budget
+// cannot be preserved exactly on Gemini 4, so map its *intent* onto the
+// existing Gemini effort ladder; never put the unsupported number on the wire.
+// XHIGH is only legal for Gemini 4 Hydrogen; Carbon/Argon cap at HIGH.
+func modernGeminiThinkingLevel(effort string, budget *int64, modelName string) string {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if index := strings.LastIndexByte(name, '/'); index >= 0 {
+		name = name[index+1:]
+	}
+	// Image variants have different capabilities from text models. Preserve
+	// Gemini 3 Pro Image's implicit thinking instead of injecting a bad enum.
+	if strings.HasPrefix(name, "gemini-3-pro-image") {
+		return ""
+	}
+	key := model.CanonicalEffort(effort)
+	if key == "" && budget != nil {
+		if *budget < 0 {
+			return "" // -1 is dynamic/default in 2.5, not LOW in 3/4.
+		}
+		switch {
+		case *budget == 0:
+			key = "none"
+		case *budget <= int64(geminiBudgetLow):
+			key = "low"
+		case *budget <= int64(geminiBudgetMedium):
+			key = "medium"
+		case *budget > int64(geminiBudgetHigh):
+			key = "xhigh"
+		default:
+			key = "high"
+		}
+	}
+	image31 := strings.HasPrefix(name, "gemini-3.1-flash-image") ||
+		strings.HasPrefix(name, "gemini-3.1-flash-lite-image")
+	switch key {
+	case "low", "medium", "high":
+		if image31 {
+			if key == "low" {
+				return "MINIMAL"
+			}
+			return "HIGH"
+		}
+		// Gemini 3 Pro (not 3.1 Pro) offers only LOW/HIGH.
+		if strings.HasPrefix(name, "gemini-3-pro") && key == "medium" {
+			return "HIGH"
+		}
+		return strings.ToUpper(key)
+	case "xhigh", "max":
+		if geminiFourFamily(modelName) == "hydrogen" {
+			return "XHIGH"
+		}
+		return "HIGH"
+	case "minimal", "none":
+		// Gemini 4, 3.7/3.8 Flash and 3.x Pro reject MINIMAL.
+		if geminiFourFamily(modelName) != "" ||
+			strings.HasPrefix(name, "gemini-3.7") ||
+			strings.HasPrefix(name, "gemini-3.8") ||
+			strings.HasPrefix(name, "gemini-3-pro") ||
+			strings.HasPrefix(name, "gemini-3.1-pro") {
+			return "LOW"
+		}
+		return "MINIMAL"
+	}
+	return ""
+}
+
 func audioTypeToMimeType(format string) string {
 	switch format {
 	case "wav":
@@ -313,9 +409,18 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 			}
 			// Handle text content
 			if msg.Content.Content != nil && *msg.Content.Content != "" {
-				content.Parts = append(content.Parts, &model.GeminiPart{
+				textPart := &model.GeminiPart{
 					Text: *msg.Content.Content,
-				})
+				}
+				// Gemini 4 requires round-tripped signatures on earlier final
+				// text turns as well as functionCall turns. Never re-emit a
+				// foreign provider's signature into Gemini.
+				if geminiFourFamily(request.Model) != "" && len(msg.ToolCalls) == 0 {
+					if raw, ok := model.GeminiThoughtSignature(msg.ReasoningSignature); ok {
+						textPart.ThoughtSignature = raw
+					}
+				}
+				content.Parts = append(content.Parts, textPart)
 			}
 			// Handle multimodal content (e.g. images from prior image-generation
 			// turns) so multi-turn drawing history is not silently dropped.
@@ -324,18 +429,31 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 			}
 			// Handle tool calls
 			if len(msg.ToolCalls) > 0 {
-				for _, toolCall := range msg.ToolCalls {
+				signature := thoughtSignatureForMessage(&msg)
+				if geminiFourFamily(request.Model) != "" && len(msg.ToolCalls) > 1 {
+					// Legacy fallback used a sentinel on *each* parallel
+					// functionCall. Gemini 4 requires the real signature on
+					// the first call only; sibling calls must have none.
+					if raw, ok := model.GeminiThoughtSignature(msg.ReasoningSignature); ok {
+						signature = raw
+					}
+				}
+				for index, toolCall := range msg.ToolCalls {
 					if toolCall.ID != "" && toolCall.Function.Name != "" {
 						toolCallNamesByID[toolCall.ID] = toolCall.Function.Name
 					}
 					var args map[string]interface{}
 					_ = json.Unmarshal([]byte(toolCall.Function.Arguments), &args)
+					callSignature := signature
+					if index > 0 && geminiFourFamily(request.Model) != "" {
+						callSignature = ""
+					}
 					content.Parts = append(content.Parts, &model.GeminiPart{
 						FunctionCall: &model.GeminiFunctionCall{
 							Name: toolCall.Function.Name,
 							Args: args,
 						},
-						ThoughtSignature: thoughtSignatureForMessage(&msg),
+						ThoughtSignature: callSignature,
 					})
 				}
 			}
@@ -364,20 +482,24 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 		config.MaxOutputTokens = int(*request.MaxTokens)
 		hasConfig = true
 	}
-	if request.Temperature != nil {
-		config.Temperature = request.Temperature
-		hasConfig = true
-	}
-	if request.TopP != nil {
-		config.TopP = request.TopP
-		hasConfig = true
-	}
-	// TopK is stored in metadata if present
-	if topKStr, ok := request.TransformerMetadata["gemini_top_k"]; ok {
-		var topK int
-		fmt.Sscanf(topKStr, "%d", &topK)
-		config.TopK = &topK
-		hasConfig = true
+	// Gemini 4 ignores temperature/topP/topK. Do not forward legacy knobs
+	// that the provider's migration guide explicitly asks callers to remove.
+	if geminiFourFamily(request.Model) == "" {
+		if request.Temperature != nil {
+			config.Temperature = request.Temperature
+			hasConfig = true
+		}
+		if request.TopP != nil {
+			config.TopP = request.TopP
+			hasConfig = true
+		}
+		// TopK is stored in metadata if present.
+		if topKStr, ok := request.TransformerMetadata["gemini_top_k"]; ok {
+			var topK int
+			fmt.Sscanf(topKStr, "%d", &topK)
+			config.TopK = &topK
+			hasConfig = true
+		}
 	}
 	if request.Stop != nil && request.Stop.MultipleStop != nil {
 		config.StopSequences = request.Stop.MultipleStop
@@ -390,7 +512,18 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 	// Prefer an explicit ReasoningBudget (e.g. round-tripped from a Gemini
 	// thinkingConfig.thinkingBudget on the inbound side) over the coarse
 	// ReasoningEffort mapping so the original budget is preserved.
-	if request.ReasoningBudget != nil {
+	if geminiThreeOrFour(request.Model) {
+		// Gemini 3: passing both level and budget returns 400; the legacy
+		// budget may also intermittently fail. Gemini 4: any budget is 400.
+		// Keep numeric budgets only for legacy Gemini 2.x/other adapters.
+		if level := modernGeminiThinkingLevel(request.ReasoningEffort, request.ReasoningBudget, request.Model); level != "" {
+			config.ThinkingConfig = &model.GeminiThinkingConfig{
+				ThinkingLevel:   level,
+				IncludeThoughts: includeThoughtsFromRequest(request),
+			}
+			hasConfig = true
+		}
+	} else if request.ReasoningBudget != nil {
 		budget := int32(*request.ReasoningBudget)
 		config.ThinkingConfig = &model.GeminiThinkingConfig{
 			ThinkingBudget:  &budget,
@@ -409,6 +542,18 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 				ThinkingLevel:   geminiThinkingLevel(request.ReasoningEffort),
 			}
 			hasConfig = true
+		}
+	}
+
+	// Gemini 2.5 supports thinkingBudget, not thinkingLevel. The legacy path
+	// previously serialized both when effort was set, which is invalid.
+	if config.ThinkingConfig != nil {
+		name := strings.ToLower(strings.TrimSpace(request.Model))
+		if index := strings.LastIndexByte(name, '/'); index >= 0 {
+			name = name[index+1:]
+		}
+		if strings.HasPrefix(name, "gemini-2.5-") {
+			config.ThinkingConfig.ThinkingLevel = ""
 		}
 	}
 
@@ -814,6 +959,10 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 			var textParts []string
 			var contentParts []model.MessageContentPart
 			var toolCalls []model.ToolCall
+			// Gemini signs the specific part that may be replayed on the next
+			// turn. Keep the first genuine upstream signature in our tagged slot
+			// rather than silently discarding it after a successful response.
+			var replaySignature string
 			// P0-1: a single Gemini candidate can carry multiple thought:true parts
 			// (thinking-chain segments). The prior `reasoningContent == nil` guard
 			// kept only the first segment and dropped the rest, leaking as a
@@ -830,6 +979,9 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 			var thoughtImages []model.GeminiBlob
 
 			for _, part := range candidate.Content.Parts {
+				if replaySignature == "" && part.ThoughtSignature != "" {
+					replaySignature = model.TagGeminiThoughtSignature(part.ThoughtSignature)
+				}
 				if part.Thought {
 					// Handle thinking/reasoning content: append every thought part;
 					// do NOT gate on a nil pointer (that drops all but the first).
@@ -904,6 +1056,9 @@ func convertGeminiToLLMResponse(geminiResp *model.GeminiGenerateContentResponse,
 			// Set reasoning content
 			if reasoningContent != nil {
 				msg.ReasoningContent = reasoningContent
+			}
+			if replaySignature != "" {
+				msg.ReasoningSignature = &replaySignature
 			}
 
 			// Set tool calls

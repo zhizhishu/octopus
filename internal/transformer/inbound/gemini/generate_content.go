@@ -383,6 +383,13 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 		if part == nil {
 			continue
 		}
+		// Native Gemini multi-turn requests may carry the signature on an
+		// ordinary text part, not just on a functionCall. Keep the first
+		// provider-tagged signature, especially for parallel function calls.
+		if role == "assistant" && part.ThoughtSignature != "" && msg.ReasoningSignature == nil {
+			sig := model.TagGeminiThoughtSignature(part.ThoughtSignature)
+			msg.ReasoningSignature = &sig
+		}
 		if part.Text != "" {
 			text := part.Text
 			// Thought parts carry model reasoning and must not be folded into
@@ -432,7 +439,7 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 			})
 			// Preserve functionCall thoughtSignature on the message so multi-turn
 			// function-calling history can re-emit it on the outbound path.
-			if part.ThoughtSignature != "" {
+			if part.ThoughtSignature != "" && msg.ReasoningSignature == nil {
 				// Tag as Gemini-sourced so a cross-protocol replay (routed to a non-Gemini
 				// upstream) never emits this opaque blob as that provider's signature.
 				sig := model.TagGeminiThoughtSignature(part.ThoughtSignature)
@@ -713,6 +720,18 @@ func convertMessageToGeminiContent(msg *model.Message) *model.GeminiContent {
 			},
 		})
 	}
+	// Restore exactly one genuine Gemini signature on the first replayable
+	// part. Native clients must see it to build the following model turn.
+	if content.Role == "model" {
+		if signature, ok := model.GeminiThoughtSignature(msg.ReasoningSignature); ok {
+			for _, part := range content.Parts {
+				if part.Text != "" && !part.Thought || part.FunctionCall != nil {
+					part.ThoughtSignature = signature
+					break
+				}
+			}
+		}
+	}
 	return content
 }
 
@@ -771,6 +790,10 @@ func joinGeminiText(parts []*model.GeminiPart) string {
 func mergeDeltaIntoMessage(dst *model.Message, delta *model.Message, choiceIndex int, contentBuf, reasoningBuf map[int]*strings.Builder, toolArgsBuf map[int]map[int]*strings.Builder) {
 	if delta.Role != "" {
 		dst.Role = delta.Role
+	}
+	if delta.ReasoningSignature != nil {
+		sig := *delta.ReasoningSignature
+		dst.ReasoningSignature = &sig
 	}
 	if delta.Content.Content != nil {
 		streamTextBuffer(contentBuf, choiceIndex).WriteString(*delta.Content.Content)
