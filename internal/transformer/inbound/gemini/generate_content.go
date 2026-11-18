@@ -455,6 +455,17 @@ func convertGeminiContent(content *model.GeminiContent, contentIndex int, callID
 			toolCallID := part.FunctionResponse.Name
 			if part.FunctionResponse.ID != "" {
 				toolCallID = part.FunctionResponse.ID
+				// A caller can mix explicit and legacy ID-less results for
+				// parallel calls of the same function. Consume the explicit
+				// match so the next ID-less result never reuses that call ID.
+				name := part.FunctionResponse.Name
+				ids := callIDsByName[name]
+				for i, id := range ids {
+					if id == toolCallID {
+						callIDsByName[name] = append(ids[:i], ids[i+1:]...)
+						break
+					}
+				}
 			} else if ids := callIDsByName[part.FunctionResponse.Name]; len(ids) > 0 {
 				toolCallID = ids[0]
 				callIDsByName[part.FunctionResponse.Name] = ids[1:]
