@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/relay/bodycache"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/utils/imageprobe"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
@@ -52,6 +53,8 @@ func geminiImagesAttempt(
 	endpoint string,
 	c *gin.Context,
 	isMultipart bool,
+	bc *bodycache.BodyCache,
+	boundary string,
 	jsonPayload map[string]any,
 	stream bool,
 	channel *dbmodel.Channel,
@@ -59,19 +62,27 @@ func geminiImagesAttempt(
 	metrics *imagesRelayMetrics,
 	actualModel string,
 ) (statusCode int, written bool, usage *imagesUsage, upstreamCT string, err error) {
-	if endpoint != "/images/generations" {
-		return 0, false, nil, "", fmt.Errorf("gemini image bridge only supports /v1/images/generations, got %s", endpoint)
+	if endpoint != "/images/generations" && endpoint != "/images/edits" {
+		return 0, false, nil, "", fmt.Errorf("unsupported Gemini images endpoint %s", endpoint)
 	}
-	if isMultipart {
+	if isMultipart && endpoint == "/images/generations" {
 		return 0, false, nil, "", errors.New("gemini image bridge currently supports JSON image requests only")
 	}
-	if jsonPayload == nil {
+	if jsonPayload == nil && !isMultipart {
 		return 0, false, nil, "", errors.New("nil json payload")
 	}
 	if stream {
 		return 0, false, nil, "", errors.New("gemini image bridge does not support streaming Images responses")
 	}
 
+	var imageParts []*transformerModel.GeminiPart
+	if endpoint == "/images/edits" {
+		var parseErr error
+		jsonPayload, imageParts, parseErr = geminiImageEditInputs(isMultipart, bc, boundary, jsonPayload)
+		if parseErr != nil {
+			return 0, false, nil, "", parseErr
+		}
+	}
 	prompt := strings.TrimSpace(stringFromPayload(jsonPayload, "prompt"))
 	if prompt == "" {
 		return 0, false, nil, "", errors.New("image generation prompt is required")
@@ -85,7 +96,7 @@ func geminiImagesAttempt(
 		return 0, false, nil, "", errors.New("image generation model is required")
 	}
 
-	body, targetURL, err := geminiImageRequestBodyAndURL(channel.GetBaseUrl(), modelName, channelKey, jsonPayload, prompt)
+	body, targetURL, err := geminiImageRequestBodyAndURLWithInput(channel.GetBaseUrl(), modelName, channelKey, jsonPayload, prompt, imageParts)
 	if err != nil {
 		return 0, false, nil, "", err
 	}
@@ -141,7 +152,14 @@ func geminiImagesAttempt(
 }
 
 func geminiImageRequestBodyAndURL(baseURL, modelName, key string, payload map[string]any, prompt string) ([]byte, string, error) {
+	return geminiImageRequestBodyAndURLWithInput(baseURL, modelName, key, payload, prompt, nil)
+}
+
+func geminiImageRequestBodyAndURLWithInput(baseURL, modelName, key string, payload map[string]any, prompt string, imageParts []*transformerModel.GeminiPart) ([]byte, string, error) {
 	if transformerModel.IsImagenModel(modelName) {
+		if len(imageParts) != 0 {
+			return nil, "", errors.New("Imagen predict cannot accept Gemini image edit parts")
+		}
 		reqBody := geminiImagePredictRequest{
 			Instances: []geminiImageInstance{{Prompt: prompt}},
 			Parameters: geminiImageParameters{
@@ -159,12 +177,13 @@ func geminiImageRequestBodyAndURL(baseURL, modelName, key string, payload map[st
 		return body, targetURL, err
 	}
 
+	parts := make([]*transformerModel.GeminiPart, 0, len(imageParts)+1)
+	parts = append(parts, imageParts...)
+	parts = append(parts, &transformerModel.GeminiPart{Text: prompt})
 	reqBody := transformerModel.GeminiGenerateContentRequest{
 		Contents: []*transformerModel.GeminiContent{{
-			Role: "user",
-			Parts: []*transformerModel.GeminiPart{{
-				Text: prompt,
-			}},
+			Role:  "user",
+			Parts: parts,
 		}},
 		GenerationConfig: &transformerModel.GeminiGenerationConfig{
 			ResponseModalities: []string{"TEXT", "IMAGE"},

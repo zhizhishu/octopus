@@ -194,7 +194,7 @@ func forwardImagesChannelTest(
 			fwdErr  error
 		)
 		if channel.Type == outbound.OutboundTypeGemini {
-			statusCode, written, _, _, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, actualModel)
+			statusCode, written, _, _, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, bc, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, actualModel)
 		} else {
 			// firstTokenTimeOutSec 传 0：渠道测试不设首字节超时，整体由调用方 context 兜底。
 			statusCode, written, _, _, fwdErr = imagesAttempt(ctx, endpoint, c, bc, isMultipart, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, 0, metrics, actualModel)

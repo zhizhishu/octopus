@@ -247,7 +247,7 @@ runIterator:
 				finishRuntimeAttempt := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finishRuntimeAttempt()
 				if channel.Type == outbound.OutboundTypeGemini {
-					statusCode, written, usage, upstreamCT, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, item.ModelName)
+					statusCode, written, usage, upstreamCT, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, bc, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, item.ModelName)
 				} else {
 					statusCode, written, usage, upstreamCT, fwdErr = imagesAttempt(ctx, endpoint, c, bc, isMultipart, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, group.FirstTokenTimeOut, metrics, item.ModelName)
 				}
