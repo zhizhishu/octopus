@@ -186,6 +186,11 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 	if err != nil {
 		return nil, err
 	}
+	// Image settings are help metadata for the image-generation bridge only.
+	// Keep the original Responses input/tools shape for all other requests.
+	if internalReq.IsImageGenerationRequest() {
+		captureGeminiImageConfig(internalReq, body)
+	}
 	// Record the client's top-level key sequence so a same-protocol relay hands the
 	// provider the same member order the client used. A genuine Codex CLI sends
 	// `model, stream, input, ...`; the outbound struct's field order is not that.

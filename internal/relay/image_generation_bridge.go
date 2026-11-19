@@ -76,12 +76,18 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	if err != nil {
 		return 0, err
 	}
+	imageParts, err := ra.imageEditSources(ctx)
+	if err != nil {
+		return 0, err
+	}
 	actualModel := strings.TrimSpace(ra.internalRequest.Model)
 	if actualModel == "" {
 		actualModel = ra.requestModel
 	}
 	if isGrokImagesModel(actualModel) {
-		payload = normalizeGrokImagesPayload(payload)
+		if len(imageParts) == 0 {
+			payload = normalizeGrokImagesPayload(payload)
+		}
 		outputFormat = "png"
 	}
 	payload["model"] = actualModel
@@ -94,19 +100,32 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	}
 
 	if ra.channel.Type == outbound.OutboundTypeGemini {
-		return ra.forwardGeminiImageGenerationViaImages(ctx, payload, outputFormat, actualModel, wantsStream, spanPath)
+		if len(imageParts) > 0 && payload["input_image_mask"] != nil {
+			return 0, errors.New("Gemini image editing does not support input_image_mask")
+		}
+		appendGeminiImageConfigFromMetadata(payload, ra.internalRequest)
+		return ra.forwardGeminiImageGenerationViaImages(ctx, payload, outputFormat, actualModel, imageParts, wantsStream, spanPath)
 	}
 
-	body, err := json.Marshal(payload)
+	isEdit := len(imageParts) > 0
+	endpoint := "/images/generations"
+	contentType := "application/json"
+	var body []byte
+	if isEdit {
+		endpoint = "/images/edits"
+		body, contentType, err = openAIImageEditMultipart(payload, imageParts)
+	} else {
+		body, err = json.Marshal(payload)
+	}
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal image generation payload: %w", err)
+		return 0, fmt.Errorf("failed to prepare image request: %w", err)
 	}
 
 	var targetURL string
 	if ra.channel.Type == outbound.OutboundTypeCustomOpenAIChat {
-		targetURL, err = openAIUpstreamURL(ra.channel, ra.channel.GetOpenAIImagesPath("/images/generations"))
+		targetURL, err = openAIUpstreamURL(ra.channel, ra.channel.GetOpenAIImagesPath(endpoint))
 	} else {
-		targetURL, err = xurl.JoinOpenAIPath(ra.outboundBaseURL(), "/v1/images/generations")
+		targetURL, err = xurl.JoinOpenAIPath(ra.outboundBaseURL(), "/v1"+endpoint)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to build image generation upstream url: %w", err)
@@ -115,7 +134,7 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	if err != nil {
 		return 0, fmt.Errorf("failed to create image generation request: %w", err)
 	}
-	copyHeadersToUpstream(req, ra.c, ra.channel, ra.usedKey.ChannelKey, "application/json", false)
+	copyHeadersToUpstream(req, ra.c, ra.channel, ra.usedKey.ChannelKey, contentType, false)
 	req.Header.Set("Accept", "application/json")
 	// 真实出站请求体快照。主路径在 relay.go 里、ApplyParamOverride 之后拍；
 	// 这条 chat→images 桥在那之前就 return 了，真正发出去的是这里 marshal 的 body。
@@ -123,12 +142,17 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	// 按发出去的字节原样保存，凭据不打码。
 	// Gemini 图片桥在上面已经 return，它在 forwardGeminiImageGenerationViaImages 里自己拍。
 	if upstreamRequestBodyLogEnabled() {
-		snapshot, snapErr := snapshotOutboundRequestBody(req)
-		if snapErr != nil {
-			return 0, snapErr
-		}
-		if len(snapshot) > 0 {
-			ra.metrics.SetUpstreamRequestBody(snapshot)
+		if isEdit {
+			// Never store raw multipart image bytes in a text body snapshot.
+			ra.metrics.SetUpstreamRequestBody([]byte(fmt.Sprintf("[images/edits multipart: %d reference images]", len(imageParts))))
+		} else {
+			snapshot, snapErr := snapshotOutboundRequestBody(req)
+			if snapErr != nil {
+				return 0, snapErr
+			}
+			if len(snapshot) > 0 {
+				ra.metrics.SetUpstreamRequestBody(snapshot)
+			}
 		}
 	}
 	if spanPath != nil {
@@ -178,7 +202,7 @@ func (ra *relayAttempt) forwardImageGenerationViaImages(ctx context.Context, spa
 	return respUp.StatusCode, nil
 }
 
-func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Context, payload map[string]any, outputFormat, actualModel string, wantsStream bool, spanPath func(string)) (int, error) {
+func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Context, payload map[string]any, outputFormat, actualModel string, imageParts []*transformerModel.GeminiPart, wantsStream bool, spanPath func(string)) (int, error) {
 	prompt := strings.TrimSpace(stringFromPayload(payload, "prompt"))
 	if prompt == "" {
 		return 0, errors.New("image generation prompt is required")
@@ -187,7 +211,7 @@ func (ra *relayAttempt) forwardGeminiImageGenerationViaImages(ctx context.Contex
 		return 0, errors.New("image generation model is required")
 	}
 
-	body, targetURL, err := geminiImageRequestBodyAndURL(ra.outboundBaseURL(), actualModel, ra.usedKey.ChannelKey, payload, prompt)
+	body, targetURL, err := geminiImageRequestBodyAndURLWithInput(ra.outboundBaseURL(), actualModel, ra.usedKey.ChannelKey, payload, prompt, imageParts)
 	if err != nil {
 		return 0, err
 	}
