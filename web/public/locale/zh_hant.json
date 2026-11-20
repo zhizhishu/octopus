@@ -557,7 +557,13 @@
         "label": "最大冷卻時間（秒）",
         "placeholder": "請輸入最大冷卻時間"
       },
-      "hint": "當渠道連續失敗達到閾值後觸發熔斷，冷卻時間按指數退避增長，上限為最大冷卻時間"
+      "hint": "當渠道連續失敗達到閾值後觸發熔斷，冷卻時間按指數退避增長，上限為最大冷卻時間",
+      "rules": {
+        "label": "錯誤規則（立即冷卻）",
+        "hint": "依狀態碼和/或錯誤文字關鍵字命中後，立即冷卻對應範圍：model=該 key 上的該模型，key=該 key 的全部模型，channel=整個渠道。依序取第一條命中。留空=不啟用。",
+        "save": "儲存規則",
+        "invalid": "規則必須是 JSON 陣列"
+      }
     },
     "fingerprintProfile": {
       "title": "指紋 Profile 管理",
@@ -1559,6 +1565,17 @@
       "rowError": "第 {row} 行 {name}：{error}",
       "unnamed": "（未命名）",
       "moreFailed": "還有 {count} 行失敗"
+    },
+    "circuits": {
+      "title": "熔斷明細（{count}）",
+      "remaining": "熔斷 {seconds}s",
+      "halfOpen": "半開試探中",
+      "resetOne": "解除此項",
+      "resetModel": "解除該模型",
+      "resetDone": "已解除",
+      "held": "規則冷卻 {seconds}s",
+      "anyModel": "全部模型",
+      "anyKey": "全部 key"
     }
   },
   "redact": {
@@ -2459,8 +2476,7 @@
         "failed": "操作失敗"
       }
     }
-  }
-,
+  },
   "userLimits": {
     "title": "週期限制",
     "notConfigured": "此使用者尚未設定週期限制。請求不受這些上限檢查，仍按原有餘額或日卡路徑計費。",

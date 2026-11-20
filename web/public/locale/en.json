@@ -557,7 +557,13 @@
         "label": "Max Cooldown (seconds)",
         "placeholder": "Enter max cooldown in seconds"
       },
-      "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown"
+      "hint": "When a channel fails consecutively up to the threshold, circuit breaker trips. Cooldown grows exponentially up to the max cooldown",
+      "rules": {
+        "label": "Error rules (immediate cooldown)",
+        "hint": "When a status code and/or a keyword in the error text matches, cool down the scope at once: model = this model on this key, key = every model on the key, channel = the whole channel. First match wins. Empty = off.",
+        "save": "Save rules",
+        "invalid": "Rules must be a JSON array"
+      }
     },
     "fingerprintProfile": {
       "title": "Fingerprint Profiles",
@@ -1559,6 +1565,17 @@
       "rowError": "Row {row} {name}: {error}",
       "unnamed": "(unnamed)",
       "moreFailed": "{count} more rows failed"
+    },
+    "circuits": {
+      "title": "Circuit breakers ({count})",
+      "remaining": "Open {seconds}s",
+      "halfOpen": "Half-open probe",
+      "resetOne": "Reset this",
+      "resetModel": "Reset model",
+      "resetDone": "Reset done",
+      "held": "Held {seconds}s",
+      "anyModel": "All models",
+      "anyKey": "All keys"
     }
   },
   "redact": {
@@ -2459,8 +2476,7 @@
         "failed": "Something went wrong"
       }
     }
-  }
-,
+  },
   "userLimits": {
     "title": "Period limits",
     "notConfigured": "No period limits are set for this user. Requests are not checked against these limits and use the existing balance or daily card path.",

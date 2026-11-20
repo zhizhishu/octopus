@@ -640,15 +640,41 @@ export function useImportChannelCSV() {
     });
 }
 
+/** One open or half-open breaker entry of a channel (key × model, optionally endpoint/capability). */
+export interface ChannelCircuitEntry {
+    key_id: number;
+    model: string;
+    endpoint?: string;
+    capability?: string;
+    state: 'open' | 'half_open' | 'held';
+    remaining_seconds: number;
+    consecutive_failures: number;
+    trip_count: number;
+    reason?: string;
+}
+
+export function useChannelCircuits(channelId: number, enabled = true) {
+    return useQuery({
+        queryKey: ['channels', 'circuits', channelId],
+        queryFn: async () => {
+            return apiClient.get<ChannelCircuitEntry[]>(`/api/v1/channel/circuits/${channelId}`);
+        },
+        enabled: enabled && channelId > 0,
+        refetchInterval: 10000,
+    });
+}
+
+/** Leave key_id and model out to reset the whole channel; set either to narrow the reset. */
 export function useResetChannelCircuit() {
     const queryClient = useQueryClient();
 
     return useMutation({
-        mutationFn: async (data: { id: number }) => {
-            return apiClient.post<null>('/api/v1/channel/reset-circuit', data);
+        mutationFn: async (data: { id: number; key_id?: number; model?: string }) => {
+            return apiClient.post<{ cleared: number } | null>('/api/v1/channel/reset-circuit', data);
         },
-        onSuccess: () => {
+        onSuccess: (_data, variables) => {
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['channels', 'circuits', variables.id] });
         },
     });
 }

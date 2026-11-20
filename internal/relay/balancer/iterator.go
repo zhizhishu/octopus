@@ -376,6 +376,11 @@ func (it *Iterator) SkipCircuitBreakScoped(channelID, channelKeyID int, channelN
 		return false
 	}
 	msg := "circuit breaker tripped"
+	retryAfter := remaining
+	if retryAfter <= 0 {
+		// Half-open: one probe is already in flight; its verdict lands within a request.
+		retryAfter = time.Second
+	}
 	if remaining > 0 {
 		msg = fmt.Sprintf("circuit breaker tripped, remaining cooldown: %ds", int(remaining.Seconds()))
 	}
@@ -391,6 +396,7 @@ func (it *Iterator) SkipCircuitBreakScoped(channelID, channelKeyID int, channelN
 		Status:       model.AttemptCircuitBreak,
 		Sticky:       it.IsSticky(),
 		Msg:          xredact.Secrets(msg),
+		RetryAfter:   retryAfter,
 	})
 	return true
 }

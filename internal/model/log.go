@@ -1,6 +1,10 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type AttemptStatus string
 
@@ -86,6 +90,9 @@ type ChannelAttempt struct {
 	// observed (the normal case). Observation only: it changes no status, message,
 	// severity, error, billing figure or downstream byte.
 	OutputIncompleteReason string `json:"output_incomplete_reason,omitempty"`
+	// RetryAfter is the remaining breaker cooldown of a circuit-break skip, kept in memory
+	// only (never logged) so an all-candidates-held 503 can tell the caller when to retry.
+	RetryAfter time.Duration `json:"-" gorm:"-"`
 }
 
 // RelayLogOutputIncomplete derives the neutral top-level boolean from one row's attempts.

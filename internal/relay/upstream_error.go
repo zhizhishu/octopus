@@ -154,6 +154,9 @@ type localRelayError struct {
 	code     string
 	strategy string
 	message  string
+	// retryAfter, when > 0, is the earliest moment a held candidate becomes routable
+	// again; it becomes the response's Retry-After.
+	retryAfter time.Duration
 }
 
 func (e *localRelayError) Error() string {
@@ -325,11 +328,31 @@ func routeSelectionErrorFromAttempts(attempts []dbmodel.ChannelAttempt) error {
 		channel = fmt.Sprintf("#%d", last.ChannelID)
 	}
 	return &localRelayError{
-		status:   http.StatusServiceUnavailable,
-		code:     code,
-		strategy: fmt.Sprintf("local_route_selection;reason=%s;upstream_forwarded=false", reason),
-		message:  fmt.Sprintf("no available channel: %s (%s)", channel, detail),
+		status:     http.StatusServiceUnavailable,
+		code:       code,
+		strategy:   fmt.Sprintf("local_route_selection;reason=%s;upstream_forwarded=false", reason),
+		message:    fmt.Sprintf("no available channel: %s (%s)", channel, detail),
+		retryAfter: earliestCircuitRetryAfter(attempts),
 	}
+}
+
+// earliestCircuitRetryAfter returns the shortest remaining breaker cooldown among the
+// attempts, but only when every routed attempt was a breaker skip: if any candidate was
+// dropped for another reason, waiting out a cooldown is not known to help.
+func earliestCircuitRetryAfter(attempts []dbmodel.ChannelAttempt) time.Duration {
+	var earliest time.Duration
+	for _, attempt := range attempts {
+		if attempt.ChannelID == 0 && attempt.ChannelName == "" {
+			continue
+		}
+		if attempt.Status != dbmodel.AttemptCircuitBreak || attempt.RetryAfter <= 0 {
+			return 0
+		}
+		if earliest == 0 || attempt.RetryAfter < earliest {
+			earliest = attempt.RetryAfter
+		}
+	}
+	return earliest
 }
 
 func upstreamErrorUserMessage(err error) string {

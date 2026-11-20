@@ -557,7 +557,13 @@
         "label": "最大冷却时间（秒）",
         "placeholder": "请输入最大冷却时间"
       },
-      "hint": "当渠道连续失败达到阈值后触发熔断，冷却时间按指数退避增长，上限为最大冷却时间"
+      "hint": "当渠道连续失败达到阈值后触发熔断，冷却时间按指数退避增长，上限为最大冷却时间",
+      "rules": {
+        "label": "错误规则（立即冷却）",
+        "hint": "按状态码和/或错误文本关键字命中后，立即冷却对应范围：model=该 key 上的该模型，key=该 key 的全部模型，channel=整个渠道。按顺序取第一条命中。留空=不启用。",
+        "save": "保存规则",
+        "invalid": "规则必须是 JSON 数组"
+      }
     },
     "fingerprintProfile": {
       "title": "指纹 Profile 管理",
@@ -1559,6 +1565,17 @@
       "rowError": "第 {row} 行 {name}：{error}",
       "unnamed": "（未命名）",
       "moreFailed": "还有 {count} 行失败"
+    },
+    "circuits": {
+      "title": "熔断明细（{count}）",
+      "remaining": "熔断 {seconds}s",
+      "halfOpen": "半开试探中",
+      "resetOne": "解除此项",
+      "resetModel": "解除该模型",
+      "resetDone": "已解除",
+      "held": "规则冷却 {seconds}s",
+      "anyModel": "全部模型",
+      "anyKey": "全部 key"
     }
   },
   "redact": {
@@ -2459,8 +2476,7 @@
         "failed": "操作失败"
       }
     }
-  }
-,
+  },
   "userLimits": {
     "title": "周期限制",
     "notConfigured": "此用户尚未设置周期限制。请求不受这些上限检查，仍按原有余额或日卡路径计费。",

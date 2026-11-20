@@ -318,6 +318,7 @@ runIterator:
 			// 熔断器：记录失败
 			if breakerCounted {
 				balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
+				applyCircuitErrorRules(channel.ID, usedKey.ID, item.ModelName, recordStatusCode, fwdErr)
 			}
 
 			if isPassthroughIdentityError(fwdErr) {

@@ -306,6 +306,7 @@ runIterator:
 			op.StatsChannelUpdate(channel.ID, channelStats)
 			if breakerCounted {
 				balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
+				applyCircuitErrorRules(channel.ID, usedKey.ID, item.ModelName, recordStatusCode, fwdErr)
 			}
 
 			// Gate on `written` (this attempt actually streamed real content), NOT

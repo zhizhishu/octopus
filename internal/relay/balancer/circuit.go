@@ -173,6 +173,9 @@ func IsTripped(channelID, keyID int, modelName string) (tripped bool, remaining 
 }
 
 func IsTrippedScoped(channelID, keyID int, modelName, endpoint, capability string) (tripped bool, remaining time.Duration) {
+	if held, _ := holdRemaining(channelID, keyID, modelName); held > 0 {
+		return true, held
+	}
 	key := circuitScopedKey(channelID, keyID, modelName, endpoint, capability)
 	v, ok := globalBreaker.Load(key)
 	if !ok {

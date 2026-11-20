@@ -52,6 +52,10 @@ func init() {
 				Handle(resetChannelCircuit),
 		).
 		AddRoute(
+			router.NewRoute("/circuits/:id", http.MethodGet).
+				Handle(listChannelCircuits),
+		).
+		AddRoute(
 			router.NewRoute("/delete/:id", http.MethodDelete).
 				Handle(deleteChannel),
 		).
@@ -283,20 +287,33 @@ func enableChannel(c *gin.Context) {
 	resp.Success(c, nil)
 }
 
+// resetChannelCircuit clears the channel's breaker. key_id and model narrow it to one
+// key and/or one model; leaving both out resets the whole channel as before.
 func resetChannelCircuit(c *gin.Context) {
 	var request struct {
-		ID int `json:"id"`
+		ID    int    `json:"id"`
+		KeyID int    `json:"key_id"`
+		Model string `json:"model"`
 	}
 	if err := c.ShouldBindJSON(&request); err != nil {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
 		return
 	}
-	if request.ID <= 0 {
+	if request.ID <= 0 || request.KeyID < 0 {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
 		return
 	}
-	balancer.ResetChannel(request.ID)
-	resp.Success(c, nil)
+	cleared := balancer.ResetScoped(request.ID, request.KeyID, request.Model)
+	resp.Success(c, gin.H{"cleared": cleared})
+}
+
+func listChannelCircuits(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	resp.Success(c, balancer.ListChannelCircuits(id))
 }
 
 func deleteChannel(c *gin.Context) {

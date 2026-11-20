@@ -809,6 +809,7 @@ runIterator:
 			if breakerCounted {
 				channelStats.RequestFailed = 1
 				balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
+				applyCircuitErrorRules(channel.ID, usedKey.ID, item.ModelName, recordStatusCode, fwdErr)
 			}
 			op.StatsChannelUpdate(channel.ID, channelStats)
 

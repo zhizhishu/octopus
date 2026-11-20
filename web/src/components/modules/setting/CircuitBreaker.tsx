@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { Zap, Hash, Timer, TimerOff, HelpCircle } from 'lucide-react';
+import { Zap, Hash, Timer, TimerOff, HelpCircle, ListFilter } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 import { toast } from '@/components/common/Toast';
@@ -20,12 +21,19 @@ export function SettingCircuitBreaker() {
     const initialThreshold = useRef('');
     const initialCooldown = useRef('');
     const initialMaxCooldown = useRef('');
+    const [rules, setRules] = useState('');
+    const initialRules = useRef('');
 
     useEffect(() => {
         if (settings) {
             const th = settings.find(s => s.key === SettingKey.CircuitBreakerThreshold);
             const cd = settings.find(s => s.key === SettingKey.CircuitBreakerCooldown);
             const mcd = settings.find(s => s.key === SettingKey.CircuitBreakerMaxCooldown);
+            const rl = settings.find(s => s.key === SettingKey.CircuitBreakerErrorRules);
+            if (rl && rl.value !== initialRules.current) {
+                queueMicrotask(() => setRules(prettyRules(rl.value)));
+                initialRules.current = rl.value;
+            }
             if (th) {
                 if (th.value !== initialThreshold.current) {
                     queueMicrotask(() => setThreshold(th.value));
@@ -74,6 +82,28 @@ export function SettingCircuitBreaker() {
                     setMaxCooldown(initialMaxCooldown.current);
                 }
             }
+        });
+    };
+
+    const handleSaveRules = () => {
+        if (setSetting.isPending) return;
+        let compact = '[]';
+        try {
+            const parsed = rules.trim() === '' ? [] : JSON.parse(rules);
+            if (!Array.isArray(parsed)) throw new Error('not an array');
+            compact = JSON.stringify(parsed);
+        } catch {
+            toast.error(t('circuitBreaker.rules.invalid'));
+            return;
+        }
+        if (compact === initialRules.current) return;
+        setSetting.mutate({ key: SettingKey.CircuitBreakerErrorRules, value: compact }, {
+            onSuccess: () => {
+                toast.success(t('saved'));
+                initialRules.current = compact;
+            },
+            // 服务端会严格校验（scope / cooldown_seconds / 条件），失败时保留输入方便修改。
+            onError: (error) => toast.error(error?.message || t('saveFailed')),
         });
     };
 
@@ -141,6 +171,42 @@ export function SettingCircuitBreaker() {
                     className="w-32 shrink-0 rounded-xl"
                 />
             </div>
+
+            {/* 错误规则：状态码/关键字 → 按模型/key/渠道立即冷却 */}
+            <div className="space-y-2">
+                <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                        <ListFilter className="h-5 w-5 text-muted-foreground" />
+                        <span className="text-sm font-medium">{t('circuitBreaker.rules.label')}</span>
+                    </div>
+                    <Button size="sm" variant="outline" className="rounded-xl" onClick={handleSaveRules} disabled={setSetting.isPending}>
+                        {t('circuitBreaker.rules.save')}
+                    </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">{t('circuitBreaker.rules.hint')}</p>
+                <textarea
+                    value={rules}
+                    onChange={(e) => setRules(e.target.value)}
+                    placeholder={RULES_PLACEHOLDER}
+                    spellCheck={false}
+                    rows={8}
+                    className="w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs"
+                />
+            </div>
         </div>
     );
+}
+
+const RULES_PLACEHOLDER = `[
+  {"name": "quota", "keywords": ["insufficient_quota"], "scope": "key", "cooldown_seconds": 1800},
+  {"name": "not-found", "status_codes": [404], "keywords": ["model_not_found"], "scope": "model", "cooldown_seconds": 600}
+]`;
+
+function prettyRules(value: string): string {
+    try {
+        const parsed = JSON.parse(value || '[]');
+        return Array.isArray(parsed) && parsed.length === 0 ? '' : JSON.stringify(parsed, null, 2);
+    } catch {
+        return value;
+    }
 }

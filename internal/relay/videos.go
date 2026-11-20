@@ -291,6 +291,7 @@ runIterator:
 			op.StatsChannelUpdate(channel.ID, channelStats)
 			if breakerCounted {
 				balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
+				applyCircuitErrorRules(channel.ID, usedKey.ID, item.ModelName, recordStatusCode, fwdErr)
 			}
 
 			// The upstream answered 2xx: it has already accepted (and will bill) the

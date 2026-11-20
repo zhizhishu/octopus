@@ -217,6 +217,7 @@ runIterator:
 					retryAfter, _ := retryAfterFromError(dialErr)
 					balancer.RecordRuntimeFailure(channel.ID, usedKey.ID, item.ModelName, recordStatusCode, span.Duration(), retryAfter)
 					balancer.RecordFailureWithStatus(channel.ID, usedKey.ID, item.ModelName, recordStatusCode)
+					applyCircuitErrorRules(channel.ID, usedKey.ID, item.ModelName, recordStatusCode, dialErr)
 				}
 				channelStats := model.StatsMetrics{WaitTime: span.Duration().Milliseconds()}
 				if breakerCounted {

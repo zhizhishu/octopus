@@ -536,3 +536,35 @@ func PrioritizeChannelKeysByHealth(keys []model.ChannelKey, channelID int, model
 	}
 	return out
 }
+
+// clearRuntimeCooldowns lifts soft runtime cooldowns for a channel, narrowed like
+// ResetScoped. The channel aggregate (keyID 0) is cleared only when no single key is
+// targeted, because it also carries the other keys' history. Latency/throughput
+// history is kept: a reset is about admission, not about forgetting measurements.
+func clearRuntimeCooldowns(channelID, keyID int, modelName string) {
+	globalRuntimeTelemetry.Range(func(key, value any) bool {
+		keyString, ok := key.(string)
+		if !ok {
+			return true
+		}
+		parsed, ok := parseCircuitKey(keyString)
+		if !ok || parsed.channelID != channelID {
+			return true
+		}
+		if keyID > 0 && parsed.keyID != keyID {
+			return true
+		}
+		if modelName != "" && parsed.model != modelName {
+			return true
+		}
+		entry, ok := value.(*runtimeEntry)
+		if !ok {
+			return true
+		}
+		entry.mu.Lock()
+		entry.cooldownUntil = time.Time{}
+		entry.consecutiveFailures = 0
+		entry.mu.Unlock()
+		return true
+	})
+}

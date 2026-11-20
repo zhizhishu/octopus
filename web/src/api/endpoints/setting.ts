@@ -72,6 +72,7 @@ export const SettingKey = {
     CircuitBreakerThreshold: 'circuit_breaker_threshold',
     CircuitBreakerCooldown: 'circuit_breaker_cooldown',
     CircuitBreakerMaxCooldown: 'circuit_breaker_max_cooldown',
+    CircuitBreakerErrorRules: 'circuit_breaker_error_rules',
     UpstreamErrorStatusPassthrough: 'upstream_error_status_passthrough',
     UpstreamErrorBodyMode: 'upstream_error_body_mode',
     UpstreamErrorCustomMessage: 'upstream_error_custom_message',

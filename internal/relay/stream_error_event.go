@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -357,6 +358,12 @@ func writeUpstreamRetryAfterHint(c *gin.Context, httpStatus int, err error) {
 		return
 	}
 	hint := upstreamRetryAfter(err)
+	if hint <= 0 {
+		var local *localRelayError
+		if errors.As(err, &local) && local != nil {
+			hint = local.retryAfter
+		}
+	}
 	if hint <= 0 {
 		return
 	}

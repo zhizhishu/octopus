@@ -5,12 +5,16 @@ import (
 	"github.com/zhizhishu/octopus/internal/conf"
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/server"
 	"github.com/zhizhishu/octopus/internal/server/handlers"
 	"github.com/zhizhishu/octopus/internal/task"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/shutdown"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 var cfgFile string
@@ -55,6 +59,15 @@ var startCmd = &cobra.Command{
 		}
 		shutdown.Register(op.SaveCache)
 
+		// 熔断/规则冷却状态落盘：启动时恢复，之后每 30s 与退出时各存一次，重启不再把
+		// 已知坏的 key/模型 立刻放回流量里。
+		checkpointStop := make(chan struct{})
+		saveCircuits := balancer.StartCheckpointLoop(circuitCheckpointPath(), 30*time.Second, checkpointStop)
+		shutdown.Register(func() error {
+			close(checkpointStop)
+			return saveCircuits()
+		})
+
 		// 日志模式（普通 = warn / 调试 = debug）：设置读出来之后立刻应用，并在后台
 		// 盯着调试模式的自动关闭时间。
 		op.LogModeApply()
@@ -80,4 +93,14 @@ var startCmd = &cobra.Command{
 func init() {
 	startCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ./data/config.json)")
 	rootCmd.AddCommand(startCmd)
+}
+
+// circuitCheckpointPath keeps the breaker checkpoint next to the SQLite database (the
+// mounted data directory), or under ./data for other database types.
+func circuitCheckpointPath() string {
+	dir := "data"
+	if strings.EqualFold(conf.AppConfig.Database.Type, "sqlite") && conf.AppConfig.Database.Path != "" {
+		dir = filepath.Dir(conf.AppConfig.Database.Path)
+	}
+	return filepath.Join(dir, "circuit_state.json")
 }

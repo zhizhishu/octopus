@@ -31,6 +31,7 @@ import { Badge } from '@/components/ui/badge';
 import { MonoSafeText, SafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
 import { ModelAuditList } from './audit/ModelAuditList';
+import { CircuitList } from './CircuitList';
 import { getSelectedChannelModels } from './channel-utils';
 
 export function CardContent({ channel, stats }: { channel: Channel; stats: StatsMetricsFormatted }) {
@@ -420,6 +421,16 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                 </section>
 
                                 <ModelAuditList channelId={channel.id} models={getSelectedChannelModels(channel)} />
+
+                                <CircuitList
+                                    channelId={channel.id}
+                                    keyLabel={(keyId) => {
+                                        const index = channel.keys.findIndex((k) => k.id === keyId);
+                                        if (index < 0) return `key #${keyId}`;
+                                        const remark = channel.keys[index].remark?.trim();
+                                        return remark ? remark : `key ${index + 1}`;
+                                    }}
+                                />
 
                                 {/* Base URLs */}
                                 <section className="space-y-3">

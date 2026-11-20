@@ -882,6 +882,7 @@ func runRaceContenders(
 			retryAfter, _ := retryAfterFromError(handleErr)
 			balancer.RecordRuntimeFailure(winner.channel.ID, winnerRA.usedKey.ID, winner.runtimeModel, recStatus, span.Duration(), retryAfter)
 			balancer.RecordFailureWithStatusScoped(winner.channel.ID, winnerRA.usedKey.ID, winner.runtimeModel, endpoint, winner.capabilityKey, recStatus)
+			applyCircuitErrorRules(winner.channel.ID, winnerRA.usedKey.ID, winner.runtimeModel, recStatus, handleErr)
 		}
 		op.StatsChannelUpdate(winner.channel.ID, dbmodel.StatsMetrics{
 			WaitTime:      span.Duration().Milliseconds(),
@@ -1135,6 +1136,7 @@ func recordLoserResults(
 			retryAfter, _ := retryAfterFromError(res.err)
 			balancer.RecordRuntimeFailure(res.channel.ID, res.key.ID, res.runtimeModel, recStatus, res.duration, retryAfter)
 			balancer.RecordFailureWithStatusScoped(res.channel.ID, res.key.ID, res.runtimeModel, endpoint, res.capabilityKey, recStatus)
+			applyCircuitErrorRules(res.channel.ID, res.key.ID, res.runtimeModel, recStatus, res.err)
 		}
 		op.StatsChannelUpdate(res.channel.ID, dbmodel.StatsMetrics{
 			WaitTime:      res.duration.Milliseconds(),
