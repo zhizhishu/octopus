@@ -94,6 +94,9 @@ export type Channel = {
     // 非聊天流量能力位（当前只有 'embeddings'）。空/未定义 = 只接聊天，
     // 与后端 model.Channel.Capabilities 对齐；后端空值会退回按渠道类型判定。
     capabilities?: string[];
+    // 主动探测（P3）：这个渠道要不要被探测。全局总开关关着时任何渠道都不探。
+    // 后端可能不给这个字段（旧响应）→ 按 false 显示；保存时显式 false 也要发出去。
+    probe_enabled?: boolean;
     proxy: boolean;
     auto_sync: boolean;
     custom_header: CustomHeader[];
@@ -152,6 +155,7 @@ export type CreateChannelRequest = {
     redact_flags?: string;
     thinking_to_content?: boolean;
     capabilities?: string[];
+    probe_enabled?: boolean;
     proxy?: boolean;
     auto_sync?: boolean;
     custom_header?: CustomHeader[];
@@ -212,6 +216,8 @@ export type UpdateChannelRequest = {
     prompt_audience?: PromptAudience | null;
     match_regex?: string | null;
     model_mapping?: Record<string, string>;
+    // 主动探测开关：显式 false 是有意义的（关掉探测），所以不能靠「缺省跳过」表达。
+    probe_enabled?: boolean;
     // keys diff
     keys_to_add?: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;
     keys_to_update?: Array<{ id: number; enabled?: boolean; channel_key?: string; remark?: string }>;
@@ -337,6 +343,7 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 circuit_tripped: item.circuit_tripped ?? false,
                 circuit_remaining_seconds: item.circuit_remaining_seconds ?? 0,
                 circuit_open_keys: item.circuit_open_keys ?? 0,
+                probe_enabled: item.probe_enabled ?? false,
             }) satisfies Channel,
             formatted: {
                 input_token: formatCount(item.stats.input_token),
@@ -436,6 +443,8 @@ export function useCopyChannel() {
                 rpm_limit: source.rpm_limit,
                 key_select_strategy: source.key_select_strategy,
                 disable_circuit_breaker: source.disable_circuit_breaker,
+                // 主动探测是渠道自身的开关，复制时一并带上；漏了会把“会被探测”的渠道复制成“永不探测”。
+                probe_enabled: source.probe_enabled ?? false,
                 race_mode: source.race_mode,
                 race_key_concurrency: source.race_key_concurrency,
                 race_delay_ms: source.race_delay_ms,
@@ -651,7 +660,71 @@ export interface ChannelCircuitEntry {
     consecutive_failures: number;
     trip_count: number;
     reason?: string;
+    /**
+     * 主动探测（P3）对这一行的安排。后端在原来的数组元素上**追加**这个对象，
+     * 数组形状不变；旧后端不给就是 undefined（界面按「没有探测信息」处理，不编状态）。
+     * state 取值由后端定义（scheduled / probing / wait_upstream / skipped 等），
+     * 前端只认得几个已知值，其余原样露出而不是吞掉。
+     */
+    probe?: ChannelProbeState;
 }
+
+/** 一条探测安排：state 给结论，next_in_seconds 给「再过多久探」。 */
+export type ChannelProbeState = {
+    state: string;
+    next_in_seconds: number;
+    /** 仅 wait_upstream（上游给了 Retry-After）时有意义：还要等多少秒。 */
+    remaining_seconds?: number;
+};
+
+/** 探测计数四件套（全站 / 单渠道共用一套形状）。 */
+export type ChannelProbeTotals = {
+    used: number;
+    cap: number;
+    recovered: number;
+    failed: number;
+    skipped: number;
+};
+
+/** GET /api/v1/channel/probes/:id —— 单渠道当日用量 + 最近探测历史。 */
+export type ChannelProbeDetail = {
+    channel_id: number;
+    day: string;
+    totals: ChannelProbeTotals;
+    global_totals: ChannelProbeTotals;
+    history: ChannelProbeHistoryEntry[];
+};
+
+/**
+ * 一条探测历史。timestamp 后端可能给 Unix 秒，也可能给已格式化的时间串，
+ * 前端两种都接受（见 components/modules/channel/probe-format.ts）。
+ */
+export type ChannelProbeHistoryEntry = {
+    timestamp: number | string;
+    model: string;
+    key_id: number;
+    prompt: string;
+    answer: string;
+    duration_ms: number;
+    result: string;
+};
+
+/** GET /api/v1/channel/probe-stats —— 全站当日用量 + 每个渠道的用量。 */
+export type ChannelProbeStats = {
+    day: string;
+    totals: ChannelProbeTotals;
+    channels: Array<ChannelProbeTotals & { channel_id: number }>;
+};
+
+/** POST /api/v1/channel/probe 的入参与回执。 */
+export type ChannelProbeRequest = { id: number; key_id: number; model: string; endpoint?: string; capability?: string };
+export type ChannelProbeResult = ChannelProbeState;
+
+/** 唯一「真的被接受」的 state（见 handlers/circuit_probe.go 的 startChannelProbe）。 */
+export const PROBE_STATE_SCHEDULED = 'scheduled';
+
+/** 被拒绝时后端仍会给结论：挂在 Error 上，界面才能说“上游要再等 N 秒”。 */
+export type ChannelProbeError = Error & { probe?: ChannelProbeState };
 
 export function useChannelCircuits(channelId: number, enabled = true) {
     return useQuery({
@@ -661,6 +734,82 @@ export function useChannelCircuits(channelId: number, enabled = true) {
         },
         enabled: enabled && channelId > 0,
         refetchInterval: 10000,
+    });
+}
+
+/** 单渠道当日探测用量与最近探测历史。探测全局关着时也照常拉（页面要显示“已关闭”）。 */
+export function useChannelProbes(channelId: number, enabled = true) {
+    return useQuery({
+        queryKey: ['channels', 'probes', channelId],
+        queryFn: async () => {
+            return apiClient.get<ChannelProbeDetail>(`/api/v1/channel/probes/${channelId}`);
+        },
+        enabled: enabled && channelId > 0,
+        refetchInterval: 30000,
+    });
+}
+
+/** 全站探测用量 + 每渠道用量（设置页的「今日已用」和渠道卡片的「今日 X / Y」共用）。 */
+export function useProbeStats(enabled = true) {
+    return useQuery({
+        queryKey: ['channels', 'probe-stats'],
+        queryFn: async () => {
+            return apiClient.get<ChannelProbeStats>('/api/v1/channel/probe-stats');
+        },
+        enabled,
+        refetchInterval: 30000,
+    });
+}
+
+/**
+ * 手动探测一个 key×模型。
+ *
+ * 不用 apiClient，而且不拿 HTTP 状态码当结论，两个原因：
+ *   1. 后端把「现在不能探」当正常回答：200 + {state, next_in_seconds, remaining_seconds}
+ *      （见 internal/server/handlers/circuit_probe.go 的 respondChannelProbeRejection）。
+ *      只看 res.ok 会把一个被拒的探测当成功报给用户。
+ *   2. apiClient 报错只留 message，remaining_seconds 会丢。这里把结构体贴在 Error 上，
+ *      界面才能说「上游还要再等 N 秒」。
+ *
+ * 真正的接受只有一个：state === 'scheduled'。其余 state（wait_upstream / disabled /
+ * stopped / not_probed_media / skipped_traffic）都是「没探」，一律走 onError 分支。
+ */
+export function useRunChannelProbe() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (data: ChannelProbeRequest): Promise<ChannelProbeResult> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/channel/probe`, {
+                method: 'POST',
+                headers: { Authorization: getAuthHeader(), 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+            const contentType = res.headers.get('content-type') || '';
+            const payload = contentType.includes('application/json') ? await res.json() : await res.text();
+            const body = (payload && typeof payload === 'object' && 'data' in payload)
+                ? (payload as { data?: unknown }).data
+                : payload;
+            const probe = (body && typeof body === 'object' && typeof (body as ChannelProbeState).state === 'string')
+                ? body as ChannelProbeState
+                : undefined;
+            const accepted = res.ok && probe?.state === PROBE_STATE_SCHEDULED;
+            if (!accepted) {
+                const message = getAPIMessage(payload)
+                    ?? (typeof payload === 'string' ? payload : res.statusText);
+                const error = new Error(message || 'probe not accepted') as ChannelProbeError;
+                if (probe) error.probe = probe;
+                throw error;
+            }
+            return probe as ChannelProbeResult;
+        },
+        onSettled: (_data, _error, variables) => {
+            queryClient.invalidateQueries({ queryKey: ['channels', 'circuits', variables.id] });
+            queryClient.invalidateQueries({ queryKey: ['channels', 'probes', variables.id] });
+            queryClient.invalidateQueries({ queryKey: ['channels', 'probe-stats'] });
+        },
+        onError: (error) => {
+            logger.error('手动探测失败:', error);
+        },
     });
 }
 

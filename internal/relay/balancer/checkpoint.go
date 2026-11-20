@@ -41,6 +41,10 @@ type checkpointHold struct {
 	Key         string `json:"key"`
 	UntilUnixMs int64  `json:"until_unix_ms"`
 	Rule        string `json:"rule,omitempty"`
+	// Endpoint/Capability 是触发该 hold 的端点作用域（熔断探测用的元数据）。
+	// 可选键：旧文件没有它，恢复出来就是老口径（未知作用域，不探）。
+	Endpoint   string `json:"endpoint,omitempty"`
+	Capability string `json:"capability,omitempty"`
 }
 
 type circuitCheckpoint struct {
@@ -48,6 +52,9 @@ type circuitCheckpoint struct {
 	SavedAtUnixMs int64               `json:"saved_at_unix_ms"`
 	Circuits      []checkpointCircuit `json:"circuits"`
 	Holds         []checkpointHold    `json:"holds"`
+	// Probe 是熔断探测调度的持久状态（当日计数、连续未恢复计数、每渠道历史环）。
+	// 它是可选键：旧文件没有它，读出来就是 nil；新文件里这个键对旧读取器只是未知键。
+	Probe *checkpointProbe `json:"probe,omitempty"`
 }
 
 func captureCheckpoint(now time.Time) circuitCheckpoint {
@@ -82,12 +89,19 @@ func captureCheckpoint(now time.Time) circuitCheckpoint {
 	globalHolds.Range(func(key, value any) bool {
 		entry := value.(holdEntry)
 		if entry.until.After(now) {
-			cp.Holds = append(cp.Holds, checkpointHold{Key: key.(string), UntilUnixMs: entry.until.UnixMilli(), Rule: entry.rule})
+			cp.Holds = append(cp.Holds, checkpointHold{
+				Key:         key.(string),
+				UntilUnixMs: entry.until.UnixMilli(),
+				Rule:        entry.rule,
+				Endpoint:    entry.endpoint,
+				Capability:  entry.capability,
+			})
 		}
 		return true
 	})
 	sort.Slice(cp.Circuits, func(i, j int) bool { return cp.Circuits[i].Key < cp.Circuits[j].Key })
 	sort.Slice(cp.Holds, func(i, j int) bool { return cp.Holds[i].Key < cp.Holds[j].Key })
+	cp.Probe = captureProbeCheckpoint()
 	return cp
 }
 
@@ -96,6 +110,7 @@ func captureCheckpoint(now time.Time) circuitCheckpoint {
 // or already due for a half-open probe; a half-open probe that was in flight at shutdown
 // can never report, so restoring it as HalfOpen would block the key forever.
 func restoreCheckpoint(cp circuitCheckpoint, now time.Time) (circuits, holds int) {
+	restoreProbeCheckpoint(cp.Probe)
 	for _, item := range cp.Circuits {
 		if _, ok := parseCircuitKey(item.Key); !ok {
 			continue
@@ -121,6 +136,7 @@ func restoreCheckpoint(cp circuitCheckpoint, now time.Time) (circuits, holds int
 			LastFailureTime:     lastFailure,
 			TripCount:           item.TripCount,
 			Policy:              policy,
+			writeSeq:            nextCircuitRevision(),
 		}
 		if _, loaded := globalBreaker.LoadOrStore(item.Key, entry); !loaded {
 			circuits++
@@ -134,7 +150,13 @@ func restoreCheckpoint(cp circuitCheckpoint, now time.Time) (circuits, holds int
 		if _, ok := parseCircuitKey(item.Key); !ok {
 			continue
 		}
-		if _, loaded := globalHolds.LoadOrStore(item.Key, holdEntry{until: until, rule: item.Rule}); !loaded {
+		if _, loaded := globalHolds.LoadOrStore(item.Key, holdEntry{
+			until:      until,
+			rule:       item.Rule,
+			endpoint:   item.Endpoint,
+			capability: item.Capability,
+			writeSeq:   nextCircuitRevision(),
+		}); !loaded {
 			holds++
 		}
 	}

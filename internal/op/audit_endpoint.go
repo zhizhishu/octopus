@@ -1,6 +1,8 @@
 package op
 
 import (
+	"strings"
+
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
@@ -28,4 +30,29 @@ func AuditEndpointForChannel(ch model.Channel) string {
 		// modeltest 的准入判定负责拒，这里不 panic、不猜协议。
 		return "openai_chat"
 	}
+}
+
+// CircuitProbeEndpointForScope maps the claimed relay scope to a model-test endpoint.
+func CircuitProbeEndpointForScope(relayEndpoint, relayCapability string) (string, string, bool) {
+	endpoint := strings.ToLower(strings.TrimSpace(relayEndpoint))
+	capability := strings.ToLower(strings.TrimSpace(relayCapability))
+	if endpoint == "embeddings" || endpoint == "openai_embeddings" {
+		return "openai_embeddings", model.CapabilityEmbeddings, true
+	}
+	if strings.Contains(capability, "embedding") {
+		return "", "", false
+	}
+	switch endpoint {
+	case "chat", "chat_completions", "openai_chat":
+		return "openai_chat", "", true
+	case "responses", "openai_responses":
+		return "openai_responses", "", true
+	case "messages", "anthropic_messages":
+		return "anthropic_messages", "", true
+	case "gemini_generate_content", "generate_content":
+		return "gemini_generate_content", "", true
+	case "gemini_stream_generate_content", "stream_generate_content":
+		return "gemini_stream_generate_content", "", true
+	}
+	return "", "", false
 }

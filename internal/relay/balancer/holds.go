@@ -24,6 +24,16 @@ const holdAnyModel = "*"
 type holdEntry struct {
 	until time.Time
 	rule  string
+	// endpoint/capability 是触发这条 hold 的流量作用域（给探测调度用的元数据）。
+	// 留空表示"不知道这道请求是什么形状"：老口径 hold 与通配 hold 都留空，探测调度
+	// 因此不会去探它们（见 circuit_probe.go 的 classifyProbeScope）。
+	// 它们**不参与**任何 hold 匹配/路由判定：IsTrippedScoped / holdRemaining 一律
+	// 只看 channel:key:model（或通配），不受这里影响。
+	endpoint   string
+	capability string
+	// writeSeq 同 circuitEntry.writeSeq：hold 被重新写过（新建/延长）就取一个新的全局
+	// 版本号，让拿在手上的"准入时那一条 hold"能被不可变地认出来。
+	writeSeq uint64
 }
 
 var globalHolds sync.Map // key: string -> holdEntry
@@ -34,7 +44,18 @@ func holdKey(channelID, keyID int, modelName string) string {
 
 // ApplyHold holds the scope until now+cooldown. A concurrent or repeated hold only ever
 // extends the end, never shortens it.
+//
+// 这是**老口径**入口：它不知道触发这条 hold 的请求是什么形状，所以记下的 hold 行没有
+// 端点作用域元数据，熔断探测调度不会去探它。想让它可探就用 ApplyHoldScoped。
 func ApplyHold(channelID, keyID int, modelName, scope string, cooldown time.Duration, rule string) {
+	ApplyHoldScoped(channelID, keyID, modelName, scope, cooldown, rule, "", "")
+}
+
+// ApplyHoldScoped 与 ApplyHold 同义，额外带上触发这次 hold 的端点作用域（endpoint /
+// capability，与熔断键同一套口径）。带上作用域后，熔断探测调度才把这条 hold 行当成
+// "普通文本作用域可探"；留空仍是老口径（未知作用域、不探）。通配作用域的 hold
+// （key/channel 级）无论有没有元数据都不参与探测。
+func ApplyHoldScoped(channelID, keyID int, modelName, scope string, cooldown time.Duration, rule, endpoint, capability string) {
 	if cooldown <= 0 {
 		return
 	}
@@ -49,17 +70,29 @@ func ApplyHold(channelID, keyID int, modelName, scope string, cooldown time.Dura
 	default:
 		return
 	}
-	until := time.Now().Add(cooldown)
+	entry := holdEntry{
+		until:      time.Now().Add(cooldown),
+		rule:       rule,
+		endpoint:   strings.TrimSpace(endpoint),
+		capability: strings.TrimSpace(capability),
+		writeSeq:   nextCircuitRevision(),
+	}
+	// tuple 级提交锁：hold 延长与探测重置（重置会清掉同一条 hold）必须串行，
+	// 否则重置的"复核 → 清理"之间能漏进一次延长，把新 hold 一并抹掉。
+	unlock := lockCircuitTuple(channelID, keyID, modelName)
+	defer unlock()
 	for {
-		current, loaded := globalHolds.LoadOrStore(key, holdEntry{until: until, rule: rule})
+		current, loaded := globalHolds.LoadOrStore(key, entry)
 		if !loaded {
 			break
 		}
 		existing := current.(holdEntry)
-		if !until.After(existing.until) {
+		if !entry.until.After(existing.until) {
 			break
 		}
-		if globalHolds.CompareAndSwap(key, existing, holdEntry{until: until, rule: rule}) {
+		// 延长也是一次写：取一个新版本号，拿在手上的旧 hold 就不再是这一条。
+		entry.writeSeq = nextCircuitRevision()
+		if globalHolds.CompareAndSwap(key, existing, entry) {
 			break
 		}
 	}
@@ -134,6 +167,8 @@ func listHolds(channelID int) []CircuitEntryView {
 		views = append(views, CircuitEntryView{
 			KeyID:            parsed.keyID,
 			Model:            parsed.model,
+			Endpoint:         entry.endpoint,
+			Capability:       entry.capability,
 			State:            "held",
 			RemainingSeconds: int((left + time.Second - 1) / time.Second),
 			Reason:           entry.rule,
@@ -181,7 +216,16 @@ func currentCircuitRules() []model.CircuitErrorRule {
 
 // ApplyErrorRules checks a counted failure against the operator rules and holds the first
 // matching rule's scope. It returns the matched rule name, or "" when none matched.
+//
+// 老口径入口：hold 行不带端点作用域元数据，因此熔断探测调度不会去探它。
 func ApplyErrorRules(channelID, keyID int, modelName string, statusCode int, errText string) string {
+	return ApplyErrorRulesScoped(channelID, keyID, modelName, statusCode, errText, "", "")
+}
+
+// ApplyErrorRulesScoped 与 ApplyErrorRules 同义，额外把触发这次失败的作用域（endpoint /
+// capability，与熔断键同一套口径）交给 hold：带上之后这条 hold 行在熔断探测调度那边是
+// "普通文本作用域可探"，而不是老口径的未知作用域。留空则与 ApplyErrorRules 完全一致。
+func ApplyErrorRulesScoped(channelID, keyID int, modelName string, statusCode int, errText, endpoint, capability string) string {
 	rules := currentCircuitRules()
 	if len(rules) == 0 {
 		return ""
@@ -191,7 +235,7 @@ func ApplyErrorRules(channelID, keyID int, modelName string, statusCode int, err
 		if !rule.Match(statusCode, lower) {
 			continue
 		}
-		ApplyHold(channelID, keyID, modelName, rule.Scope, time.Duration(rule.CooldownSeconds)*time.Second, rule.Name)
+		ApplyHoldScoped(channelID, keyID, modelName, rule.Scope, time.Duration(rule.CooldownSeconds)*time.Second, rule.Name, endpoint, capability)
 		return rule.Name
 	}
 	return ""

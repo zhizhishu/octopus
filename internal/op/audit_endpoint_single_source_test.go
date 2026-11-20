@@ -28,12 +28,14 @@ import (
 // 单源函数本身的逐格取值由 audit_endpoint_test.go 钉死。
 const auditEndpointSharedSelector = "AuditEndpointForChannel"
 
-// 端点的四个取值只许出现在 op/audit_endpoint.go 里（测试文件除外）。
+// 检测和探测端点只许出现在 op/audit_endpoint.go 里（测试文件除外）。
 var auditEndpointLiterals = []string{
 	"openai_chat",
 	"openai_responses",
 	"anthropic_messages",
 	"gemini_generate_content",
+	"gemini_stream_generate_content",
+	"openai_embeddings",
 }
 
 func auditRepoRoot(t *testing.T) string {

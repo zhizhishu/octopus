@@ -563,6 +563,46 @@
         "hint": "When a status code and/or a keyword in the error text matches, cool down the scope at once: model = this model on this key, key = every model on the key, channel = the whole channel. First match wins. Empty = off.",
         "save": "Save rules",
         "invalid": "Rules must be a JSON array"
+      },
+      "probe": {
+        "title": "Active Probing",
+        "summaryOn": "On",
+        "summaryOff": "Off",
+        "usedToday": "Used today",
+        "recovered": "Recovered {count}",
+        "failed": "Still failing {count}",
+        "skipped": "Skipped {count}",
+        "master": {
+          "label": "Master switch",
+          "hint": "Off = nothing is probed anywhere. On = only channels that opt in are probed."
+        },
+        "dailyCap": {
+          "label": "Site-wide daily cap (probes)",
+          "hint": "Stops for the day once used up; resets at 00:00 (Beijing time).",
+          "placeholder": "e.g. 200"
+        },
+        "channelCap": {
+          "label": "Per-channel daily cap (probes)",
+          "hint": "How many probes one channel may spend per day.",
+          "placeholder": "e.g. 20"
+        },
+        "maxFailures": {
+          "label": "Stop after failures (probes)",
+          "hint": "After this many failed probes in a row for one key×model, probing stops and waits for real traffic.",
+          "placeholder": "e.g. 3"
+        },
+        "embeddings": {
+          "label": "Probe embeddings too",
+          "hint": "Off = only chat models are probed; embedding models can only be tried by real traffic."
+        },
+        "note": {
+          "whenTitle": "When it probes: ",
+          "when": "key×model pairs whose cooldown is about to expire and which had no real request in the last 10 minutes; fires 10–60 seconds early at a random moment, never on a fixed schedule.",
+          "whatTitle": "What it sends: ",
+          "what": "the same random four-digit addition as the channel test, with the same request shape; only a correct answer counts as recovered.",
+          "skipTitle": "Not probed: ",
+          "skip": "images and videos (real traffic with half-open only); anything upstream told us to wait for with Retry-After until that time passes."
+        }
       }
     },
     "fingerprintProfile": {
@@ -1194,6 +1234,7 @@
       "userName": "User",
       "client": "Client",
       "clientUnknown": "unknown client",
+      "probeMarker": "probe",
       "auditPrefix": "Detect",
       "auditClean": "no anomaly",
       "auditInsufficient": "insufficient evidence",
@@ -1334,6 +1375,12 @@
       "title": {
         "edit": "Edit Channel",
         "view": "Channel Details"
+      },
+      "probe": {
+        "label": "Active probing",
+        "today": "Today",
+        "global": "All channels",
+        "saveFailed": "Could not save the probing switch"
       },
       "sections": {
         "requests": "Request Details",
@@ -1575,7 +1622,66 @@
       "resetDone": "Reset done",
       "held": "Held {seconds}s",
       "anyModel": "All models",
-      "anyKey": "All keys"
+      "anyKey": "All keys",
+      "probe": {
+        "run": "Probe now",
+        "runHint": "“Probe now” spends one probe and counts against today's cap; it ignores the random delay.",
+        "accepted": "Probe scheduled",
+        "failed": "Probe was not sent",
+        "noModel": "This entry is a wildcard model, so there is no model name to probe",
+        "resetModelSameScope": "This entry already covers all models; resetting the model is the same as resetting this entry",
+        "state": {
+          "scheduledNow": "Probing shortly",
+          "scheduled": "Probing in ~{seconds}s",
+          "scheduledMinutes": "Probing in ~{minutes} min",
+          "waitUpstreamNow": "Upstream asked us to wait",
+          "waitUpstream": "Upstream asked to retry in {seconds}s",
+          "waitUpstreamMinutes": "Upstream asked to retry in {minutes} min",
+          "running": "Probing…",
+          "skippedTraffic": "Not probed (recent real traffic)",
+          "notProbed": "Not probed (image/video, or embeddings off)",
+          "off": "Not probing (switch off or daily cap reached)",
+          "stopped": "Stopped (no recovery so far)",
+          "unknown": "Probe plan: {state}"
+        },
+        "result": {
+          "recovered": "Recovered",
+          "failed": "Still failing",
+          "skipped": "Skipped",
+          "noVerdict": "No verdict",
+          "unknown": "Result: {result}",
+          "none": "No result",
+          "withReason": "{status} · {reason}",
+          "reason": {
+            "stale": "entry changed",
+            "skipped_traffic": "recent real traffic",
+            "wait_upstream": "upstream asked to wait",
+            "capped": "today's cap reached",
+            "streak": "no recovery so far",
+            "skipped": "not sent",
+            "canceled": "canceled",
+            "ambiguous": "cannot tell",
+            "timeout": "no response in time",
+            "wrong_answer": "wrong answer",
+            "gibberish": "no number in the reply",
+            "no_answer": "no usable answer",
+            "upstream_error": "upstream error",
+            "transport_error": "connection failed"
+          }
+        },
+        "history": {
+          "title": "Recent probes",
+          "time": "Time",
+          "model": "Model",
+          "key": "Key",
+          "prompt": "Prompt",
+          "answer": "Answer",
+          "duration": "Duration",
+          "result": "Result",
+          "empty": "No probes recorded yet",
+          "note": "Probe requests are tagged “probe” in the logs and are never billed to any user."
+        }
+      }
     }
   },
   "redact": {

@@ -140,6 +140,30 @@ export function isModelTestEndpoint(endpoint: string | undefined): boolean {
     return (endpoint?.trim() ?? '').startsWith('model_test');
 }
 
+/**
+ * 断路器主动探测（P3）在 Relay Logs 里的固定标记。
+ *
+ * 取值来自后端 internal/modeltest/circuit_probe.go 的 `CircuitProbeMarker`：探测行把
+ * request_endpoint 写成它，error_strategy 的第一段也是它。它是稳定对外字符串。
+ *
+ * 只在这里认字符串，文案由调用方用 i18n 给（`log.card.probeMarker`）：
+ * 探测行该不该被当成普通请求看是逻辑，叫什么名字是翻译。
+ */
+export const CIRCUIT_PROBE_MARKER = 'circuit_probe';
+
+/** 这一行是不是断路器探测：先看 request_endpoint，再看 error_strategy 的首段。 */
+export function isCircuitProbeLog(log: {
+    request_endpoint?: string;
+    request_path?: string;
+    error_strategy?: string;
+} | null | undefined): boolean {
+    if (!log) return false;
+    if ((log.request_endpoint?.trim() ?? '') === CIRCUIT_PROBE_MARKER) return true;
+    if ((log.request_path?.trim() ?? '') === CIRCUIT_PROBE_MARKER) return true;
+    const strategy = log.error_strategy?.trim() ?? '';
+    return strategy === CIRCUIT_PROBE_MARKER || strategy.startsWith(`${CIRCUIT_PROBE_MARKER};`);
+}
+
 /** endpoint 码翻人话；model_test 前缀统一归「连通性测试」，查不到就轻量美化。 */
 export function humanizeEndpoint(endpoint: string | undefined): string | undefined {
     const key = endpoint?.trim();

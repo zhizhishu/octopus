@@ -21,6 +21,7 @@ import {
     humanizeUsageReason,
     humanizeEndpoint,
     isModelTestEndpoint,
+    isCircuitProbeLog,
 } from './humanize';
 import { getModelIcon } from '@/lib/model-icons';
 import {
@@ -1295,18 +1296,27 @@ export const LogCard = React.memo(function LogCard({
         [isModelTest, requestEndpoint],
     );
     // 列表/详情头部那个徽章显示的是「人话」接口名，不再是裸 endpoint 码。
+    // 断路器主动探测行（后端 request_endpoint = circuit_probe）单独给一个本地化标记：
+    // 它不是用户请求也不是连通性测试，混在接口名里看会以为是谁家新接口。
+    const isCircuitProbe = useMemo(() => isCircuitProbeLog(log), [log]);
     const requestEndpointLabel = useMemo(
-        () => humanizeEndpoint(formatEndpointName(requestEndpoint || requestPath)) ?? '',
-        [requestEndpoint, requestPath]
+        () => (isCircuitProbe
+            ? t('probeMarker')
+            : humanizeEndpoint(formatEndpointName(requestEndpoint || requestPath)) ?? ''),
+        [isCircuitProbe, requestEndpoint, requestPath, t]
     );
     // 详情里的接口信息：干净的「中文标签 + 纯值」，不再拼 `endpoint:`/`path:` 裸前缀。
     const endpointLines = useMemo(() => {
         const lines: Array<{ label: string; value: string }> = [];
-        if (requestEndpoint) lines.push({ label: '接口类型', value: humanizeEndpoint(requestEndpoint) ?? requestEndpoint });
+        if (isCircuitProbe) {
+            lines.push({ label: '接口类型', value: t('probeMarker') });
+        } else if (requestEndpoint) {
+            lines.push({ label: '接口类型', value: humanizeEndpoint(requestEndpoint) ?? requestEndpoint });
+        }
         if (requestPath && requestPath !== requestEndpoint) lines.push({ label: '请求路径', value: requestPath });
         if (!lines.length && requestEndpointLabel) lines.push({ label: '接口类型', value: requestEndpointLabel });
         return lines;
-    }, [requestEndpoint, requestEndpointLabel, requestPath]);
+    }, [isCircuitProbe, requestEndpoint, requestEndpointLabel, requestPath, t]);
     const endpointTitle = endpointLines.map((line) => `${line.label}：${line.value}`).join('\n') || requestEndpointLabel;
     const attempts = useMemo(() => log.attempts ?? [], [log.attempts]);
     // 上游路径：纯路径值，标签在外面单独给「上游路径」，不再拼 `upstream:` 前缀。

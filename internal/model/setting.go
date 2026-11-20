@@ -293,6 +293,28 @@ const (
 	SettingKeyBatchImageUnitPrice SettingKey = "batch_image_unit_price"
 )
 
+// 熔断探测（circuit probe）的出厂口径。
+//
+// 单独一块的理由同上面的批处理开关：这几个名字都比前面那批长，混进去会让 gofmt
+// 重排整个常量块，把一次几行的改动变成几十行空白 diff。
+//
+// 【总开关默认 false】探测会真的打上游、真的计费（与 model_audit_enabled 同理），
+// 所以出厂关着，由运维显式打开；每一道限额也往“少花钱”的方向取默认值。
+const (
+	// SettingKeyCircuitProbeEnabled 是自动熔断探测的总开关。手动/审计探测不受它约束。
+	SettingKeyCircuitProbeEnabled SettingKey = "circuit_probe_enabled"
+	// SettingKeyCircuitProbeDailyCap 是全天（UTC+8）全站自动探测次数上限，0 = 不限。
+	SettingKeyCircuitProbeDailyCap SettingKey = "circuit_probe_daily_cap"
+	// SettingKeyCircuitProbeChannelDailyCap 是全天（UTC+8）单渠道自动探测次数上限，0 = 不限。
+	SettingKeyCircuitProbeChannelDailyCap SettingKey = "circuit_probe_channel_daily_cap"
+	// SettingKeyCircuitProbeMaxConsecutiveFailures 是“连续多少次探测都没恢复就不再自动探这个
+	// channel/key/model”的上限。设大等于放任一个坏渠道无限烧钱，设小等于一次都不探，所以 3。
+	SettingKeyCircuitProbeMaxConsecutiveFailures SettingKey = "circuit_probe_max_consecutive_failures"
+	// SettingKeyCircuitProbeEmbeddingsEnabled 是嵌入端点探测的显式签核，默认 false：
+	// 嵌入探测只能验证“回了非空向量”，判不了对错，收益最低。
+	SettingKeyCircuitProbeEmbeddingsEnabled SettingKey = "circuit_probe_embeddings_enabled"
+)
+
 // 死空间回收开关。关掉 = 退回旧行为（只有本轮删了行才 VACUUM），用于应急：
 // 万一完整 VACUUM 把生产库卡住，用户可以在管理页立刻关掉，不必等发版。
 //
@@ -699,6 +721,13 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyBatchImageUnitPrice, Value: "0"},
 		// 被动探针默认开: 零上游请求、零 token, 没有需要保护用户免于触发的理由。
 		{Key: SettingKeyLogPassiveProbeEnabled, Value: "true"},
+		// 熔断探测出厂口径：总开关关；全站 200 次/天；单渠道 20 次/天；连续 3 次未恢复就停；
+		// 嵌入端点默认不探。每一项都是“真实计费出站请求”，所以默认值一律往少花钱取。
+		{Key: SettingKeyCircuitProbeEnabled, Value: "false"},
+		{Key: SettingKeyCircuitProbeDailyCap, Value: "200"},
+		{Key: SettingKeyCircuitProbeChannelDailyCap, Value: "20"},
+		{Key: SettingKeyCircuitProbeMaxConsecutiveFailures, Value: "3"},
+		{Key: SettingKeyCircuitProbeEmbeddingsEnabled, Value: "false"},
 		{Key: SettingKeyModelAuditFingerprintRandomPrompts, Value: "true"}, // 指纹探针默认随机出题; false=固定 36 题对照
 		{Key: SettingKeyCheckInEnabled, Value: "false"},
 		{Key: SettingKeyCheckInRewardMode, Value: "fixed"},
@@ -899,9 +928,26 @@ func (s *Setting) Validate() error {
 		SettingKeyModelAuditFingerprintRandomPrompts,
 		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled,
 		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange,
+		SettingKeyCircuitProbeEnabled, SettingKeyCircuitProbeEmbeddingsEnabled,
 		SettingKeyUserAccessAlertNewIP, SettingKeyUserAccessAlertNewClient:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
+		}
+		return nil
+	case SettingKeyCircuitProbeDailyCap, SettingKeyCircuitProbeChannelDailyCap:
+		// 0 = 不限；上限 100000 只是防手滑/防溢出：每次探测都是真实计费的出站请求，
+		// 填成一个天文数字等于给上游开一张空白支票。
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 0 || value > 100000 {
+			return fmt.Errorf("%s must be an integer between 0 and 100000 (0 = unlimited)", s.Key)
+		}
+		return nil
+	case SettingKeyCircuitProbeMaxConsecutiveFailures:
+		// 下限 1：0 会让自动探测永远跑不起来，看起来像功能坏了；
+		// 上限 100：再多就不是“止损”而是放任一个坏渠道无限打上游了。
+		value, err := strconv.Atoi(s.Value)
+		if err != nil || value < 1 || value > 100 {
+			return fmt.Errorf("%s must be an integer between 1 and 100", s.Key)
 		}
 		return nil
 	case SettingKeyModelAuditDailyRequestLimit:

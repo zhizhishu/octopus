@@ -563,6 +563,46 @@
         "hint": "依狀態碼和/或錯誤文字關鍵字命中後，立即冷卻對應範圍：model=該 key 上的該模型，key=該 key 的全部模型，channel=整個渠道。依序取第一條命中。留空=不啟用。",
         "save": "儲存規則",
         "invalid": "規則必須是 JSON 陣列"
+      },
+      "probe": {
+        "title": "主動探測",
+        "summaryOn": "已開啟",
+        "summaryOff": "已關閉",
+        "usedToday": "今日已用",
+        "recovered": "恢復 {count}",
+        "failed": "仍失敗 {count}",
+        "skipped": "跳過 {count}",
+        "master": {
+          "label": "總開關",
+          "hint": "關著時任何渠道都不探；開了也只探單獨打開的渠道。"
+        },
+        "dailyCap": {
+          "label": "全站每日上限（次）",
+          "hint": "用完當天停，次日 0 點（北京時間）重置。",
+          "placeholder": "如 200"
+        },
+        "channelCap": {
+          "label": "單渠道每日上限（次）",
+          "hint": "同一個渠道一天最多花這麼多次。",
+          "placeholder": "如 20"
+        },
+        "maxFailures": {
+          "label": "連續失敗停手（次）",
+          "hint": "同一 key×模型 連續探失敗幾次後不再探，等真實請求。",
+          "placeholder": "如 3"
+        },
+        "embeddings": {
+          "label": "向量介面也探",
+          "hint": "關閉時只探聊天模型，嵌入模型只能靠真實請求試水。"
+        },
+        "note": {
+          "whenTitle": "什麼時候探：",
+          "when": "冷卻快到期、且最近 10 分鐘沒有真實請求的 key×模型；到期前隨機 10–60 秒觸發，不定時。",
+          "whatTitle": "探什麼：",
+          "what": "和「渠道測試」同一道隨機四位數加法，同一套請求形狀；答對才算恢復。",
+          "skipTitle": "不探：",
+          "skip": "圖片、影片只靠真實請求試水（半開）；上游給過 Retry-After 的，到點前不探。"
+        }
       }
     },
     "fingerprintProfile": {
@@ -1194,6 +1234,7 @@
       "userName": "使用者",
       "client": "客戶端",
       "clientUnknown": "客戶端未知",
+      "probeMarker": "探測",
       "auditPrefix": "檢測",
       "auditClean": "未見異常",
       "auditInsufficient": "證據不足",
@@ -1334,6 +1375,12 @@
       "title": {
         "edit": "編輯供應源",
         "view": "供應源詳情"
+      },
+      "probe": {
+        "label": "主動探測",
+        "today": "今日",
+        "global": "全站",
+        "saveFailed": "探測開關儲存失敗"
       },
       "sections": {
         "requests": "請求詳情",
@@ -1575,7 +1622,66 @@
       "resetDone": "已解除",
       "held": "規則冷卻 {seconds}s",
       "anyModel": "全部模型",
-      "anyKey": "全部 key"
+      "anyKey": "全部 key",
+      "probe": {
+        "run": "立即探測",
+        "runHint": "「立即探測」會花一次額度，並計入今日上限；不受隨機延遲限制。",
+        "accepted": "已排入探測",
+        "failed": "探測沒有發出去",
+        "noModel": "這一項是通配模型，沒有具體模型名可探",
+        "resetModelSameScope": "這一項已經是全部模型，解除該模型等於解除此項",
+        "state": {
+          "scheduledNow": "即將探測",
+          "scheduled": "約 {seconds} 秒後探測",
+          "scheduledMinutes": "約 {minutes} 分後探測",
+          "waitUpstreamNow": "上游要求稍後再試",
+          "waitUpstream": "上游要求 {seconds} 秒後再試",
+          "waitUpstreamMinutes": "上游要求 {minutes} 分後再試",
+          "running": "探測中…",
+          "skippedTraffic": "不探（最近有真實流量）",
+          "notProbed": "不探（圖片/影片，或嵌入未開）",
+          "off": "未探測（開關關閉或今日額度用完）",
+          "stopped": "已停手（連續未恢復）",
+          "unknown": "探測安排：{state}"
+        },
+        "result": {
+          "recovered": "已恢復",
+          "failed": "仍失敗",
+          "skipped": "跳過",
+          "noVerdict": "不計結論",
+          "unknown": "結果：{result}",
+          "none": "無結果",
+          "withReason": "{status} · {reason}",
+          "reason": {
+            "stale": "條目已變",
+            "skipped_traffic": "最近有真實流量",
+            "wait_upstream": "上游要求等待",
+            "capped": "今日額度已用完",
+            "streak": "連續未恢復",
+            "skipped": "沒發出去",
+            "canceled": "已取消",
+            "ambiguous": "判定不出來",
+            "timeout": "超時沒應答",
+            "wrong_answer": "答錯了",
+            "gibberish": "答非所問",
+            "no_answer": "沒有可用回答",
+            "upstream_error": "上游報錯",
+            "transport_error": "連線失敗"
+          }
+        },
+        "history": {
+          "title": "最近探測",
+          "time": "時間",
+          "model": "模型",
+          "key": "Key",
+          "prompt": "題目",
+          "answer": "回答",
+          "duration": "耗時",
+          "result": "結果",
+          "empty": "還沒有探測記錄",
+          "note": "探測請求在日誌裡帶「探測」標籤，不計入任何使用者的帳單。"
+        }
+      }
     }
   },
   "redact": {

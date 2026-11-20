@@ -129,6 +129,22 @@ type modelRunner struct {
 	// lastStreamEnvelope 是流式回复里的上游编号原文（旁路，见 transformModelTestStreamWithEnvelope）。
 	// 非流式回复的编号由 adapter.TransformResponse 直接放在 parsed 上，这里留空。
 	lastStreamEnvelope modelTestStreamEnvelope
+	// captureProbeFailure 让 testChannelKey 在非 2xx 分支上额外抄一份**原始失败观测**
+	// （状态码、有界响应体、Retry-After 头）到 lastProbeFailure。
+	//
+	// 只有断路器探测（circuit_probe.go）会置真：它要按 relay 同一套 typed 判定
+	// （400/422 请求体拒收、429/5xx、上游 Retry-After）归因，而那条判定的输入正是
+	// 上游原文，不是渲染后给人看的错误串。零值 false = 不抄、不额外分配，渠道检测
+	// 与模型校验的既有路径逐字节不变。
+	captureProbeFailure bool
+	lastProbeFailure    *probeUpstreamFailure
+	// lastProbeError 存的是“请求已发出但没拿到响应”那个错误**对象本身**（不是它的文本）：
+	// 断路器探测只拿它去跑 relay 的既有传输判定，不把它渲染进任何返回值。
+	lastProbeError error
+	// probeRequestSent 记录本次 testChannelKey 是否真的把请求发了出去（调用
+	// helper.DoPreserveMethodRedirect 之前置真）。只给断路器探测归因用：连发都没
+	// 发出去的失败（构请求 / 参数覆盖 / 客户端构造）是我们自己的问题，不算渠道故障。
+	probeRequestSent bool
 }
 
 // probeThinkingBudget 探针索要的思考预算。
@@ -945,8 +961,16 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	// GetBody 都不碰）。用原始的 Ask ctx，保证 opt-in 沿调用链传递。
 	observeFinalOutboundConditions(ctx, probeProtocolOf(channel.Type), outboundRequest)
 
+	// 从这里往下就是“已经发出去”了：断路器探测的归因靠这个标记区分“渠道没应答”
+	// 和我们自己把请求构建坏了（见 modelRunner 的 probeRequestSent 注释）。
+	r.probeRequestSent = true
 	response, err := helper.DoPreserveMethodRedirect(client, outboundRequest)
 	if err != nil {
+		if r.captureProbeFailure {
+			// 同一字段组的另一半：请求已发出但没拿到响应。只存错误对象，供断路器探测
+			// 跑 relay 的既有传输判定（见 modelRunner 的 captureProbeFailure 注释）。
+			r.lastProbeError = err
+		}
 		return 0, nil, fmt.Errorf("send request: %w", err)
 	}
 	defer response.Body.Close()
@@ -962,6 +986,15 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, upstreamBodyLimit))
+		// 断路器探测需要上游原文才能跑 relay 的同一套 typed 归因（见 modelRunner
+		// 的 captureProbeFailure 注释）。这里只抄一份有界副本，不改变下面的报错路径。
+		if r.captureProbeFailure {
+			r.lastProbeFailure = &probeUpstreamFailure{
+				StatusCode:       response.StatusCode,
+				Body:             append([]byte(nil), body...),
+				RetryAfterHeader: response.Header.Get("Retry-After"),
+			}
+		}
 		code, message := upstreamErrorSummary(body)
 		if message == "" {
 			message = xredact.Secrets(string(body))

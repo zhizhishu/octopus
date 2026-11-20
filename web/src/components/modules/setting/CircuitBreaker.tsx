@@ -2,10 +2,12 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { Zap, Hash, Timer, TimerOff, HelpCircle, ListFilter } from 'lucide-react';
+import { Zap, Hash, Timer, TimerOff, HelpCircle, ListFilter, Radar, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
+import { useProbeStats } from '@/api/endpoints/channel';
 import { toast } from '@/components/common/Toast';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 
@@ -24,12 +26,52 @@ export function SettingCircuitBreaker() {
     const [rules, setRules] = useState('');
     const initialRules = useRef('');
 
+    // 主动探测（P3）：开关存 'true'/'false'，上限/停手次数存十进制整数（与后端 seed 默认值同形）。
+    const [probeOpen, setProbeOpen] = useState(false);
+    const [probeEnabled, setProbeEnabled] = useState('false');
+    const [probeDailyCap, setProbeDailyCap] = useState('');
+    const [probeChannelCap, setProbeChannelCap] = useState('');
+    const [probeMaxFailures, setProbeMaxFailures] = useState('');
+    const [probeEmbeddings, setProbeEmbeddings] = useState('false');
+    const initialProbeEnabled = useRef('false');
+    const initialProbeDailyCap = useRef('');
+    const initialProbeChannelCap = useRef('');
+    const initialProbeMaxFailures = useRef('');
+    const initialProbeEmbeddings = useRef('false');
+    // 今日用量：探测统计不在 settings 列表里，单独查（后端偶尔没给就显示 —，不编 0）。
+    const { data: probeStats } = useProbeStats();
+
     useEffect(() => {
         if (settings) {
             const th = settings.find(s => s.key === SettingKey.CircuitBreakerThreshold);
             const cd = settings.find(s => s.key === SettingKey.CircuitBreakerCooldown);
             const mcd = settings.find(s => s.key === SettingKey.CircuitBreakerMaxCooldown);
             const rl = settings.find(s => s.key === SettingKey.CircuitBreakerErrorRules);
+            const ed = settings.find(s => s.key === SettingKey.CircuitProbeEnabled);
+            const dc = settings.find(s => s.key === SettingKey.CircuitProbeDailyCap);
+            const cc = settings.find(s => s.key === SettingKey.CircuitProbeChannelDailyCap);
+            const mf = settings.find(s => s.key === SettingKey.CircuitProbeMaxConsecutiveFailures);
+            const em = settings.find(s => s.key === SettingKey.CircuitProbeEmbeddingsEnabled);
+            if (em && em.value !== initialProbeEmbeddings.current) {
+                queueMicrotask(() => setProbeEmbeddings(em.value));
+                initialProbeEmbeddings.current = em.value;
+            }
+            if (ed && ed.value !== initialProbeEnabled.current) {
+                queueMicrotask(() => setProbeEnabled(ed.value));
+                initialProbeEnabled.current = ed.value;
+            }
+            if (dc && dc.value !== initialProbeDailyCap.current) {
+                queueMicrotask(() => setProbeDailyCap(dc.value));
+                initialProbeDailyCap.current = dc.value;
+            }
+            if (cc && cc.value !== initialProbeChannelCap.current) {
+                queueMicrotask(() => setProbeChannelCap(cc.value));
+                initialProbeChannelCap.current = cc.value;
+            }
+            if (mf && mf.value !== initialProbeMaxFailures.current) {
+                queueMicrotask(() => setProbeMaxFailures(mf.value));
+                initialProbeMaxFailures.current = mf.value;
+            }
             if (rl && rl.value !== initialRules.current) {
                 queueMicrotask(() => setRules(prettyRules(rl.value)));
                 initialRules.current = rl.value;
@@ -59,6 +101,20 @@ export function SettingCircuitBreaker() {
         if (value === initialValue) return;
         if (setSetting.isPending) return;
 
+        // 探测的四个数值/开关字段共用同一套「确认值 / 回滚」规则，不另建一套。
+        const probeField = (() => {
+            if (key === SettingKey.CircuitProbeDailyCap) {
+                return { ref: initialProbeDailyCap, set: setProbeDailyCap };
+            }
+            if (key === SettingKey.CircuitProbeChannelDailyCap) {
+                return { ref: initialProbeChannelCap, set: setProbeChannelCap };
+            }
+            if (key === SettingKey.CircuitProbeMaxConsecutiveFailures) {
+                return { ref: initialProbeMaxFailures, set: setProbeMaxFailures };
+            }
+            return null;
+        })();
+
         setSetting.mutate({ key, value }, {
             onSuccess: () => {
                 toast.success(t('saved'));
@@ -68,6 +124,8 @@ export function SettingCircuitBreaker() {
                     initialCooldown.current = value;
                 } else if (key === SettingKey.CircuitBreakerMaxCooldown) {
                     initialMaxCooldown.current = value;
+                } else if (probeField) {
+                    probeField.ref.current = value;
                 }
             },
             onError: () => {
@@ -80,9 +138,38 @@ export function SettingCircuitBreaker() {
                     setCooldown(initialCooldown.current);
                 } else if (key === SettingKey.CircuitBreakerMaxCooldown) {
                     setMaxCooldown(initialMaxCooldown.current);
+                } else if (probeField) {
+                    probeField.set(probeField.ref.current);
                 }
             }
         });
+    };
+
+    // 开关立即生效（和 System.tsx 的开关同一套写法）：失败就回滚到已确认值。
+    const handleProbeSwitch = (key: string, checked: boolean, initial: { current: string }, setter: (v: string) => void) => {
+        const next = checked ? 'true' : 'false';
+        if (setSetting.isPending) return;
+        setter(next);
+        if (next === initial.current) return;
+        setSetting.mutate({ key, value: next }, {
+            onSuccess: () => {
+                toast.success(t('saved'));
+                initial.current = next;
+            },
+            onError: () => {
+                toast.error(t('saveFailed'));
+                setter(initial.current);
+            },
+        });
+    };
+
+    /** 探测上限/停手次数：负数归 0，非数字回落到已确认值（与 Log.tsx 数值键同一口径）。 */
+    const saveProbeNumber = (key: string, raw: string, initial: { current: string }, setter: (v: string) => void) => {
+        const parsed = Number(raw);
+        const fallback = initial.current === '' ? '0' : initial.current;
+        const next = Number.isFinite(parsed) ? String(Math.max(0, Math.trunc(parsed))) : fallback;
+        if (next !== raw) setter(next);
+        handleSave(key, next, initial.current);
     };
 
     const handleSaveRules = () => {
@@ -106,6 +193,23 @@ export function SettingCircuitBreaker() {
             onError: (error) => toast.error(error?.message || t('saveFailed')),
         });
     };
+
+    // 折叠标题行的摘要：开关状态 + 今日已用/上限，一眼就能判断要不要点开。
+    // 取不到统计时显示破折号，不拿 0 冒充「今天一次都没探」。
+    const probeCapFromSettings = Number(probeDailyCap);
+    const probeTotals = probeStats?.totals ?? {
+        used: 0,
+        cap: Number.isFinite(probeCapFromSettings) ? probeCapFromSettings : 0,
+        recovered: 0,
+        failed: 0,
+        skipped: 0,
+    };
+    const probeUsedText = probeStats ? String(probeTotals.used) : '—';
+    const probeUsageNumbers = probeTotals.cap > 0 ? `${probeUsedText} / ${probeTotals.cap}` : probeUsedText;
+    const probeUsageWidth = probeTotals.cap > 0
+        ? Math.min(100, Math.round((probeTotals.used / probeTotals.cap) * 1000) / 10)
+        : 0;
+    const probeSummary = `${probeEnabled === 'true' ? t('circuitBreaker.probe.summaryOn') : t('circuitBreaker.probe.summaryOff')} · ${t('circuitBreaker.probe.usedToday')} ${probeUsageNumbers}`;
 
     return (
         <div className="rounded-3xl border border-border bg-card p-6 space-y-5">
@@ -192,6 +296,143 @@ export function SettingCircuitBreaker() {
                     rows={8}
                     className="w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs"
                 />
+            </div>
+
+            {/* 主动探测（P3）：整块可折叠，标题行就是摘要（开关状态 + 今日已用/上限）。 */}
+            <div className="rounded-2xl border border-border bg-muted/20">
+                <button
+                    type="button"
+                    onClick={() => setProbeOpen((open) => !open)}
+                    aria-expanded={probeOpen}
+                    aria-label={t('circuitBreaker.probe.title')}
+                    className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl px-3 py-2.5 text-left transition-colors hover:bg-muted/40 max-sm:min-h-11"
+                >
+                    <Radar className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 text-sm font-medium">{t('circuitBreaker.probe.title')}</span>
+                    <span
+                        className="min-w-0 flex-1 truncate text-xs text-muted-foreground sm:text-right"
+                        data-probe-summary
+                    >
+                        {probeSummary}
+                    </span>
+                    {probeOpen
+                        ? <ChevronUp className="size-4 shrink-0 text-muted-foreground" />
+                        : <ChevronDown className="size-4 shrink-0 text-muted-foreground" />}
+                </button>
+
+                {probeOpen && (
+                    <div className="space-y-4 border-t border-border/60 px-3 pb-3 pt-3">
+                        {/* 总开关 */}
+                        <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0 space-y-1">
+                                <div className="text-sm font-medium">{t('circuitBreaker.probe.master.label')}</div>
+                                <p className="text-xs leading-5 text-muted-foreground">{t('circuitBreaker.probe.master.hint')}</p>
+                            </div>
+                            <Switch
+                                checked={probeEnabled === 'true'}
+                                onCheckedChange={(checked) => handleProbeSwitch(SettingKey.CircuitProbeEnabled, checked, initialProbeEnabled, setProbeEnabled)}
+                                aria-label={t('circuitBreaker.probe.master.label')}
+                                className="shrink-0"
+                            />
+                        </div>
+
+                        {/* 全站每日上限 */}
+                        <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0 space-y-1">
+                                <div className="text-sm font-medium">{t('circuitBreaker.probe.dailyCap.label')}</div>
+                                <p className="text-xs leading-5 text-muted-foreground">{t('circuitBreaker.probe.dailyCap.hint')}</p>
+                            </div>
+                            <Input
+                                type="number"
+                                min={0}
+                                value={probeDailyCap}
+                                onChange={(e) => setProbeDailyCap(e.target.value)}
+                                onBlur={() => saveProbeNumber(SettingKey.CircuitProbeDailyCap, probeDailyCap, initialProbeDailyCap, setProbeDailyCap)}
+                                placeholder={t('circuitBreaker.probe.dailyCap.placeholder')}
+                                aria-label={t('circuitBreaker.probe.dailyCap.label')}
+                                className="w-28 shrink-0 rounded-xl"
+                            />
+                        </div>
+
+                        {/* 单渠道每日上限 */}
+                        <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0 space-y-1">
+                                <div className="text-sm font-medium">{t('circuitBreaker.probe.channelCap.label')}</div>
+                                <p className="text-xs leading-5 text-muted-foreground">{t('circuitBreaker.probe.channelCap.hint')}</p>
+                            </div>
+                            <Input
+                                type="number"
+                                min={0}
+                                value={probeChannelCap}
+                                onChange={(e) => setProbeChannelCap(e.target.value)}
+                                onBlur={() => saveProbeNumber(SettingKey.CircuitProbeChannelDailyCap, probeChannelCap, initialProbeChannelCap, setProbeChannelCap)}
+                                placeholder={t('circuitBreaker.probe.channelCap.placeholder')}
+                                aria-label={t('circuitBreaker.probe.channelCap.label')}
+                                className="w-28 shrink-0 rounded-xl"
+                            />
+                        </div>
+
+                        {/* 连续失败停手 */}
+                        <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0 space-y-1">
+                                <div className="text-sm font-medium">{t('circuitBreaker.probe.maxFailures.label')}</div>
+                                <p className="text-xs leading-5 text-muted-foreground">{t('circuitBreaker.probe.maxFailures.hint')}</p>
+                            </div>
+                            <Input
+                                type="number"
+                                min={0}
+                                value={probeMaxFailures}
+                                onChange={(e) => setProbeMaxFailures(e.target.value)}
+                                onBlur={() => saveProbeNumber(SettingKey.CircuitProbeMaxConsecutiveFailures, probeMaxFailures, initialProbeMaxFailures, setProbeMaxFailures)}
+                                placeholder={t('circuitBreaker.probe.maxFailures.placeholder')}
+                                aria-label={t('circuitBreaker.probe.maxFailures.label')}
+                                className="w-28 shrink-0 rounded-xl"
+                            />
+                        </div>
+
+                        {/* 向量（embeddings）也探：不打开的话嵌入模型永远不会被探 */}
+                        <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0 space-y-1">
+                                <div className="text-sm font-medium">{t('circuitBreaker.probe.embeddings.label')}</div>
+                                <p className="text-xs leading-5 text-muted-foreground">{t('circuitBreaker.probe.embeddings.hint')}</p>
+                            </div>
+                            <Switch
+                                checked={probeEmbeddings === 'true'}
+                                onCheckedChange={(checked) => handleProbeSwitch(SettingKey.CircuitProbeEmbeddingsEnabled, checked, initialProbeEmbeddings, setProbeEmbeddings)}
+                                aria-label={t('circuitBreaker.probe.embeddings.label')}
+                                className="shrink-0"
+                            />
+                        </div>
+
+                        <div className="space-y-1 rounded-xl bg-background/60 p-3 text-xs leading-6 text-muted-foreground">
+                            <p><span className="font-medium text-card-foreground">{t('circuitBreaker.probe.note.whenTitle')}</span>{t('circuitBreaker.probe.note.when')}</p>
+                            <p><span className="font-medium text-card-foreground">{t('circuitBreaker.probe.note.whatTitle')}</span>{t('circuitBreaker.probe.note.what')}</p>
+                            <p><span className="font-medium text-card-foreground">{t('circuitBreaker.probe.note.skipTitle')}</span>{t('circuitBreaker.probe.note.skip')}</p>
+                        </div>
+
+                        {/* 今日已用：分母优先用后端给的 cap，拿不到才回落到设置里的上限。 */}
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-sm font-medium">{t('circuitBreaker.probe.usedToday')}</span>
+                                <span className="font-mono text-sm tabular-nums" data-probe-usage>{probeUsageNumbers}</span>
+                            </div>
+                            <div className="h-2 overflow-hidden rounded-full bg-muted" role="presentation">
+                                <div className="h-full rounded-full bg-primary" style={{ width: `${probeUsageWidth}%` }} />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-300">
+                                    {t('circuitBreaker.probe.recovered', { count: probeTotals.recovered })}
+                                </span>
+                                <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs text-red-700 dark:text-red-300">
+                                    {t('circuitBreaker.probe.failed', { count: probeTotals.failed })}
+                                </span>
+                                <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                                    {t('circuitBreaker.probe.skipped', { count: probeTotals.skipped })}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );

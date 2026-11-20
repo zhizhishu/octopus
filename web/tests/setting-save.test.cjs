@@ -243,6 +243,10 @@ const makeLogHarness = (settings) => makeHarness('src/components/modules/setting
 const cbMocks = {
     '@/components/ui/input': widgets('Input'),
     '@/components/ui/button': widgets('Button'),
+    '@/components/ui/switch': widgets('Switch'),
+    // 熔断卡里的「主动探测」块要读当日用量；这里只验熔断/探测设置本身的保存行为，
+    // 统计返回 undefined（界面显示破折号，不编 0）。
+    '@/api/endpoints/channel': { useProbeStats: () => ({ data: undefined }) },
     '@/components/animate-ui/components/animate/tooltip': widgets('Tooltip TooltipContent TooltipProvider TooltipTrigger'),
     'lucide-react': lucide,
 };
