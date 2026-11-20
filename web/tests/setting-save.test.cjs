@@ -242,6 +242,7 @@ test('storage failure preserves the saved 20 GB limit and clear requires confirm
 const makeLogHarness = (settings) => makeHarness('src/components/modules/setting/Log.tsx', 'SettingLog', settings, logMocks);
 const cbMocks = {
     '@/components/ui/input': widgets('Input'),
+    '@/components/ui/button': widgets('Button'),
     '@/components/animate-ui/components/animate/tooltip': widgets('Tooltip TooltipContent TooltipProvider TooltipTrigger'),
     'lucide-react': lucide,
 };
