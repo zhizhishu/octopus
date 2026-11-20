@@ -803,6 +803,13 @@ func geminiImageConfigFromRequest(request *model.InternalLLMRequest) *model.Gemi
 		if cfg.AspectRatio == "" {
 			cfg.AspectRatio = geminiAspectRatioFromSize(tool.Size)
 		}
+		if cfg.AspectRatio == "" {
+			cfg.AspectRatio = model.GeminiAspectRatioFromPixelSize(tool.Size)
+		}
+		// 像素 size 先于 quality：quality=auto 不能把明确的 2048x2048 压回 1K。
+		if cfg.ImageSize == "" {
+			cfg.ImageSize = model.GeminiImageSizeFromPixelSize(tool.Size)
+		}
 		if cfg.ImageSize == "" {
 			cfg.ImageSize = geminiImageSizeFromQuality(tool.Quality)
 		}

@@ -164,9 +164,9 @@ func geminiImageRequestBodyAndURLWithInput(baseURL, modelName, key string, paylo
 			Instances: []geminiImageInstance{{Prompt: prompt}},
 			Parameters: geminiImageParameters{
 				SampleCount:      positiveIntFromPayload(payload, "n", 1),
-				AspectRatio:      geminiAspectRatioFromImagePayload(payload),
+				AspectRatio:      imagenAspectRatioFromImagePayload(payload),
 				PersonGeneration: "allow_adult",
-				ImageSize:        geminiImageSizeFromImagesPayload(payload),
+				ImageSize:        imagenImageSizeFromImagesPayload(payload),
 			},
 		}
 		body, err := json.Marshal(reqBody)
@@ -329,13 +329,65 @@ func geminiImageConfigFromImagesPayload(payload map[string]any) *transformerMode
 	return cfg
 }
 
-// geminiImageSizeFromImagesPayload 解析分辨率档位。
+// geminiImagesImageConfig 取客户端写的 image_config。
+//
+// 认三种写法：顶层 image_config / imageConfig 对象；JSON 请求里把它写成字符串的；
+// new-api 风格的 extra_body.google.image_config。认不出来返回 nil。
+func geminiImagesImageConfig(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	for _, key := range []string{"image_config", "imageConfig"} {
+		switch v := payload[key].(type) {
+		case map[string]any:
+			return v
+		case string:
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(v)), &parsed); err == nil && parsed != nil {
+				return parsed
+			}
+		}
+	}
+	if extra, ok := payload["extra_body"].(map[string]any); ok {
+		if google, ok := extra["google"].(map[string]any); ok {
+			for _, key := range []string{"image_config", "imageConfig"} {
+				if cfg, ok := google[key].(map[string]any); ok {
+					return cfg
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// geminiImageSizeFromImagesPayload 解析 Gemini generateContent 的分辨率档位。
 //
 // 顺序按参考实现来（CLIProxyAPI 的 OpenRouter 风格 image_config、new-api 的
-// extra_body.google.image_config）：客户端显式写的 image_size 优先，OpenAI 的 quality
-// 别名只在没给档位时兜底。这样 image_config.image_size 不会再被静默丢掉。
+// extra_body.google.image_config 与尺寸表）：客户端显式写的 image_size 优先；
+// 其次是 OpenAI 的像素 size（2048x2048 → 2K，4096x4096 → 4K）；quality 别名最后兜底。
+// 像素 size 排在 quality 前，是因为 Cherry 这类客户端常带 quality=auto，
+// 不能让它把明确的 2048x2048 压回 1K。
 func geminiImageSizeFromImagesPayload(payload map[string]any) string {
-	if imageConfig, ok := payload["image_config"].(map[string]any); ok {
+	if size := geminiExplicitImageSizeFromImagesPayload(payload); size != "" {
+		return size
+	}
+	if size := transformerModel.GeminiImageSizeFromPixelSize(stringFromPayload(payload, "size")); size != "" {
+		return size
+	}
+	return geminiImageSizeFromQuality(stringFromPayload(payload, "quality"))
+}
+
+// imagenImageSizeFromImagesPayload 给 Imagen predict 用：保持原行为，不按像素推档位，
+// Imagen 各型号支持的档位不一致，宁可不发也不替客户端猜。
+func imagenImageSizeFromImagesPayload(payload map[string]any) string {
+	if size := geminiExplicitImageSizeFromImagesPayload(payload); size != "" {
+		return size
+	}
+	return geminiImageSizeFromQuality(stringFromPayload(payload, "quality"))
+}
+
+func geminiExplicitImageSizeFromImagesPayload(payload map[string]any) string {
+	if imageConfig := geminiImagesImageConfig(payload); imageConfig != nil {
 		for _, key := range []string{"image_size", "imageSize"} {
 			if size := transformerModel.NormalizeGeminiImageSize(stringFromPayload(imageConfig, key)); size != "" {
 				return size
@@ -347,16 +399,39 @@ func geminiImageSizeFromImagesPayload(payload map[string]any) string {
 			return size
 		}
 	}
-	return geminiImageSizeFromQuality(stringFromPayload(payload, "quality"))
+	return ""
 }
 
+// geminiAspectRatioFromImagePayload 给 Gemini generateContent 用：固定表认不出的
+// 像素尺寸（1200x900、2048x2048 等）再按最近标准比例归一。
 func geminiAspectRatioFromImagePayload(payload map[string]any) string {
-	if imageConfig, ok := payload["image_config"].(map[string]any); ok {
-		if aspectRatio := strings.TrimSpace(stringFromPayload(imageConfig, "aspect_ratio")); aspectRatio != "" {
-			return aspectRatio
-		}
+	if aspectRatio := geminiExplicitAspectRatioFromImagesPayload(payload); aspectRatio != "" {
+		return aspectRatio
+	}
+	size := stringFromPayload(payload, "size")
+	if aspectRatio := geminiAspectRatioFromSize(size); aspectRatio != "" {
+		return aspectRatio
+	}
+	return transformerModel.GeminiAspectRatioFromPixelSize(size)
+}
+
+// imagenAspectRatioFromImagePayload 给 Imagen predict 用：只认固定表，保持原行为。
+func imagenAspectRatioFromImagePayload(payload map[string]any) string {
+	if aspectRatio := geminiExplicitAspectRatioFromImagesPayload(payload); aspectRatio != "" {
+		return aspectRatio
 	}
 	return geminiAspectRatioFromSize(stringFromPayload(payload, "size"))
+}
+
+func geminiExplicitAspectRatioFromImagesPayload(payload map[string]any) string {
+	if imageConfig := geminiImagesImageConfig(payload); imageConfig != nil {
+		for _, key := range []string{"aspect_ratio", "aspectRatio"} {
+			if aspectRatio := strings.TrimSpace(stringFromPayload(imageConfig, key)); aspectRatio != "" {
+				return aspectRatio
+			}
+		}
+	}
+	return ""
 }
 
 func geminiAspectRatioFromSize(size string) string {
