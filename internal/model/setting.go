@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bestruirui/octopus/internal/transformer/outbound/authropic"
 )
 
 type SettingKey string
@@ -217,33 +219,24 @@ func NormalizeRouteModeOverride(value string) string {
 }
 
 const (
-	// DefaultCodexHeaderUserAgent: a clean, self-consistent codex_cli_rs identity on a Linux
-	// box. Packet-verified 2026-07-10 against real codex 0.144.1 on /backend-api/codex/responses:
-	// a genuine codex_cli_rs client carries codex_cli_rs in BOTH the leading token and the
-	// trailing (codex_cli_rs; <ver>) — the asymmetric (codex_exec) trailing produced by forcing
-	// CODEX_INTERNAL_ORIGINATOR_OVERRIDE is a "ran exec + overrode originator" tell, not this.
-	// The version advanced 0.142.5 -> 0.144.1 -> 0.145.0 -> 0.156.1; the header set/order was
-	// otherwise unchanged. 0.156.1 matches the current codex CLI release (0.156.x, packet-verified
-	// 2026-09-24 on the relay: originator codex_cli_rs, UA codex_cli_rs/0.156.1) and stays within
-	// the codex_cli_rs family + above the sub2api-observed upstream floor 0.144.0.
-	// 2026-10-10 大领导实测对照(真 Codex CLI 抓包): 线上身份是 **codex_exec/0.161.0** —— 注意这与
-	// 上面那个提醒并不矛盾: 那次警告针对的是"改了尾串、留着头串"的**不对称**组合(exec+override),
-	// 而真抓包是 **对称的 codex_exec 家族**(头串与尾串都是 codex_exec, 版本都是 0.161.0), 与
-	// LegacyDefaultCodexHeaderUserAgent0133 同族、只是版本更新。版本 0.161.0 也在 sub2api 观测到的
-	// 上游下限 0.144.0 之上。
-	// ⚠️ 平台段(Ubuntu 24.04.1; x86_64)沿用改前的值: 抓包只给了 产品/版本 这两个 token, 平台段
-	// 没有实测依据 ⇒ 不臆造, 待抓到完整 UA 再对齐。
-	DefaultCodexHeaderUserAgent = "codex_exec/0.161.0 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.161.0)"
+	// Current CLI version and operator-required rs identity. The 0.163.0 exec
+	// capture uses codex_exec; rs is an intentional compatibility policy, not an
+	// assertion that the captured exec request used rs. Keep both UA tokens paired.
+	DefaultCodexCLIVersion = "0.163.0"
+	DefaultCodexOriginator = "codex_cli_rs"
 
-	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
-	// user-agent below. The Anthropic outbound billing-header cc_version carries the
-	// same version (authropic.ClaudeCLIVersion); TestClaudeFingerprintVersionConsistency
-	// asserts the two never drift apart. 2.1.296 is packet-verified on the wire
-	// 2026-10-14 (real claude CLI 2.1.296, UA claude-cli/2.1.296, package 0.128.0
-	// unchanged, runtime v26.3.0 unchanged, billing cc_version 2.1.296.406) —
-	// captured direct on the capture proxy and mirrored byte-for-byte when the same
-	// CLI is routed through the relay.
-	DefaultClaudeCLIVersion = "2.1.296"
+	// Both product tokens use the required rs family. The Ubuntu platform token
+	// is the existing preset; the controlled Debian capture is recorded separately.
+	DefaultCodexHeaderUserAgent = DefaultCodexOriginator + "/" + DefaultCodexCLIVersion + " (Ubuntu 24.04.1; x86_64) unknown (" + DefaultCodexOriginator + "; " + DefaultCodexCLIVersion + ")"
+
+	// DefaultClaudeCLIVersion is the SINGLE source of the Claude Code CLI version for the
+	// user-agent below. It IS the Anthropic outbound billing-header version
+	// (authropic.ClaudeCLIVersion): internal/model already depends on the authropic package
+	// transitively, so referencing its constant directly removes the former two-place copy;
+	// the relay's TestClaudeFingerprintVersionConsistency additionally pins the pair. 2.1.301
+	// is the current real claude CLI version; the on-wire package version (0.128.0) and the
+	// bundled node runtime (v26.3.0) below are unchanged.
+	DefaultClaudeCLIVersion = authropic.ClaudeCLIVersion
 
 	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
 	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
@@ -360,6 +353,12 @@ const (
 	// so existing installs do not keep emitting the stale 2.1.294 fingerprint.
 	LegacyDefaultClaudeHeaderUserAgent21294 = "claude-cli/2.1.294 (external, sdk-cli)"
 
+	// LegacyDefaultClaudeHeaderUserAgent21296 was the previous Claude header default
+	// (claude-cli/2.1.296). 2.1.301 superseded it; converge upgraded deployments to the
+	// current DefaultClaudeHeaderUserAgent via op.settingLegacyDefaultUpgrades so existing
+	// installs do not keep emitting the stale 2.1.296 fingerprint.
+	LegacyDefaultClaudeHeaderUserAgent21296 = "claude-cli/2.1.296 (external, sdk-cli)"
+
 	// LegacyDefaultClaudeHeaderPackage01121 was the X-Stainless-Package-Version paired
 	// with the 2.1.281 UA (0.112.1); migrate it to DefaultClaudeHeaderPackageVersion.
 	LegacyDefaultClaudeHeaderPackage01121 = "0.112.1"
@@ -423,6 +422,12 @@ const (
 	// (0.145.0). 0.156.1 superseded it (packet-verified 2026-09-24 on the relay); converge
 	// upgraded deployments via the DB map.
 	LegacyDefaultCodexHeaderUserAgentCliRs0145 = "codex_cli_rs/0.145.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.145.0)"
+
+	// LegacyDefaultCodexHeaderUserAgentExec0161 was the previous Codex header default
+	// (codex_exec/0.161.0 on Ubuntu). The symmetric codex_cli_rs identity superseded it;
+	// converge upgraded deployments via the DB map so an existing install does not keep
+	// emitting a codex_exec UA that no longer pairs with the current codex_cli_rs originator.
+	LegacyDefaultCodexHeaderUserAgentExec0161 = "codex_exec/0.161.0 (Ubuntu 24.04.1; x86_64) unknown (codex_exec; 0.161.0)"
 
 	// LegacyDefaultCodexHeaderUserAgentCliRs0142 was the codex_cli_rs default before the
 	// 0.144.1 version bump (2026-07-10). Kept so already-seeded deployments converge to the

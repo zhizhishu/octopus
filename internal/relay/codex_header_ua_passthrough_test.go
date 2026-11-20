@@ -2,15 +2,19 @@ package relay
 
 import (
 	"net/http"
+	"strings"
 	"testing"
+
+	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
 )
 
-// TestApplyCodexHeaderDefaultsUserAgentPassthrough locks the codex UA passthrough: a
-// downstream that presents a genuine Codex CLI user-agent keeps its EXACT Originator+UA pair
-// on the outbound (so the upstream sees the bytes a direct connection would have carried),
-// while any other downstream (no CLI, or a foreign UA) falls back to the profile's codex_exec
-// pair, preserving the sub2api #3901 originator↔UA-first-token pairing rule.
-func TestApplyCodexHeaderDefaultsUserAgentPassthrough(t *testing.T) {
+// TestApplyCodexHeaderDefaultsForcesProfilePair locks the codex identity rule: a downstream
+// exec/tui/cli_rs user-agent is NO LONGER echoed. Every codex outbound carries the resolved
+// fingerprint's pair (Originator + User-Agent) so they always match, at the current version,
+// preserving the sub2api #3901 originator↔UA-first-token pairing rule without letting a client
+// pick its own identity bytes.
+func TestApplyCodexHeaderDefaultsForcesProfilePair(t *testing.T) {
 	fp := resolveFingerprintForChannel(nil)
 	const (
 		codexExecUA = "codex_exec/0.161.0 (Mac OS X 15.0; arm64) unknown (codex_exec; 0.161.0)"
@@ -22,51 +26,12 @@ func TestApplyCodexHeaderDefaultsUserAgentPassthrough(t *testing.T) {
 		name              string
 		inboundUserAgent  string
 		inboundOriginator string
-		wantUserAgent     string
-		wantOriginator    string
 	}{
-		{
-			name:              "codex_exec prefix is echoed verbatim",
-			inboundUserAgent:  codexExecUA,
-			inboundOriginator: "codex_exec",
-			wantUserAgent:     codexExecUA,
-			wantOriginator:    "codex_exec",
-		},
-		{
-			name:              "codex_cli_rs prefix is echoed verbatim",
-			inboundUserAgent:  codexRsUA,
-			inboundOriginator: "codex_cli_rs",
-			wantUserAgent:     codexRsUA,
-			wantOriginator:    "codex_cli_rs",
-		},
-		{
-			name:              "codex-tui prefix is echoed verbatim",
-			inboundUserAgent:  codexTuiUA,
-			inboundOriginator: "codex-tui",
-			wantUserAgent:     codexTuiUA,
-			wantOriginator:    "codex-tui",
-		},
-		{
-			name:              "codex family with empty originator falls back to profile originator",
-			inboundUserAgent:  codexExecUA,
-			inboundOriginator: "",
-			wantUserAgent:     codexExecUA,
-			wantOriginator:    fp.CodexOriginator(),
-		},
-		{
-			name:              "non-codex UA falls back to profile pair",
-			inboundUserAgent:  "python-requests/2.32.0",
-			inboundOriginator: "python",
-			wantUserAgent:     fp.CodexUserAgent(),
-			wantOriginator:    fp.CodexOriginator(),
-		},
-		{
-			name:              "empty UA falls back to profile pair",
-			inboundUserAgent:  "",
-			inboundOriginator: "",
-			wantUserAgent:     fp.CodexUserAgent(),
-			wantOriginator:    fp.CodexOriginator(),
-		},
+		{"codex_exec downstream is not echoed", codexExecUA, "codex_exec"},
+		{"codex-tui downstream is not echoed", codexTuiUA, "codex-tui"},
+		{"codex_cli_rs downstream is not echoed", codexRsUA, "codex_cli_rs"},
+		{"foreign downstream falls back to profile pair", "python-requests/2.32.0", "python"},
+		{"empty downstream falls back to profile pair", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,13 +40,55 @@ func TestApplyCodexHeaderDefaultsUserAgentPassthrough(t *testing.T) {
 				t.Fatalf("create request: %v", err)
 			}
 			applyCodexHeaderDefaultsWithFingerprint(req, nil, fp, tc.inboundUserAgent, tc.inboundOriginator)
-			if got := req.Header.Get("User-Agent"); got != tc.wantUserAgent {
-				t.Fatalf("User-Agent = %q, want %q", got, tc.wantUserAgent)
+			gotUA := req.Header.Get("User-Agent")
+			gotOriginator := req.Header.Get("Originator")
+			if gotUA != fp.CodexUserAgent() {
+				t.Fatalf("User-Agent = %q, want the profile pair %q", gotUA, fp.CodexUserAgent())
 			}
-			if got := req.Header.Get("Originator"); got != tc.wantOriginator {
-				t.Fatalf("Originator = %q, want %q", got, tc.wantOriginator)
+			if gotOriginator != fp.CodexOriginator() {
+				t.Fatalf("Originator = %q, want the profile pair %q", gotOriginator, fp.CodexOriginator())
+			}
+			// The pair must be internally consistent: Originator == the UA's leading token.
+			slash := strings.Index(gotUA, "/")
+			if slash <= 0 || gotOriginator != gotUA[:slash] {
+				t.Fatalf("Originator %q must equal the User-Agent's leading token (UA %q)", gotOriginator, gotUA)
+			}
+			// ...at the current codex version.
+			if !strings.Contains(gotUA, dbmodel.DefaultCodexCLIVersion) {
+				t.Fatalf("User-Agent %q must carry the current codex version %q", gotUA, dbmodel.DefaultCodexCLIVersion)
 			}
 		})
+	}
+}
+
+// TestApplyCodexHeaderDefaultsCustomProfileWins pins that a channel with an explicit custom
+// profile keeps THAT profile's pair — the resolved default/global identity never overwrites the
+// operator's chosen codex identity, even when a conflicting downstream pair arrives.
+func TestApplyCodexHeaderDefaultsCustomProfileWins(t *testing.T) {
+	ctx := setupRelayErrorDB(t)
+	profile := dbmodel.FingerprintProfile{
+		Name:            "custom-codex-identity",
+		Seed:            "custom-codex-seed",
+		CodexUserAgent:  "codex_cli_rs/0.163.0 (Debian 12.0.0; x86_64) unknown (codex_cli_rs; 0.163.0)",
+		CodexOriginator: "codex_cli_rs",
+	}
+	if err := op.FingerprintProfileCreate(&profile, ctx); err != nil {
+		t.Fatalf("create fingerprint profile: %v", err)
+	}
+	fp := resolveFingerprintForChannel(&dbmodel.Channel{Cloak: dbmodel.ChannelCloak{ProfileID: profile.ID}})
+
+	req, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	// A conflicting downstream pair must not override the profile.
+	applyCodexHeaderDefaultsWithFingerprint(req, nil, fp,
+		"codex-tui/0.161.0 (Mac OS X 15.0; arm64) unknown (codex-tui; 0.161.0)", "codex-tui")
+	if got := req.Header.Get("User-Agent"); got != profile.CodexUserAgent {
+		t.Fatalf("custom profile User-Agent = %q, want %q", got, profile.CodexUserAgent)
+	}
+	if got := req.Header.Get("Originator"); got != profile.CodexOriginator {
+		t.Fatalf("custom profile Originator = %q, want %q", got, profile.CodexOriginator)
 	}
 }
 
@@ -99,19 +106,22 @@ func TestApplyCodexHeaderDefaultsEmitsNoConnectionHeader(t *testing.T) {
 	}
 }
 
-// TestCodexIdentityPairEchoesGenuinePair is a direct, settings-independent pin of the pairing
-// rule the passthrough relies on (guards against a future edit splitting UA and Originator).
-func TestCodexIdentityPairEchoesGenuinePair(t *testing.T) {
+// TestCodexIdentityPairIgnoresInbound pins the direct pairing rule: codexIdentityPair no longer
+// echoes a downstream exec/tui/cli_rs pair — it always returns the resolved fingerprint's pair,
+// so UA and Originator can never be split, and an inbound Originator cannot override the rs UA.
+func TestCodexIdentityPairIgnoresInbound(t *testing.T) {
 	fp := resolveFingerprintForChannel(nil)
-	const codexUA = "codex_exec/0.161.0 (Mac OS X 15.0; arm64) unknown (codex_exec; 0.161.0)"
-
-	if ua, originator := codexIdentityPair(codexUA, "codex_exec", fp); ua != codexUA || originator != "codex_exec" {
-		t.Fatalf("genuine pair must be echoed verbatim, got ua=%q originator=%q", ua, originator)
-	}
-	if ua, originator := codexIdentityPair("curl/8.0", "curl", fp); ua != fp.CodexUserAgent() || originator != fp.CodexOriginator() {
-		t.Fatalf("non-codex UA must fall back to the profile pair, got ua=%q originator=%q", ua, originator)
-	}
-	if _, originator := codexIdentityPair(codexUA, "", fp); originator != fp.CodexOriginator() {
-		t.Fatalf("empty inbound originator must fall back to %q, got %q", fp.CodexOriginator(), originator)
+	for _, inbound := range []struct{ ua, originator string }{
+		{"codex_exec/0.161.0 (Mac OS X 15.0; arm64) unknown (codex_exec; 0.161.0)", "codex_exec"},
+		{"codex-tui/0.161.0 (Mac OS X 15.0; arm64) unknown (codex-tui; 0.161.0)", "codex-tui"},
+		{"codex_cli_rs/0.161.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.161.0)", "codex_cli_rs"},
+		{"curl/8.0", "curl"},
+		{"", ""},
+	} {
+		ua, originator := codexIdentityPair(inbound.ua, inbound.originator, fp)
+		if ua != fp.CodexUserAgent() || originator != fp.CodexOriginator() {
+			t.Fatalf("codexIdentityPair(%q, %q) = (%q, %q), want the profile pair (%q, %q)",
+				inbound.ua, inbound.originator, ua, originator, fp.CodexUserAgent(), fp.CodexOriginator())
+		}
 	}
 }

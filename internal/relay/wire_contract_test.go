@@ -46,8 +46,8 @@ func TestApplyChannelWireHeadersReassertsCodexPairAfterCustomHeaders(t *testing.
 	if _, exists := request.Header["Accept-Encoding"]; exists {
 		t.Fatalf("Codex wire contract must remove Accept-Encoding, got %q", request.Header.Get("Accept-Encoding"))
 	}
-	if got := request.Header.Get("X-Openai-Internal-Codex-Responses-Lite"); got != "true" {
-		t.Fatalf("Lite header = %q, want true", got)
+	if got := request.Header.Get("X-Openai-Internal-Codex-Responses-Lite"); got != "" {
+		t.Fatalf("oct no longer synthesizes the Lite header; want absent, got %q", got)
 	}
 }
 

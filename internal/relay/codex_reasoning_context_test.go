@@ -6,97 +6,30 @@ import (
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 )
 
-// The upstream rejects any request carrying the header
-// X-OpenAI-Internal-Codex-Responses-Lite: true unless the body also sets
-// reasoning.context="all_turns":
+// Octopus no longer injects a reasoning.context default. The real Codex CLI 0.163 sends no
+// X-OpenAI-Internal-Codex-Responses-Lite header and oct no longer synthesizes one, so there is
+// no header/body pairing rule that would demand reasoning.context="all_turns". Whatever the
+// client sent is forwarded faithfully, and an absent field stays absent.
 //
-//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `reasoning.context` to be `all_turns`.
-//
-// applyCodexHeaderDefaultsWithFingerprint synthesizes that header on EVERY codex
-// outbound, so oct owns the paired body field. These tests lock the pairing.
+// These tests drive the REAL codex shaper (prepareCodexRequestShape), not a deleted helper.
 
-func TestEnsureCodexReasoningContextDefaultsAllTurns(t *testing.T) {
-	req := &transformerModel.InternalLLMRequest{
-		Model:           "gpt-5.6-sol",
-		ReasoningEffort: "high",
-	}
-
-	ensureCodexReasoningContext(req)
-
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected reasoning.context to default to all_turns, got %q", req.ReasoningContext)
+// codexShapeAttempt builds the minimal relayAttempt that makes prepareCodexRequestShape run the
+// codex branch for an OpenAI-Response channel.
+func codexShapeAttempt(req *model.InternalLLMRequest) *relayAttempt {
+	return &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
 	}
 }
 
-// A request with NO reasoning at all still needs the field: the upstream ties the
-// requirement to the header, not to reasoning being requested. This is the case a
-// naive fix (mirroring ensureCodexReasoningSummary's effort gate) would miss, leaving
-// those requests still 400ing.
-func TestEnsureCodexReasoningContextAppliesWithoutAnyReasoning(t *testing.T) {
-	req := &transformerModel.InternalLLMRequest{
-		Model: "gpt-5.6-sol",
-	}
-
-	ensureCodexReasoningContext(req)
-
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected reasoning.context on a request with no effort/summary, got %q", req.ReasoningContext)
-	}
-	// Must not invent an effort/summary as a side effect — that would change the
-	// codex shape beyond the one field this fix owns.
-	if req.ReasoningEffort != "" {
-		t.Fatalf("expected reasoning.effort untouched, got %q", req.ReasoningEffort)
-	}
-	if req.ReasoningSummary != "" {
-		t.Fatalf("expected reasoning.summary untouched, got %q", req.ReasoningSummary)
-	}
-}
-
-// Lite's upstream contract is stricter than a client preference. Once the header is
-// present, an explicit incompatible value must be corrected or the request 400s.
-func TestEnsureCodexReasoningContextOverridesIncompatibleClientValue(t *testing.T) {
-	req := &transformerModel.InternalLLMRequest{
-		Model:            "gpt-5.6-sol",
-		ReasoningEffort:  "high",
-		ReasoningContext: "client_chosen",
-	}
-
-	ensureCodexReasoningContext(req)
-
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected Lite-compatible reasoning.context, got %q", req.ReasoningContext)
-	}
-}
-
-func TestEnsureCodexReasoningContextNilRequestIsNoop(t *testing.T) {
-	ensureCodexReasoningContext(nil)
-}
-
-// Ghost-pairing guard: a denylisted model (gpt-5.5 family) gets NO Lite header on the
-// wire (applyCodexResponsesLiteHeader deletes it), so the body-side pairing field must
-// not be forced either — a headless constraint has no justification and may itself be
-// rejected by the upstream.
-func TestEnsureCodexReasoningContextSkipsLiteDeniedModels(t *testing.T) {
-	req := &transformerModel.InternalLLMRequest{
-		Model: "gpt-5.5",
-	}
-
-	ensureCodexReasoningContext(req)
-
-	if req.ReasoningContext != "" {
-		t.Fatalf("expected no forced reasoning.context for a Lite-denied model, got %q", req.ReasoningContext)
-	}
-}
-
-// End-to-end through the real codex shaper (not just the helper in isolation): a codex
-// Responses request must come out of prepareCodexRequestShape carrying the context, since
-// that same path is what makes applyCodexHeaderDefaults stamp the Lite header. Header and
-// body have to agree or the upstream 400s.
-func TestPrepareCodexRequestShapeSetsReasoningContext(t *testing.T) {
+// Absent reasoning.context is NOT injected by the shaper.
+func TestPrepareCodexRequestShapeDoesNotInjectReasoningContext(t *testing.T) {
 	content := "Say OK only"
 	req := &model.InternalLLMRequest{
 		Model:        "gpt-5.6-sol",
@@ -106,24 +39,60 @@ func TestPrepareCodexRequestShapeSetsReasoningContext(t *testing.T) {
 			Content: model.MessageContent{Content: &content},
 		}},
 	}
-	ra := &relayAttempt{
-		relayRequest: &relayRequest{
-			inboundType:     inbound.InboundTypeOpenAIResponse,
-			internalRequest: req,
-		},
-		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
-	}
 
-	ra.prepareCodexRequestShape()
+	codexShapeAttempt(req).prepareCodexRequestShape()
 
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected codex shape to set reasoning.context=all_turns, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected no reasoning.context injection, got %q", req.ReasoningContext)
 	}
 }
 
-// The mirror guard: a NON-codex channel never runs the codex shaper, so it must never gain
-// a reasoning.context. This is what keeps every other Responses upstream byte-identical to
-// before the fix (an unknown field could itself be a 400 there).
+// A request that carries no reasoning at all also never gains a reasoning.context, and the
+// effort normalization (which stays) still defaults a gpt-5.6 empty effort to high.
+func TestPrepareCodexRequestShapeDoesNotInjectReasoningContextWithoutEffort(t *testing.T) {
+	content := "Say OK only"
+	req := &model.InternalLLMRequest{
+		Model:        "gpt-5.6-sol",
+		RawAPIFormat: model.APIFormatOpenAIResponse,
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+
+	codexShapeAttempt(req).prepareCodexRequestShape()
+
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected reasoning.context to stay absent, got %q", req.ReasoningContext)
+	}
+	if req.ReasoningEffort != "high" {
+		t.Fatalf("precondition: gpt-5.6 empty effort should still default to high, got %q", req.ReasoningEffort)
+	}
+}
+
+// A client that explicitly chose a reasoning.context keeps it verbatim — the shaper no longer
+// overrides it (the old forced all_turns value is gone).
+func TestPrepareCodexRequestShapePreservesExplicitReasoningContext(t *testing.T) {
+	content := "Say OK only"
+	req := &model.InternalLLMRequest{
+		Model:            "gpt-5.6-sol",
+		RawAPIFormat:     model.APIFormatOpenAIResponse,
+		ReasoningContext: "client_chosen",
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+
+	codexShapeAttempt(req).prepareCodexRequestShape()
+
+	if req.ReasoningContext != "client_chosen" {
+		t.Fatalf("expected explicit reasoning.context preserved, got %q", req.ReasoningContext)
+	}
+}
+
+// A NON-codex channel never runs the codex shaper, so it must never gain a reasoning.context.
+// This keeps every other Responses upstream untouched.
 func TestPrepareCodexRequestShapeSkipsReasoningContextForNonCodexChannel(t *testing.T) {
 	content := "Say OK only"
 	req := &model.InternalLLMRequest{

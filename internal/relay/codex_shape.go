@@ -6,7 +6,6 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 )
 
@@ -22,7 +21,6 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	}
 	req := ra.internalRequest
 	addCodexResponsesInclude(req)
-	ensureCodexTextVerbosity(req)
 	ra.bridgePlainResponsesCodexHistory()
 	// A genuine codex client sends a Responses-shaped `input` that already carries its own
 	// developer/system instructions and tool declarations inline (SELF-CONTAINED). Detect that
@@ -56,8 +54,13 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 	// field the real CLI does not send and caused a +477B body delta (42380→42857).
 	// Downstream clients that want progress events during long reasoning turns should
 	// set reasoning.summary explicitly — Octopus no longer injects a default.
-	ensureCodexReasoningContext(req)
-	ensureCodexParallelToolCalls(req)
+	//
+	// Octopus also no longer injects a default reasoning.context or overrides parallel_tool_calls:
+	// the real Codex CLI 0.163 sends neither the X-OpenAI-Internal-Codex-Responses-Lite header
+	// nor a top-level `text` member, so oct no longer synthesizes the Lite header and therefore has
+	// no header/body pairing rule to satisfy. Whatever the client sent is forwarded faithfully
+	// (an explicit reasoning.context or parallel_tool_calls=true is NOT overridden). ensureCodexAgentContext
+	// above still defaults parallel_tool_calls=false when it introduced the default Codex tools.
 	if codexSelfContained {
 		// The raw codex input already carries its developer/system instructions and tools; stop
 		// the outbound transformer from also hoisting a Messages-derived top-level `instructions`
@@ -86,9 +89,9 @@ func (ra *relayAttempt) prepareCodexRequestShape() {
 // both inside `input`) would otherwise get a Messages-derived DUPLICATE hoisted onto the wire. That is a
 // byte-level divergence from the real codex CLI and ~+27KB of redundant system-prompt + tool tokens.
 // tool_choice is intentionally left untouched (the genuine codex CLI does send it top-level);
-// parallel_tool_calls IS forced to false by ensureCodexParallelToolCalls (the upstream hard-pairs
-// it to the Lite header oct synthesizes). This function only strips the duplicated
-// instructions/tools — it never touches either of those two.
+// parallel_tool_calls is only defaulted to false by ensureCodexAgentContext when it introduced the
+// default Codex tools. This function only strips the duplicated instructions/tools — it never touches
+// either of those two.
 func suppressCodexHoistedContext(req *transformerModel.InternalLLMRequest) {
 	if req == nil {
 		return
@@ -166,119 +169,6 @@ func ensureCodexReasoningSummary(req *transformerModel.InternalLLMRequest) {
 	if strings.TrimSpace(req.ReasoningSummary) == "" {
 		req.ReasoningSummary = "auto"
 	}
-}
-
-// codexReasoningContextAllTurns is the only reasoning.context value the upstream accepts
-// alongside the X-OpenAI-Internal-Codex-Responses-Lite header oct always sends on codex.
-const codexReasoningContextAllTurns = "all_turns"
-
-// ensureCodexReasoningContext guarantees reasoning.context="all_turns" on the codex path.
-//
-// The upstream added a hard pairing rule: a request carrying
-// X-OpenAI-Internal-Codex-Responses-Lite: true MUST also carry reasoning.context="all_turns",
-// else it is rejected outright:
-//
-//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `reasoning.context` to be `all_turns`.
-//
-// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for every codex outbound
-// (oct adds it itself; it is not forwarded from the client), so oct owns the paired body
-// field too — filling it here keeps header and body consistent instead of shipping a
-// self-contradictory request. That makes this a shape-SAFE change that moves the outbound
-// CLOSER to the real codex CLI, exactly like ensureCodexReasoningSummary above.
-//
-// Deliberately NOT done in ConvertToResponsesRequest: that transformer also serves plain
-// (non-codex) Responses channels, which never get the Lite header and whose upstreams may
-// reject the unknown field. Living in the codex shaper keeps every other channel's bytes
-// untouched.
-//
-// Unlike the summary default this must NOT be gated on a non-empty effort: the rule is tied
-// to the header, not to reasoning being requested, so a request with no reasoning at all
-// still needs the field and materializes a context-only reasoning object.
-func ensureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
-	if req == nil {
-		return
-	}
-	// Ghost-pairing guard: this field exists ONLY to satisfy the Lite-header pairing
-	// rule. A denylisted model (gpt-5.5 family) gets no Lite header on the wire, so
-	// forcing its pairing field would ship a headless constraint with no justification.
-	// Header and body consult one shared decision (codexResponsesLiteApplies) so they
-	// can never disagree about whether the pairing rule is in effect.
-	if !codexResponsesLiteApplies(req.Model) {
-		return
-	}
-	// Lite makes this a hard wire-contract value, not a client preference. Preserving an
-	// explicit non-all_turns value while still emitting the Lite header produces the exact
-	// upstream 400 this helper exists to prevent.
-	req.ReasoningContext = codexReasoningContextAllTurns
-}
-
-// ensureCodexParallelToolCalls forces parallel_tool_calls=false on the codex path.
-//
-// The upstream added a hard pairing rule: a request carrying
-// X-OpenAI-Internal-Codex-Responses-Lite: true MUST also set parallel_tool_calls=false,
-// else it is rejected outright:
-//
-//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false.
-//
-// applyCodexHeaderDefaultsWithFingerprint synthesizes that header for every codex
-// outbound (oct adds it itself; it is not forwarded from the client), so oct owns the
-// paired body field too — filling it here keeps header and body consistent instead of
-// shipping a self-contradictory request. That makes this a shape-SAFE change that moves
-// the outbound CLOSER to the real codex CLI, exactly like ensureCodexReasoningContext.
-//
-// Unlike reasoning.context (which accepts only "all_turns" but still lets a genuine
-// codex CLI's explicit value pass through), the upstream here demands a single hard
-// value — false — so an explicit client `true` MUST be overridden to false, exactly
-// like normalizeCodexReasoningEffort overrides unsupported effort values. A genuine
-// codex CLI already sends parallel_tool_calls=false, so this only coerces the
-// incoherent true/empty case.
-//
-// This MUST run AFTER ensureCodexAgentContext so it has the final word on the field:
-// ensureCodexAgentContext only sets false when nil + tools present + no raw tools,
-// leaving an explicit client `true` OR a no-tools request still 400ing. Placed
-// alongside ensureCodexReasoningContext it keeps every Lite-header pairing rule in
-// one shaper (Ponytail: one canonical seam, no duplicated wheel in modeltest).
-//
-// Deliberately NOT done in ConvertToResponsesRequest: that transformer also serves
-// plain (non-codex) Responses channels, which never get the Lite header and whose
-// upstreams may handle the field differently. Living in the codex shaper keeps every
-// other channel's bytes untouched.
-// ensureCodexTextVerbosity fills the top-level `text` member a genuine codex client always
-// sends. 依据: 2026-10-10 归档的两份真 Codex CLI /v1/responses 抓包
-// (2026-10-10-gpt-6-astra-golden-direct-v1_responses-002.json 与 …-viaoct-…-004.json) 顶层键序
-// 完全一致(model, stream, input, tool_choice, parallel_tool_calls, reasoning, store, include,
-// prompt_cache_key, text, client_metadata), 且两份的 text 都是 {"verbosity":"low"}。
-// 只在**缺席**时补(调用方自己发的 text 不覆盖), 由 relay_codex_text_verbosity 开关控制(默认开),
-// 补了就打日志 —— 与补齐 Claude 三键 / safeguards 同一族做法。
-func ensureCodexTextVerbosity(req *transformerModel.InternalLLMRequest) {
-	if req == nil || len(req.ResponsesTextRaw) > 0 {
-		return
-	}
-	if settingString(dbmodel.SettingKeyRelayCodexTextVerbosity, "true") != "true" {
-		return
-	}
-	req.ResponsesTextRaw = json.RawMessage(`{"verbosity":"low"}`)
-	log.Infof("codex shape: filled the top-level text member with the golden sample value {\"verbosity\":\"low\"} "+
-		"(the caller sent none); key %s=false disables", dbmodel.SettingKeyRelayCodexTextVerbosity)
-}
-
-func ensureCodexParallelToolCalls(req *transformerModel.InternalLLMRequest) {
-	if req == nil {
-		return
-	}
-	// Ghost-pairing guard, mirroring ensureCodexReasoningContext: without the Lite
-	// header there is no pairing rule, so an unset field stays unset and a client's
-	// explicit true stays true instead of being coerced by a rule that does not apply.
-	if !codexResponsesLiteApplies(req.Model) {
-		return
-	}
-	// An explicit false is what we want — keep it (no-op).
-	if req.ParallelToolCalls != nil && !*req.ParallelToolCalls {
-		return
-	}
-	// nil (omitempty would drop it -> 400) OR explicit true (upstream rejects it) -> force false.
-	falseVal := false
-	req.ParallelToolCalls = &falseVal
 }
 
 // codexEffortAllowSet is the exact set of reasoning.effort values the codex upstream
@@ -944,33 +834,10 @@ func codexShapeStringValue(value any) string {
 	}
 }
 
-// EnsureCodexReasoningContext is the exported wrapper around ensureCodexReasoningContext
-// for callers outside the relay package (notably internal/modeltest). The modeltest path
-// also synthesizes X-OpenAI-Internal-Codex-Responses-Lite via applyCodexHeaderDefaults,
-// so it MUST run the same context normalization the relay forward path runs, or the
-// upstream rejects its probe with the same
-// `requires reasoning.context to be all_turns` 400 the relay path used to 400 on.
-// See prepareCodexModelTestShape in internal/modeltest/runner.go.
-func EnsureCodexReasoningContext(req *transformerModel.InternalLLMRequest) {
-	ensureCodexReasoningContext(req)
-}
-
 // NormalizeCodexReasoningEffort is the exported wrapper around
 // normalizeCodexReasoningEffort for callers outside the relay package (notably
-// internal/modeltest). Same reasoning as EnsureCodexReasoningContext: the modeltest
-// path also injects the Lite header, so the upstream applies the same effort rule
-// and would 400 with `level "minimal" not supported` without this remap.
+// internal/modeltest). The modeltest path runs the same effort normalization as the
+// relay forward path, so a probe never 400s with `level "minimal" not supported`.
 func NormalizeCodexReasoningEffort(req *transformerModel.InternalLLMRequest) {
 	normalizeCodexReasoningEffort(req)
-}
-
-// EnsureCodexParallelToolCalls is the exported wrapper around
-// ensureCodexParallelToolCalls for callers outside the relay package (notably
-// internal/modeltest). Same reasoning as EnsureCodexReasoningContext: the modeltest
-// path also injects the Lite header, so the upstream applies the same hard pairing
-// rule and would 400 the probe with the same
-// `requires parallel_tool_calls to be false` 400 the relay path used to 400 on.
-// See prepareCodexModelTestShape in internal/modeltest/runner.go.
-func EnsureCodexParallelToolCalls(req *transformerModel.InternalLLMRequest) {
-	ensureCodexParallelToolCalls(req)
 }

@@ -201,13 +201,11 @@ type InternalLLMRequest struct {
 	// outbound projects it back onto reasoning.summary; other outbounds ignore it.
 	ReasoningSummary string `json:"-"`
 
-	// ReasoningContext carries the client's reasoning.context preference. The upstream
-	// requires context="all_turns" on any request bearing the header
-	// X-OpenAI-Internal-Codex-Responses-Lite: true, which oct synthesizes for every codex
-	// outbound — so the codex shaper (ensureCodexReasoningContext) fills this in when the
-	// client left it empty, keeping header and body consistent. An explicit client value is
-	// never overwritten. Help field: only the Responses outbound projects it back onto
-	// reasoning.context; other outbounds ignore it.
+	// ReasoningContext carries the client's reasoning.context preference. Octopus no longer
+	// injects a default for it (the real Codex CLI 0.163 sends no
+	// X-OpenAI-Internal-Codex-Responses-Lite header, so there is no header/body pairing rule);
+	// the codex shaper only forwards whatever the client sent, faithfully. Help field: only the
+	// Responses outbound projects it back onto reasoning.context; other outbounds ignore it.
 	ReasoningContext string `json:"-"`
 
 	// Reasoning budget for reasoning models.

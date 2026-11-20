@@ -1,153 +1,44 @@
 package relay
 
 import (
+	"encoding/json"
 	"testing"
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
 	"github.com/bestruirui/octopus/internal/transformer/model"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 )
 
-// The upstream rejects any request carrying the header
-// X-OpenAI-Internal-Codex-Responses-Lite: true unless the body also sets
-// parallel_tool_calls=false:
-//
-//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false.
-//
-// applyCodexHeaderDefaultsWithFingerprint synthesizes that header on EVERY codex
-// outbound, so oct owns the paired body field. These tests lock the pairing.
+// Octopus no longer force-sets parallel_tool_calls=false to pair with the
+// X-OpenAI-Internal-Codex-Responses-Lite header (oct no longer synthesizes that header, and the
+// real Codex CLI 0.163 sends no such header). An explicit client true is preserved; a false
+// is preserved; and on turns where ensureCodexAgentContext introduces no default Codex tools an
+// absent field stays absent. The only remaining default that sets false is ensureCodexAgentContext
+// itself when it injects the default Codex tools (kept unchanged).
 
-// A request that left parallel_tool_calls unset (the common case for a chat->codex
-// request, or a codex client that simply omits the field) MUST come out of the shaper
-// with parallel_tool_calls=false. Without this fix omitempty drops the field and the
-// upstream 400s the same way it used to 400 on a missing reasoning.context.
-func TestEnsureCodexParallelToolCallsDefaultsFalseWhenNil(t *testing.T) {
-	req := &transformerModel.InternalLLMRequest{
-		Model: "gpt-5.6-sol",
-	}
-	ensureCodexParallelToolCalls(req)
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected parallel_tool_calls to default to false, got %#v", req.ParallelToolCalls)
-	}
-}
-
-// Ghost-pairing guard: a denylisted model (gpt-5.5 family) gets NO Lite header on the
-// wire, so there is no pairing rule to satisfy. An unset field must stay unset (no
-// headless coercion) and an explicit true stays the client's own choice.
-func TestEnsureCodexParallelToolCallsSkipsLiteDeniedModels(t *testing.T) {
-	trueVal := true
-	nilModelReq := &transformerModel.InternalLLMRequest{
-		Model: "gpt-5.5",
-	}
-	explicitTrueReq := &transformerModel.InternalLLMRequest{
-		Model:             "gpt-5.5",
-		ParallelToolCalls: &trueVal,
-	}
-
-	ensureCodexParallelToolCalls(nilModelReq)
-	ensureCodexParallelToolCalls(explicitTrueReq)
-
-	if nilModelReq.ParallelToolCalls != nil {
-		t.Fatalf("expected parallel_tool_calls to stay unset for a Lite-denied model, got %#v", nilModelReq.ParallelToolCalls)
-	}
-	if explicitTrueReq.ParallelToolCalls == nil || !*explicitTrueReq.ParallelToolCalls {
-		t.Fatalf("expected explicit client true to survive for a Lite-denied model, got %#v", explicitTrueReq.ParallelToolCalls)
-	}
-}
-
-// A request that explicitly sent parallel_tool_calls=true MUST be coerced to false,
-// mirroring normalizeCodexReasoningEffort's override of unsupported effort values.
-// The upstream demands a single hard value; an explicit client true is incoherent under
-// the Lite header oct synthesizes, exactly like an explicit store=true is overridden
-// elsewhere in this shaper.
-func TestEnsureCodexParallelToolCallsOverridesExplicitTrue(t *testing.T) {
-	trueVal := true
-	req := &transformerModel.InternalLLMRequest{
-		Model:             "gpt-5.6-sol",
-		ParallelToolCalls: &trueVal,
-	}
-	ensureCodexParallelToolCalls(req)
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected explicit true to be coerced to false, got %#v", req.ParallelToolCalls)
-	}
-}
-
-// A genuine codex CLI already sends parallel_tool_calls=false; echoing that back is what
-// keeps oct faithful, so an explicit client false MUST survive untouched (no double-set).
-func TestEnsureCodexParallelToolCallsKeepsExplicitFalse(t *testing.T) {
-	falseVal := false
-	req := &transformerModel.InternalLLMRequest{
-		Model:             "gpt-5.6-sol",
-		ParallelToolCalls: &falseVal,
-	}
-	ensureCodexParallelToolCalls(req)
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected explicit false to survive, got %#v", req.ParallelToolCalls)
-	}
-}
-
-func TestEnsureCodexParallelToolCallsNilRequestIsNoop(t *testing.T) {
-	ensureCodexParallelToolCalls(nil)
-}
-
-// End-to-end through the real codex shaper (not just the helper in isolation): a codex
-// Responses request must come out of prepareCodexRequestShape carrying parallel_tool_calls=false,
-// since that same path is what makes applyCodexHeaderDefaults stamp the Lite header. Header
-// and body have to agree or the upstream 400s.
-func TestPrepareCodexRequestShapeSetsParallelToolCallsFalse(t *testing.T) {
+// An explicit parallel_tool_calls=true is preserved — the old shaper override to false is gone.
+func TestPrepareCodexRequestShapePreservesExplicitTrueParallelToolCalls(t *testing.T) {
 	content := "Say OK only"
+	trueVal := true
 	req := &model.InternalLLMRequest{
-		Model:        "gpt-5.6-sol",
-		RawAPIFormat: model.APIFormatOpenAIResponse,
+		Model:             "gpt-5.6-sol",
+		RawAPIFormat:      model.APIFormatOpenAIResponse,
+		ParallelToolCalls: &trueVal,
 		Messages: []model.Message{{
 			Role:    "user",
 			Content: model.MessageContent{Content: &content},
 		}},
 	}
-	ra := &relayAttempt{
-		relayRequest: &relayRequest{
-			inboundType:     inbound.InboundTypeOpenAIResponse,
-			internalRequest: req,
-		},
-		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
-	}
-	ra.prepareCodexRequestShape()
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected codex shape to set parallel_tool_calls=false, got %#v", req.ParallelToolCalls)
+
+	codexShapeAttempt(req).prepareCodexRequestShape()
+
+	if req.ParallelToolCalls == nil || !*req.ParallelToolCalls {
+		t.Fatalf("expected explicit parallel_tool_calls=true to survive the shaper, got %#v", req.ParallelToolCalls)
 	}
 }
 
-// The mirror guard: a NON-codex channel never runs the codex shaper, so it must never gain
-// a forced parallel_tool_calls. This is what keeps every other Responses upstream
-// byte-identical to before the fix (an unknown field could itself be a 400 there, and
-// even when known the value the upstream expects may differ).
-func TestPrepareCodexRequestShapeSkipsParallelToolCallsForNonCodexChannel(t *testing.T) {
-	content := "Say OK only"
-	req := &model.InternalLLMRequest{
-		Model:        "gpt-4o",
-		RawAPIFormat: model.APIFormatOpenAIChatCompletion,
-		Messages: []model.Message{{
-			Role:    "user",
-			Content: model.MessageContent{Content: &content},
-		}},
-	}
-	ra := &relayAttempt{
-		relayRequest: &relayRequest{
-			inboundType:     inbound.InboundTypeOpenAIChat,
-			internalRequest: req,
-		},
-		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIChat},
-	}
-	ra.prepareCodexRequestShape()
-	if req.ParallelToolCalls != nil {
-		t.Fatalf("expected no forced parallel_tool_calls on a non-codex channel, got %#v", req.ParallelToolCalls)
-	}
-}
-
-// A genuine codex CLI's explicit parallel_tool_calls=false MUST survive the full shaper —
-// the shaper is not allowed to overwrite a faithful value with its own default.
+// A genuine codex CLI's explicit parallel_tool_calls=false survives the full shaper untouched.
 func TestPrepareCodexRequestShapePreservesExplicitFalseParallelToolCalls(t *testing.T) {
 	content := "Say OK only"
 	falseVal := false
@@ -160,28 +51,72 @@ func TestPrepareCodexRequestShapePreservesExplicitFalseParallelToolCalls(t *test
 			Content: model.MessageContent{Content: &content},
 		}},
 	}
-	ra := &relayAttempt{
-		relayRequest: &relayRequest{
-			inboundType:     inbound.InboundTypeOpenAIResponse,
-			internalRequest: req,
-		},
-		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
-	}
-	ra.prepareCodexRequestShape()
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected explicit false to survive the shaper, got %#v", req.ParallelToolCalls)
+
+	codexShapeAttempt(req).prepareCodexRequestShape()
+
+	if req.ParallelToolCalls == nil || *req.ParallelToolCalls {
+		t.Fatalf("expected explicit parallel_tool_calls=false preserved, got %#v", req.ParallelToolCalls)
 	}
 }
 
-// A client that sent an incoherent parallel_tool_calls=true under the Lite header MUST
-// come out of the full shaper with parallel_tool_calls=false — the shaper overrides the
-// client's value to keep header and body consistent, exactly like store=true is overridden.
-func TestPrepareCodexRequestShapeOverridesExplicitTrueParallelToolCalls(t *testing.T) {
+// On a turn where ensureCodexAgentContext injects the default Codex tools, parallel_tool_calls is
+// still defaulted to false as part of that tool round-trip (the AgentContext default is kept; only
+// the separate Lite-pairing force-set was removed).
+func TestPrepareCodexRequestShapeDefaultsParallelToolCallsFalseViaAgentContext(t *testing.T) {
 	content := "Say OK only"
-	trueVal := true
+	req := &model.InternalLLMRequest{
+		Model:        "gpt-5.6-sol",
+		RawAPIFormat: model.APIFormatOpenAIResponse,
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+
+	codexShapeAttempt(req).prepareCodexRequestShape()
+
+	if len(req.Tools) == 0 {
+		t.Fatalf("precondition: default Codex tools should have been injected, got none")
+	}
+	if req.ParallelToolCalls == nil || *req.ParallelToolCalls {
+		t.Fatalf("expected AgentContext default parallel_tool_calls=false alongside the tools, got %#v", req.ParallelToolCalls)
+	}
+}
+
+// On a tool-output continuation ensureCodexAgentContext introduces no default tools, so an absent
+// parallel_tool_calls stays absent instead of being forced (the old forced-false is gone).
+func TestPrepareCodexRequestShapeDoesNotForceParallelToolCallsOnToolOutputTurn(t *testing.T) {
+	callID := "call_1"
+	output := "result"
 	req := &model.InternalLLMRequest{
 		Model:             "gpt-5.6-sol",
 		RawAPIFormat:      model.APIFormatOpenAIResponse,
+		ResponsesInputRaw: json.RawMessage(`[{"type":"function_call_output","call_id":"call_1","output":"result"}]`),
+		Messages: []model.Message{
+			{Role: "assistant", ToolCalls: []model.ToolCall{{
+				ID:       callID,
+				Type:     "function",
+				Function: model.FunctionCall{Name: "f", Arguments: "{}"},
+			}}},
+			{Role: "tool", ToolCallID: &callID, Content: model.MessageContent{Content: &output}},
+		},
+	}
+
+	codexShapeAttempt(req).prepareCodexRequestShape()
+
+	if req.ParallelToolCalls != nil {
+		t.Fatalf("expected absent parallel_tool_calls to stay absent on a tool-output turn, got %#v", req.ParallelToolCalls)
+	}
+}
+
+// A NON-codex channel never runs the codex shaper, so it must never gain a forced
+// parallel_tool_calls even when the client sent true.
+func TestPrepareCodexRequestShapeSkipsParallelToolCallsForNonCodexChannel(t *testing.T) {
+	content := "Say OK only"
+	trueVal := true
+	req := &model.InternalLLMRequest{
+		Model:             "gpt-4o",
+		RawAPIFormat:      model.APIFormatOpenAIChatCompletion,
 		ParallelToolCalls: &trueVal,
 		Messages: []model.Message{{
 			Role:    "user",
@@ -190,13 +125,15 @@ func TestPrepareCodexRequestShapeOverridesExplicitTrueParallelToolCalls(t *testi
 	}
 	ra := &relayAttempt{
 		relayRequest: &relayRequest{
-			inboundType:     inbound.InboundTypeOpenAIResponse,
+			inboundType:     inbound.InboundTypeOpenAIChat,
 			internalRequest: req,
 		},
-		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIChat},
 	}
+
 	ra.prepareCodexRequestShape()
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected explicit true to be overridden to false, got %#v", req.ParallelToolCalls)
+
+	if req.ParallelToolCalls == nil || !*req.ParallelToolCalls {
+		t.Fatalf("expected explicit true to survive on a non-codex channel, got %#v", req.ParallelToolCalls)
 	}
 }

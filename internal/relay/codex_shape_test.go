@@ -167,12 +167,10 @@ func TestApplyCodexFastModeSetsPriorityServiceTierWithoutLoweringEffort(t *testi
 	if req.ServiceTier == nil || *req.ServiceTier != "priority" {
 		t.Fatalf("fast mode must set service_tier=priority, got %#v", req.ServiceTier)
 	}
-	// 2026-10-10 口径更新: 真 Codex CLI 抓包两份都带顶层 text={"verbosity":"low"} ⇒ 现在会补这个
-	// 成员(见 ensureCodexTextVerbosity)。本条真正要守的是"**快模式不许把 verbosity 调低**" ——
-	// 补出来的是黄金样本的默认值 low, 与"快模式降级"不是一回事, 所以断言改成: 只要补了, 值必须是
-	// 那个默认值(即快模式没有往里写别的值)。
-	if len(req.ResponsesTextRaw) != 0 && string(req.ResponsesTextRaw) != `{"verbosity":"low"}` {
-		t.Fatalf("fast mode must not change verbosity (only the golden default may appear), got %s", string(req.ResponsesTextRaw))
+	// oct no longer injects a top-level `text` member (the real CLI 0.163 sends none and the
+	// old ensureCodexTextVerbosity helper was removed). Fast mode must not introduce one either.
+	if len(req.ResponsesTextRaw) != 0 {
+		t.Fatalf("fast mode must not inject a top-level text member, got %s", string(req.ResponsesTextRaw))
 	}
 
 	existing := "flex"
@@ -222,9 +220,9 @@ func TestPrepareCodexRequestShapeSynthesizesPlainResponsesInput(t *testing.T) {
 	if !containsString(req.Include, "reasoning.encrypted_content") {
 		t.Fatalf("expected reasoning encrypted content include, got %#v", req.Include)
 	}
-	// 同上: 默认(非快模式)现在按黄金样本补 {"verbosity":"low"}; 调用方自己发的不许被改。
-	if got := string(req.ResponsesTextRaw); got != "" && got != `{"verbosity":"low"}` {
-		t.Fatalf("expected the golden text verbosity when the caller sent none, got %s", got)
+	// oct injects no top-level `text` member; a caller that sent none must get none back.
+	if got := string(req.ResponsesTextRaw); got != "" {
+		t.Fatalf("expected no injected text verbosity when the caller sent none, got %s", got)
 	}
 	if req.ReasoningEffort != "" {
 		t.Fatalf("expected no forced reasoning effort when fast mode is off by default, got %q", req.ReasoningEffort)
@@ -233,6 +231,34 @@ func TestPrepareCodexRequestShapeSynthesizesPlainResponsesInput(t *testing.T) {
 		t.Fatalf("expected text shorthand to be replaced, got %s", string(req.ResponsesInputRaw))
 	}
 	assertCodexInputRaw(t, req.ResponsesInputRaw, "Say OK only")
+}
+
+// An explicit caller-sent top-level `text` member is preserved byte-for-byte — oct no longer
+// injects (or rewrites) it (ensureCodexTextVerbosity was removed).
+func TestPrepareCodexRequestShapePreservesExplicitResponsesTextRaw(t *testing.T) {
+	content := "Say OK only"
+	req := &model.InternalLLMRequest{
+		Model:            "gpt-5.6-sol",
+		RawAPIFormat:     model.APIFormatOpenAIResponse,
+		ResponsesTextRaw: json.RawMessage(`{"verbosity":"high"}`),
+		Messages: []model.Message{{
+			Role:    "user",
+			Content: model.MessageContent{Content: &content},
+		}},
+	}
+	ra := &relayAttempt{
+		relayRequest: &relayRequest{
+			inboundType:     inbound.InboundTypeOpenAIResponse,
+			internalRequest: req,
+		},
+		channel: &dbmodel.Channel{Type: outbound.OutboundTypeOpenAIResponse},
+	}
+
+	ra.prepareCodexRequestShape()
+
+	if got := string(req.ResponsesTextRaw); got != `{"verbosity":"high"}` {
+		t.Fatalf("expected explicit text member preserved, got %s", got)
+	}
 }
 
 // TestPrepareCodexRequestShapeRebuildsToolOutputContinuation verifies that a tool-output
@@ -1054,10 +1080,11 @@ func assertCodexUpstreamRequest(t *testing.T, path string, headers http.Header, 
 	if got := headers.Get("X-Codex-Beta-Features"); got != defaultCodexBetaFeatures {
 		t.Fatalf("codex beta features = %q, want %q", got, defaultCodexBetaFeatures)
 	}
-	// codex 0.144.x always emits this static header on /responses (packet-verified); assert
-	// the exact "true" so a dropped injection or a value flip is caught as a shape drift.
-	if got := headers.Get("X-Openai-Internal-Codex-Responses-Lite"); got != "true" {
-		t.Fatalf("codex responses-lite header = %q, want %q", got, "true")
+	// oct no longer synthesizes the Lite capability header (the real Codex CLI 0.163 sends
+	// none, and oct removed the setMissingLite default). With no explicit operator/client Lite
+	// header in play it must stay ABSENT so the outbound is byte-faithful to the real CLI.
+	if got := headers.Get("X-Openai-Internal-Codex-Responses-Lite"); got != "" {
+		t.Fatalf("codex responses-lite header must be absent, got %q", got)
 	}
 	if got := headers.Get("Accept"); !strings.Contains(got, "text/event-stream") {
 		t.Fatalf("expected upstream SSE Accept header, got %q", got)

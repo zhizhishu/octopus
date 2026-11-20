@@ -3,9 +3,9 @@ package modeltest
 import (
 	"testing"
 
+	dbmodel "github.com/bestruirui/octopus/internal/model"
 	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
 )
 
 // resolvedFingerprint with no profile returns the global setting value for every getter,
@@ -13,13 +13,11 @@ import (
 // fingerprint profile code paths here, only the codex reasoning normalization wiring).
 func zeroFP() resolvedFingerprint { return resolvedFingerprint{} }
 
-// prepareCodexModelTestRequest must run the SAME reasoning context + effort normalization
-// the relay forward path runs, because the modeltest path also synthesizes the
-// X-OpenAI-Internal-Codex-Responses-Lite header (via applyCodexHeaderDefaults in
-// runOne -> applyHeaderDefaults), so the upstream applies the same body-field pairing
-// rule. Without this the web "channel test" button 400s on the same
-// `requires reasoning.context to be all_turns` / `level "minimal" not supported` the
-// relay path used to 400 on.
+// prepareCodexModelTestRequest runs the SAME codex effort normalization the relay forward path
+// runs. The real Codex CLI 0.163 sends no X-OpenAI-Internal-Codex-Responses-Lite header and oct
+// no longer synthesizes one, so there is no header/body pairing rule (reasoning.context /
+// parallel_tool_calls) to satisfy; only the effort remap remains, so the web "channel test"
+// button never 400s with `level "minimal" not supported`.
 
 func TestPrepareCodexModelTestDefaultsContextAndHighEffortForGPT56(t *testing.T) {
 	req := &transformermodel.InternalLLMRequest{
@@ -28,8 +26,8 @@ func TestPrepareCodexModelTestDefaultsContextAndHighEffortForGPT56(t *testing.T)
 		ReasoningContext: "",
 	}
 	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected reasoning.context=all_turns on default gpt-5.6 modeltest probe, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected no reasoning.context injection on the modeltest probe (oct no longer forces all_turns), got %q", req.ReasoningContext)
 	}
 	if req.ReasoningEffort != "high" {
 		t.Fatalf("expected reasoning.effort=high (empty default for gpt-5.6), got %q", req.ReasoningEffort)
@@ -46,8 +44,8 @@ func TestPrepareCodexModelTestRemapsMinimalEffortToLowForGPT56(t *testing.T) {
 	if req.ReasoningEffort != "low" {
 		t.Fatalf("expected reasoning.effort=low (minimal remap for gpt-5.6), got %q", req.ReasoningEffort)
 	}
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected reasoning.context=all_turns, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected no reasoning.context injection, got %q", req.ReasoningContext)
 	}
 }
 
@@ -61,15 +59,14 @@ func TestPrepareCodexModelTestPreservesExplicitHighEffortForGPT56(t *testing.T) 
 	if req.ReasoningEffort != "high" {
 		t.Fatalf("expected explicit reasoning.effort=high to pass through, got %q", req.ReasoningEffort)
 	}
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected reasoning.context=all_turns, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected no reasoning.context injection, got %q", req.ReasoningContext)
 	}
 }
 
 func TestPrepareCodexModelTestContextStillInjectedForNon56Model(t *testing.T) {
-	// A non-5.6 codex model outside the Lite denylist: effort "minimal" is NOT remapped
-	// (only gpt-5.6 has the allow-set restriction), and context is STILL injected because
-	// the Lite header ships for every non-denied codex outbound.
+	// A non-5.6 codex model: effort "minimal" is NOT remapped (only gpt-5.6 has the
+	// allow-set restriction), and no reasoning.context is injected (the pairing rule is gone).
 	req := &transformermodel.InternalLLMRequest{
 		Model:            "gpt-4.1-mini",
 		ReasoningEffort:  "minimal",
@@ -82,9 +79,9 @@ func TestPrepareCodexModelTestContextStillInjectedForNon56Model(t *testing.T) {
 }
 
 func TestPrepareCodexModelTestSkipsPairingFieldsForDeniedModel(t *testing.T) {
-	// Ghost-pairing guard on the modeltest path: gpt-5.5 is Lite-denied, so it gets NO
-	// Lite header on the wire and must NOT receive the pairing-only reasoning.context
-	// default either. Its explicit minimal effort also passes through untouched.
+	// gpt-5.5 is Lite-denied (no Lite header on the wire). Octopus no longer injects
+	// reasoning.context for ANY model, so it stays empty here; its explicit minimal effort
+	// also passes through untouched.
 	req := &transformermodel.InternalLLMRequest{
 		Model:            "gpt-5.5",
 		ReasoningEffort:  "minimal",
@@ -99,25 +96,23 @@ func TestPrepareCodexModelTestSkipsPairingFieldsForDeniedModel(t *testing.T) {
 	}
 }
 
-func TestPrepareCodexModelTestOverridesIncompatibleClientContext(t *testing.T) {
-	// Lite's hard pairing rule requires all_turns regardless of the downstream client's
-	// preference; forwarding another value would be rejected before inference.
+func TestPrepareCodexModelTestPreservesExplicitReasoningContext(t *testing.T) {
+	// Octopus no longer forces reasoning.context to all_turns, so the downstream client's
+	// explicit choice is forwarded verbatim.
 	req := &transformermodel.InternalLLMRequest{
 		Model:            "gpt-5.6-sol",
 		ReasoningEffort:  "high",
 		ReasoningContext: "client_chosen",
 	}
 	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected Lite-compatible reasoning.context, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "client_chosen" {
+		t.Fatalf("expected explicit reasoning.context preserved, got %q", req.ReasoningContext)
 	}
 }
 
 // Sanity-check the wiring through the channel type branch: a NON-OpenAIResponse channel
-// type returns early from prepareCodexModelTestRequest after the metadata setup, so
-// reasoning normalization must NOT have run. (The header apply is also gated on the
-// channel type via applyHeaderDefaults, so this is consistent: no Lite header on a
-// non-codex channel => no context/effort injection either.)
+// type returns early from prepareCodexModelTestRequest after the metadata setup, so the
+// codex effort normalization must NOT have run on it.
 func TestPrepareCodexModelTestSkipsReasoningForNonOpenAIResponseChannel(t *testing.T) {
 	req := &transformermodel.InternalLLMRequest{
 		Model:            "gpt-5.6-sol",
@@ -136,10 +131,8 @@ func TestPrepareCodexModelTestSkipsReasoningForNonOpenAIResponseChannel(t *testi
 }
 
 // modelTestUsesCodexFingerprint gates whether runOne calls prepareCodexModelTestRequest
-// (which sets reasoning.context=all_turns + normalizes effort). The gate MUST agree with
-// applyHeaderDefaults about whether the Lite header will be added — otherwise the
-// header goes out without its paired body field and the upstream 400s with the same
-// `requires reasoning.context to be all_turns` the relay path used to 400 on.
+// (which now only normalizes reasoning.effort). The gate decides whether the codex
+// fingerprint path is applied for a given channel type / endpoint.
 //
 // The web UI's "channel test" button defaults to the openai_chat endpoint, NOT
 // openai_responses. applyHeaderDefaults adds the Lite header to a type=1 codex channel
@@ -225,41 +218,32 @@ func TestModelTestUsesCodexFingerprintSkipsNonCodexChannelTypes(t *testing.T) {
 	}
 }
 
-// The upstream added a third hard pairing rule to the same Lite header: a request carrying
-// X-OpenAI-Internal-Codex-Responses-Lite: true MUST also set parallel_tool_calls=false,
-// else it is rejected outright:
-//
-//	400 X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false.
-//
-// The modeltest path synthesizes the Lite header via applyCodexHeaderDefaults for every
-// type=1 codex channel on every endpoint (see modelTestUsesCodexFingerprint above), so the
-// paired body field MUST be set too. prepareCodexModelTestShape injects default tools +
-// tool_choice="auto" — without the shared shaper, omitempty would drop parallel_tool_calls
-// and the web "channel test" button 400s the same way the relay path used to 400 on a
-// missing reasoning.context. These tests lock the Ponytail seam: one shared helper
-// (relay.EnsureCodexParallelToolCalls), called by both paths, no duplicated wheel.
+// Octopus no longer force-sets parallel_tool_calls to pair with the
+// X-OpenAI-Internal-Codex-Responses-Lite header (the header itself is no longer synthesized).
+// The modeltest shaper leaves an absent field absent and preserves an explicit client true —
+// faithful forwarding of whatever the caller sent.
 
-func TestPrepareCodexModelTestDefaultsParallelToolCallsFalse(t *testing.T) {
+func TestPrepareCodexModelTestDoesNotForceParallelToolCalls(t *testing.T) {
 	req := &transformermodel.InternalLLMRequest{
 		Model: "gpt-5.6-sol",
 	}
 	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected parallel_tool_calls to default to false on default modeltest probe, got %#v", req.ParallelToolCalls)
+	if req.ParallelToolCalls != nil {
+		t.Fatalf("expected parallel_tool_calls to stay absent (oct no longer forces false), got %#v", req.ParallelToolCalls)
 	}
 }
 
-// A client that explicitly sent parallel_tool_calls=true under the Lite header MUST be
-// coerced to false by the shared shaper — the upstream demands a single hard value.
-func TestPrepareCodexModelTestOverridesExplicitTrueParallelToolCalls(t *testing.T) {
+// An explicit parallel_tool_calls=true is preserved — oct no longer coerces it to false (the
+// Lite-header pairing rule is gone).
+func TestPrepareCodexModelTestPreservesExplicitTrueParallelToolCalls(t *testing.T) {
 	trueVal := true
 	req := &transformermodel.InternalLLMRequest{
 		Model:             "gpt-5.6-sol",
 		ParallelToolCalls: &trueVal,
 	}
 	prepareCodexModelTestRequest(req, outbound.OutboundTypeOpenAIResponse, zeroFP())
-	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
-		t.Fatalf("expected explicit true to be coerced to false, got %#v", req.ParallelToolCalls)
+	if req.ParallelToolCalls == nil || !*req.ParallelToolCalls {
+		t.Fatalf("expected explicit true preserved, got %#v", req.ParallelToolCalls)
 	}
 }
 
@@ -278,10 +262,8 @@ func TestPrepareCodexModelTestPreservesExplicitFalseParallelToolCalls(t *testing
 }
 
 // Sanity-check the wiring through the channel type branch: a NON-OpenAIResponse channel
-// type returns early from prepareCodexModelTestRequest after the metadata setup, so
-// parallel_tool_calls normalization must NOT have run. (The header apply is also gated on
-// the channel type via applyHeaderDefaults, so this is consistent: no Lite header on a
-// non-codex channel => no parallel_tool_calls injection either.)
+// type returns early from prepareCodexModelTestRequest after the metadata setup, so the
+// codex shaper (and any parallel_tool_calls handling) must NOT have run on it.
 func TestPrepareCodexModelTestSkipsParallelToolCallsForNonOpenAIResponseChannel(t *testing.T) {
 	trueVal := true
 	req := &transformermodel.InternalLLMRequest{

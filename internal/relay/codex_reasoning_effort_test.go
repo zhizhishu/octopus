@@ -316,7 +316,7 @@ func TestPrepareCodexRequestShapeMinimalReasoningEffortGPT56RemapsToLow(t *testi
 	if req.ReasoningEffort != "low" {
 		t.Fatalf("expected reasoning.effort on gpt-5.6 to remap to low, got %q", req.ReasoningEffort)
 	}
-	if req.ReasoningContext != "all_turns" {
-		t.Fatalf("expected reasoning.context to default to all_turns, got %q", req.ReasoningContext)
+	if req.ReasoningContext != "" {
+		t.Fatalf("expected no reasoning.context injection (oct no longer forces all_turns), got %q", req.ReasoningContext)
 	}
 }

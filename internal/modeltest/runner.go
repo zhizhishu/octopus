@@ -1112,15 +1112,13 @@ func modelTestUsesCodexFingerprint(channel *dbmodel.Channel, endpointName string
 	if channel == nil || !shouldApplyChannelCloak(channel.Cloak) {
 		return false
 	}
-	// A genuine codex outbound (OutboundTypeOpenAIResponse, type=1) ALWAYS gets the
-	// X-Openai-Internal-Codex-Responses-Lite header injected by applyHeaderDefaults
+	// A codex outbound (OutboundTypeOpenAIResponse, type=1) uses the codex fingerprint
 	// regardless of the inbound test endpoint (the UI's "channel test" button defaults
-	// to openai_chat, not openai_responses). The paired reasoning.context=all_turns
-	// field must therefore be set on every endpoint too — otherwise the Lite header
-	// is sent without its body-field pair and the upstream 400s with the same
-	// `requires reasoning.context to be all_turns` the relay path used to 400 on.
-	// The chat/custom-chat outbound types below only get the Lite header on the
-	// openai_responses endpoint, so they keep the endpoint gate.
+	// to openai_chat, not openai_responses). oct no longer synthesizes the
+	// X-Openai-Internal-Codex-Responses-Lite header nor a paired reasoning.context, so this
+	// gate only selects the codex fingerprint, not a body-field pair. The chat/custom-chat
+	// outbound types below only use the codex fingerprint on the openai_responses endpoint,
+	// so they keep the endpoint gate.
 	if channel.Type == outbound.OutboundTypeOpenAIResponse {
 		return true
 	}
@@ -1281,25 +1279,14 @@ func prepareCodexModelTestShape(req *transformermodel.InternalLLMRequest) {
 	if len(req.ResponsesInputRaw) == 0 {
 		req.ResponsesInputRaw = synthesizeCodexModelTestInput(req.Messages)
 	}
-	// Run the SAME codex reasoning normalization the relay forward path runs. The modeltest
-	// path also injects X-Openai-Internal-Codex-Responses-Lite via applyCodexHeaderDefaults
-	// (runner.go applyHeaderDefaults case OutboundTypeOpenAIResponse), so the upstream
-	// applies the same body-field pairing rule and would otherwise 400 the probe with the
-	// same `requires reasoning.context to be all_turns` / `level "minimal" not supported`
-	// the relay path used to 400 on. Without this the web "channel test" button 400s even
-	// when the real relay path is fixed. Placed AFTER the FastMode default above so it
-	// never gets overwritten, and after input synthesis so a synthesized input cannot
-	// accidentally clear what these set.
+	// Run the SAME codex effort normalization the relay forward path runs. The real Codex
+	// CLI 0.163 sends no X-Openai-Internal-Codex-Responses-Lite header and oct no longer
+	// synthesizes one, so there is no longer a header/body pairing rule (reasoning.context /
+	// parallel_tool_calls) to satisfy here. The effort remap stays because the upstream still
+	// rejects an unsupported effort (`level "minimal" not supported`) regardless of the header.
+	// Placed AFTER the FastMode default above so it never gets overwritten, and after input
+	// synthesis so a synthesized input cannot accidentally clear what it sets.
 	relay.NormalizeCodexReasoningEffort(req)
-	relay.EnsureCodexReasoningContext(req)
-	// parallel_tool_calls MUST be forced to false too: the upstream added a third
-	// hard pairing rule to the same Lite header, rejecting any request that omits
-	// it or sends true with `requires parallel_tool_calls to be false`. The default
-	// tools injected above plus tool_choice="auto" mean omitempty would otherwise
-	// drop the field and the probe 400s the same way the relay path used to 400 on
-	// before the fix. Run the SAME shared shaper (Ponytail: one canonical seam, no
-	// duplicated wheel here) — never hand-roll a second copy.
-	relay.EnsureCodexParallelToolCalls(req)
 }
 
 func addCodexModelTestInclude(req *transformermodel.InternalLLMRequest) {

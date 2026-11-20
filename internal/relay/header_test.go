@@ -17,11 +17,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestClaudeFingerprintVersionConsistency guards the single drift the two-place
-// Claude CLI version can suffer: the CLI user-agent (internal/model) and the
-// Anthropic outbound billing-header cc_version (…/outbound/authropic) are declared in
-// separate packages because an import cycle forbids sharing one const. This asserts
-// they always name the same version, so bumping one without the other fails CI.
+// TestClaudeFingerprintVersionConsistency pins the Claude CLI version: internal/model's
+// DefaultClaudeCLIVersion IS authropic.ClaudeCLIVersion (internal/model references the
+// authropic constant directly), and the CLI user-agent is built from it. This asserts the
+// billing cc_version and the user-agent always name the same version, so a future edit that
+// re-introduces a separate literal cannot drift.
 func TestClaudeFingerprintVersionConsistency(t *testing.T) {
 	if authropic.ClaudeCLIVersion != dbmodel.DefaultClaudeCLIVersion {
 		t.Fatalf("billing cc_version %q != user-agent version %q", authropic.ClaudeCLIVersion, dbmodel.DefaultClaudeCLIVersion)
@@ -125,9 +125,9 @@ func TestApplyHeaderDefaultsKeepsOriginatorForNonCodexToAnthropic(t *testing.T) 
 // TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta covers the codex
 // (OpenAIResponse) outbound: codex client headers are NOT stripped (stripCodexClientHeaders
 // runs only for Anthropic outbounds), so X-Codex-Beta-Features is kept as sent — BUT
-// Originator (and User-Agent) are FORCE-normalized to the resolved codex_exec fingerprint so
+// Originator (and User-Agent) are FORCE-normalized to the resolved codex_cli_rs fingerprint so
 // originator↔UA always pair for the upstream (sub2api #3901: a mismatch is rejected). A
-// leaked-through arbitrary Originator is overwritten by codex_exec, not preserved.
+// leaked-through arbitrary Originator is overwritten by the fingerprint, not preserved.
 func TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -144,8 +144,8 @@ func TestApplyHeaderDefaultsCodexOutboundNormalizesOriginatorKeepsBeta(t *testin
 
 	ra.copyHeaders(upstreamReq)
 
-	// Originator is force-normalized to the codex_exec fingerprint (overriding the leaked
-	// "my-codex-originator") so it pairs with the codex_exec User-Agent (sub2api #3901).
+	// Originator is force-normalized to the resolved fingerprint (overriding the leaked
+	// "my-codex-originator") so it pairs with the same codex User-Agent (sub2api #3901).
 	if got := upstreamReq.Header.Get("Originator"); got != defaultCodexOriginator {
 		t.Fatalf("codex Originator must be force-normalized to %q, got %q", defaultCodexOriginator, got)
 	}
@@ -566,7 +566,7 @@ func TestRelayCopyHeadersChatShapeClaudeDressesClaudeIdentity(t *testing.T) {
 }
 
 // TestRelayCopyHeadersChatShapeCodexDressesCodexIdentity pins shape="codex": the Chat
-// channel's outbound carries the codex CLI identity (codex_exec UA + paired Originator).
+// channel's outbound carries the codex CLI identity (codex_cli_rs UA + paired Originator).
 func TestRelayCopyHeadersChatShapeCodexDressesCodexIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -756,7 +756,7 @@ func TestClientDeclaredTimeoutIsForwardedVerbatimAndOnlyFilledWhenAbsent(t *test
 		return req
 	}
 
-	const cliUA = "claude-cli/2.1.296 (external, sdk-cli)"
+	const cliUA = "claude-cli/2.1.301 (external, sdk-cli)"
 	if got := upstreamFor(cliUA, "111").Header.Get("X-Stainless-Timeout"); got != "111" {
 		t.Fatalf("a CLI-shaped caller's declared timeout must be forwarded verbatim, got %q", got)
 	}

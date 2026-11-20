@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	fhttp2 "github.com/bogdanfinn/fhttp/http2"
 	"golang.org/x/net/http2"
@@ -241,5 +243,150 @@ func h2CaptureServer(ln net.Listener, orderCh chan<- []string) {
 			})
 			// keep serving (draining) until the client disconnects.
 		}
+	}
+}
+
+// h2SettingsResult is the client's opening HTTP/2 frames captured off the wire:
+// the ordered SETTINGS entries and the connection-level WINDOW_UPDATE increment.
+type h2SettingsResult struct {
+	settings []http2.Setting
+	window   uint32
+}
+
+// serveH2CaptureSettings speaks just enough HTTP/2 to capture the client's
+// opening SETTINGS frame and connection WINDOW_UPDATE, then answers one request
+// with a 200 so the caller's RoundTrip completes.
+func serveH2CaptureSettings(conn net.Conn, resCh chan<- h2SettingsResult) {
+	preface := make([]byte, len(http2.ClientPreface))
+	if _, err := io.ReadFull(conn, preface); err != nil {
+		return
+	}
+	if string(preface) != http2.ClientPreface {
+		return
+	}
+	fr := http2.NewFramer(conn, conn)
+	fr.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
+	if err := fr.WriteSettings(); err != nil {
+		return
+	}
+	var res h2SettingsResult
+	responded := false
+	for {
+		f, err := fr.ReadFrame()
+		if err != nil {
+			return
+		}
+		switch mf := f.(type) {
+		case *http2.SettingsFrame:
+			if mf.IsAck() {
+				continue
+			}
+			for i := 0; i < mf.NumSettings(); i++ {
+				res.settings = append(res.settings, mf.Setting(i))
+			}
+			_ = fr.WriteSettingsAck()
+		case *http2.WindowUpdateFrame:
+			if mf.StreamID == 0 && res.window == 0 {
+				res.window = mf.Increment
+			}
+		case *http2.MetaHeadersFrame:
+			if responded {
+				continue
+			}
+			responded = true
+			resCh <- res
+			var buf bytes.Buffer
+			enc := hpack.NewEncoder(&buf)
+			_ = enc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
+			_ = fr.WriteHeaders(http2.HeadersFrameParam{
+				StreamID:      mf.StreamID,
+				BlockFragment: buf.Bytes(),
+				EndHeaders:    true,
+				EndStream:     true,
+			})
+		}
+	}
+}
+
+// TestCodexH2ConnectionSettings pins the codex face's opening HTTP/2 frames (its
+// fixed SETTINGS + connection window) to the captured genuine-CLI values, and
+// pins the chrome/non-CLI face to the untouched fhttp default — so the codex
+// dressing can never leak onto other upstreams.
+func TestCodexH2ConnectionSettings(t *testing.T) {
+	cases := []struct {
+		name         string
+		path         string
+		wantSettings []http2.Setting
+		wantWindow   uint32
+	}{
+		{
+			name: "codex/responses",
+			path: "/v1/responses",
+			wantSettings: []http2.Setting{
+				{ID: http2.SettingEnablePush, Val: 0},
+				{ID: http2.SettingInitialWindowSize, Val: 2097152},
+				{ID: http2.SettingMaxFrameSize, Val: 16384},
+				{ID: http2.SettingMaxHeaderListSize, Val: 16384},
+			},
+			wantWindow: 5177345,
+		},
+		{
+			name:         "chrome/default",
+			path:         "/v1/chat/completions",
+			wantSettings: []http2.Setting{{ID: http2.SettingEnablePush, Val: 0}},
+			wantWindow:   15663105,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pair := genTestCert(t)
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			defer ln.Close()
+
+			resCh := make(chan h2SettingsResult, 1)
+			go func() {
+				raw, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				hello := readClientHelloRecords(t, raw)
+				replay := &replayConn{Conn: raw, pending: hello}
+				_ = raw.SetReadDeadline(time.Time{})
+				tlsConn := tls.Server(replay, &tls.Config{
+					Certificates: []tls.Certificate{pair},
+					NextProtos:   []string{"h2"},
+				})
+				if err := tlsConn.Handshake(); err != nil {
+					return
+				}
+				serveH2CaptureSettings(tlsConn, resCh)
+			}()
+
+			rt := newFaceTestRoundTripper(t)
+			req, err := http.NewRequest(http.MethodPost, "https://"+ln.Addr().String()+tc.path, strings.NewReader("{}"))
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			resp, err := rt.RoundTrip(req)
+			if err != nil {
+				t.Fatalf("roundtrip: %v", err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.ProtoMajor != 2 {
+				t.Fatalf("expected h2, got HTTP/%d", resp.ProtoMajor)
+			}
+
+			res := <-resCh
+			if !reflect.DeepEqual(res.settings, tc.wantSettings) {
+				t.Fatalf("opening SETTINGS mismatch:\n got=%v\nwant=%v", res.settings, tc.wantSettings)
+			}
+			if res.window != tc.wantWindow {
+				t.Fatalf("connection WINDOW_UPDATE = %d, want %d", res.window, tc.wantWindow)
+			}
+		})
 	}
 }
