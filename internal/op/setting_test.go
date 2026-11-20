@@ -171,6 +171,110 @@ func TestSettingRefreshCacheUpgradesLegacyClaudeUserAgentAndPackage(t *testing.T
 	}
 }
 
+// TestSettingRefreshCacheUpgradesLegacyClaudeUserAgent21296 pins that the previous product
+// default claude UA (2.1.296) converges to the current default IN BOTH the cache and the DB,
+// so a deployment seeded with it does not keep emitting the stale fingerprint.
+func TestSettingRefreshCacheUpgradesLegacyClaudeUserAgent21296(t *testing.T) {
+	ctx := setupSettingTest(t)
+
+	if err := db.GetDB().WithContext(ctx).Create(&model.Setting{
+		Key:   model.SettingKeyClaudeHeaderUserAgent,
+		Value: model.LegacyDefaultClaudeHeaderUserAgent21296,
+	}).Error; err != nil {
+		t.Fatalf("seed legacy setting: %v", err)
+	}
+
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh setting cache: %v", err)
+	}
+
+	cached, err := SettingGetString(model.SettingKeyClaudeHeaderUserAgent)
+	if err != nil {
+		t.Fatalf("get cached setting: %v", err)
+	}
+	if cached != model.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("cached claude UA = %q, want the current default %q", cached, model.DefaultClaudeHeaderUserAgent)
+	}
+
+	var persisted model.Setting
+	if err := db.GetDB().WithContext(ctx).First(&persisted, "key = ?", model.SettingKeyClaudeHeaderUserAgent).Error; err != nil {
+		t.Fatalf("load persisted setting: %v", err)
+	}
+	if persisted.Value != model.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("persisted claude UA = %q, want the current default %q", persisted.Value, model.DefaultClaudeHeaderUserAgent)
+	}
+}
+
+// TestSettingRefreshCacheUpgradesLegacyCodexUserAgent0161 pins that the previous product
+// default codex UA (codex_exec/0.161.0) converges to the current codex_cli_rs default IN BOTH
+// the cache and the DB. Without this the stored codex_exec UA would pair with the now
+// codex_cli_rs originator — a detectable mismatch.
+func TestSettingRefreshCacheUpgradesLegacyCodexUserAgent0161(t *testing.T) {
+	ctx := setupSettingTest(t)
+
+	if err := db.GetDB().WithContext(ctx).Create(&model.Setting{
+		Key:   model.SettingKeyCodexHeaderUserAgent,
+		Value: model.LegacyDefaultCodexHeaderUserAgentExec0161,
+	}).Error; err != nil {
+		t.Fatalf("seed legacy setting: %v", err)
+	}
+
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh setting cache: %v", err)
+	}
+
+	cached, err := SettingGetString(model.SettingKeyCodexHeaderUserAgent)
+	if err != nil {
+		t.Fatalf("get cached setting: %v", err)
+	}
+	if cached != model.DefaultCodexHeaderUserAgent {
+		t.Fatalf("cached codex UA = %q, want the current default %q", cached, model.DefaultCodexHeaderUserAgent)
+	}
+
+	var persisted model.Setting
+	if err := db.GetDB().WithContext(ctx).First(&persisted, "key = ?", model.SettingKeyCodexHeaderUserAgent).Error; err != nil {
+		t.Fatalf("load persisted setting: %v", err)
+	}
+	if persisted.Value != model.DefaultCodexHeaderUserAgent {
+		t.Fatalf("persisted codex UA = %q, want the current default %q", persisted.Value, model.DefaultCodexHeaderUserAgent)
+	}
+}
+
+// TestSettingRefreshCacheKeepsCustomClaudeUserAgent pins the other half of the rule: a
+// non-default (operator) claude UA MUST survive a refresh untouched, in BOTH the cache and the
+// DB — the legacy-upgrade map only rewrites an EXACT known product default.
+func TestSettingRefreshCacheKeepsCustomClaudeUserAgent(t *testing.T) {
+	ctx := setupSettingTest(t)
+	const customUA = "claude-cli/2.1.301 (external, sdk-cli) custom-admin-value"
+
+	if err := db.GetDB().WithContext(ctx).Create(&model.Setting{
+		Key:   model.SettingKeyClaudeHeaderUserAgent,
+		Value: customUA,
+	}).Error; err != nil {
+		t.Fatalf("seed custom setting: %v", err)
+	}
+
+	if err := settingRefreshCache(ctx); err != nil {
+		t.Fatalf("refresh setting cache: %v", err)
+	}
+
+	cached, err := SettingGetString(model.SettingKeyClaudeHeaderUserAgent)
+	if err != nil {
+		t.Fatalf("get cached setting: %v", err)
+	}
+	if cached != customUA {
+		t.Fatalf("custom claude UA must stay %q, got %q", customUA, cached)
+	}
+
+	var persisted model.Setting
+	if err := db.GetDB().WithContext(ctx).First(&persisted, "key = ?", model.SettingKeyClaudeHeaderUserAgent).Error; err != nil {
+		t.Fatalf("load persisted setting: %v", err)
+	}
+	if persisted.Value != customUA {
+		t.Fatalf("persisted custom claude UA must stay %q, got %q", customUA, persisted.Value)
+	}
+}
+
 func TestSettingRefreshCacheUpgradesLegacyStreamDataTimeoutDefault(t *testing.T) {
 	ctx := setupSettingTest(t)
 

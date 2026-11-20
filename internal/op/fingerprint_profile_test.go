@@ -228,18 +228,20 @@ func TestFingerprintProfileConvergesLegacyBuiltinInOneStep(t *testing.T) {
 		t.Fatalf("convergence must rewrite the SAME row in place: id %d -> %d", legacy.ID, got.ID)
 	}
 	// Spelled out field by field so a regression names the exact stale value.
-	if got.ClaudeUserAgent != "claude-cli/2.1.296 (external, sdk-cli)" {
-		t.Fatalf("claude UA = %q, want the current 2.1.296", got.ClaudeUserAgent)
+	if got.ClaudeUserAgent != model.DefaultClaudeHeaderUserAgent {
+		t.Fatalf("claude UA = %q, want the current DefaultClaudeHeaderUserAgent %q", got.ClaudeUserAgent, model.DefaultClaudeHeaderUserAgent)
 	}
-	if got.ClaudeRuntimeVersion != "v26.3.0" {
-		t.Fatalf("claude runtime = %q, want v26.3.0", got.ClaudeRuntimeVersion)
+	if got.ClaudeRuntimeVersion != model.DefaultClaudeHeaderRuntimeVersion {
+		t.Fatalf("claude runtime = %q, want %q", got.ClaudeRuntimeVersion, model.DefaultClaudeHeaderRuntimeVersion)
 	}
-	// 2026-10-10 实测对齐后的当前身份(真 Codex CLI 抓包: codex_exec/0.161.0)。平台段沿用旧值。
-	if got.CodexUserAgent != "codex_exec/0.161.0 (Debian 12.0.0; x86_64) unknown (codex_exec; 0.161.0)" {
-		t.Fatalf("codex UA = %q, want the current codex_exec 0.161.0 Debian UA", got.CodexUserAgent)
+	// Current codex_cli_rs identity (model.DefaultCodexCLIVersion / DefaultCodexOriginator).
+	// 平台段沿用旧值(抓包只定了产品/版本两个 token)。
+	wantCodexUA := model.DefaultCodexOriginator + "/" + model.DefaultCodexCLIVersion + " (Debian 12.0.0; x86_64) unknown (" + model.DefaultCodexOriginator + "; " + model.DefaultCodexCLIVersion + ")"
+	if got.CodexUserAgent != wantCodexUA {
+		t.Fatalf("codex UA = %q, want the current %q", got.CodexUserAgent, wantCodexUA)
 	}
-	if got.CodexOriginator != "codex_exec" {
-		t.Fatalf("codex originator = %q, want codex_exec (must match the UA's first token)", got.CodexOriginator)
+	if got.CodexOriginator != model.DefaultCodexOriginator {
+		t.Fatalf("codex originator = %q, want %q (must match the UA's first token)", got.CodexOriginator, model.DefaultCodexOriginator)
 	}
 	if got.GenericUA != model.DefaultGenericUA {
 		t.Fatalf("generic UA = %q, want DefaultGenericUA %q", got.GenericUA, model.DefaultGenericUA)

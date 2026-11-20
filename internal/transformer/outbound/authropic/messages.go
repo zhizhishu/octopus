@@ -879,13 +879,14 @@ func resolveMaxTokens(req *model.InternalLLMRequest) int64 {
 const claudeBillingHeaderPrefix = "x-anthropic-billing-header:"
 
 // Named Claude CLI fingerprint constants observed on a genuine claude-cli request.
-// ClaudeCLIVersion is the client version and MUST equal the version in
-// model.DefaultClaudeHeaderUserAgent — TestClaudeFingerprintVersionConsistency
-// guards against drift (this package cannot import internal/model: that would be an
-// import cycle, since internal/model already depends on this package).
+// ClaudeCLIVersion is the SINGLE source of the client version: internal/model declares
+// DefaultClaudeCLIVersion = authropic.ClaudeCLIVersion and builds the CLI user-agent from
+// it (this package is the source; internal/model already depends on it transitively, so
+// the reference introduces no import cycle). relay's TestClaudeFingerprintVersionConsistency
+// additionally pins the billing cc_version ↔ user-agent pair.
 const (
-	ClaudeCLIVersion       = "2.1.296"
-	ClaudeCLIVersionSuffix = "406"
+	ClaudeCLIVersion       = "2.1.301"
+	ClaudeCLIVersionSuffix = "e44" // captured build suffix of a real claude-cli billing cc_version (2.1.301.e44)
 )
 
 // claudeBillingHeaderText returns the Claude CLI billing-header system block.

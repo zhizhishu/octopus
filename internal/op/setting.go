@@ -36,6 +36,7 @@ var settingLegacyDefaultUpgrades = map[model.SettingKey]map[string]string{
 		model.LegacyDefaultClaudeHeaderUserAgent21212: model.DefaultClaudeHeaderUserAgent,
 		model.LegacyDefaultClaudeHeaderUserAgent21281: model.DefaultClaudeHeaderUserAgent,
 		model.LegacyDefaultClaudeHeaderUserAgent21294: model.DefaultClaudeHeaderUserAgent,
+		model.LegacyDefaultClaudeHeaderUserAgent21296: model.DefaultClaudeHeaderUserAgent,
 	},
 	model.SettingKeyClaudeHeaderPackage: {
 		model.LegacyDefaultClaudeHeaderPackage0810:  model.DefaultClaudeHeaderPackageVersion,

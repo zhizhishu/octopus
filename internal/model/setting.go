@@ -356,17 +356,23 @@ const (
 	// 出站 Originator 现在由 UA 首段派生 (见 relay codexIdentityPair), 所以这里的首段就是上游
 	// 与之配对的 token —— 写成 codex_exec 会把整套身份拉成 exec。改默认值必须同时补
 	// LegacyDefaultCodexHeaderUserAgentCliRs0156 收敛项, 否则已装实例永远停在旧值。
-	DefaultCodexHeaderUserAgent = "codex_cli_rs/0.163.0 (Ubuntu 24.04.1; x86_64) unknown (codex_cli_rs; 0.163.0)"
+	// DefaultCodexCLIVersion / DefaultCodexOriginator are the single source of the default codex
+	// identity; DefaultCodexHeaderUserAgent and the built-in fingerprint presets are composed from
+	// them, so a version bump cannot leave a preset on another family or version.
+	DefaultCodexCLIVersion = "0.163.0"
+	DefaultCodexOriginator = "codex_cli_rs"
+
+	// Byte-identical to the previous literal; composed so the pair can never drift.
+	DefaultCodexHeaderUserAgent = DefaultCodexOriginator + "/" + DefaultCodexCLIVersion + " (Ubuntu 24.04.1; x86_64) unknown (" + DefaultCodexOriginator + "; " + DefaultCodexCLIVersion + ")"
 
 	// DefaultClaudeCLIVersion is the named Claude Code CLI version used to build the
 	// user-agent below. The Anthropic outbound billing-header cc_version carries the
 	// same version (authropic.ClaudeCLIVersion); TestClaudeFingerprintVersionConsistency
-	// asserts the two never drift apart. 2.1.296 is packet-verified on the wire
-	// 2026-10-14 (real claude CLI 2.1.296, UA claude-cli/2.1.296, package 0.128.0
-	// unchanged, runtime v26.3.0 unchanged, billing cc_version 2.1.296.406) —
-	// captured direct on the capture proxy and mirrored byte-for-byte when the same
-	// CLI is routed through the relay.
-	DefaultClaudeCLIVersion = "2.1.296"
+	// asserts the two never drift apart. 2.1.301 is the captured business (/v1/messages)
+	// handshake the claude TLS face (internal/client/tls_faces.go) is transcribed from,
+	// billing cc_version 2.1.301.e44; package 0.128.0 and runtime v26.3.0 unchanged.
+	// The 2.1.296 default converges via LegacyDefaultClaudeHeaderUserAgent21296.
+	DefaultClaudeCLIVersion = "2.1.301"
 
 	// DefaultClaudeHeaderUserAgent is the locally packet-verified Claude Code CLI
 	// user-agent (claude-cli/<DefaultClaudeCLIVersion>).
@@ -482,6 +488,12 @@ const (
 	// converge upgraded deployments to the current UA via op.settingLegacyDefaultUpgrades
 	// so existing installs do not keep emitting the stale 2.1.294 fingerprint.
 	LegacyDefaultClaudeHeaderUserAgent21294 = "claude-cli/2.1.294 (external, sdk-cli)"
+
+	// LegacyDefaultClaudeHeaderUserAgent21296 was the previous Claude header default
+	// (claude-cli/2.1.296). 2.1.301 superseded it; converge upgraded deployments to the
+	// current DefaultClaudeHeaderUserAgent via op.settingLegacyDefaultUpgrades so existing
+	// installs do not keep emitting the stale 2.1.296 fingerprint.
+	LegacyDefaultClaudeHeaderUserAgent21296 = "claude-cli/2.1.296 (external, sdk-cli)"
 
 	// LegacyDefaultClaudeHeaderPackage01121 was the X-Stainless-Package-Version paired
 	// with the 2.1.281 UA (0.112.1); migrate it to DefaultClaudeHeaderPackageVersion.

@@ -155,6 +155,16 @@ func TestClaudeBillingHeaderUsesNamedConstants(t *testing.T) {
 	}
 }
 
+// TestClaudeBillingHeaderCapturedSuffix pins the billing cc_version against a HARD-CODED
+// literal (not the two constants re-assembled) so a wrong suffix cannot self-certify: the
+// captured real claude 2.1.301 business request carries cc_version=2.1.301.e44.
+func TestClaudeBillingHeaderCapturedSuffix(t *testing.T) {
+	const want = "cc_version=2.1.301.e44;"
+	if got := claudeBillingHeaderText(); !strings.Contains(got, want) {
+		t.Fatalf("billing header %q must carry the captured suffix %q", got, want)
+	}
+}
+
 func countText(parts []anthropicModel.SystemPromptPart, text string) int {
 	n := 0
 	for _, p := range parts {

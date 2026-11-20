@@ -11,11 +11,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,10 +85,10 @@ func TestWithTLSFaceOverrideSelectsFamilySpec(t *testing.T) {
 	}
 }
 
-// Wire expectations transcribed from the live captures (2026-10-13,
-// _artifacts/berobox/codexshape-h2/captures/). These are the regression guard:
-// if the specs or uTLS emission drift, the test fails with the actual wire
-// shape. SNI is absent because the test dials an IP, exactly like the captures.
+// Wire expectations transcribed from the captured genuine-CLI ClientHellos.
+// These are the regression guard: if the specs or uTLS emission drift, the test
+// fails with the actual wire shape. SNI is absent because the test dials an IP,
+// exactly like the captures.
 var (
 	codexFaceCiphers = []uint16{
 		0x1302, 0x1301, 0x1303, 0xc02c, 0xc02b, 0xcca9, 0xc030, 0xc02f, 0xcca8, 0x00ff,
@@ -101,20 +103,18 @@ var (
 	codexFaceGroups = []uint16{0x11ec, 0x001d, 0x0017, 0x0018}
 
 	claudeFaceCiphers = []uint16{
-		0x1302, 0x1303, 0x1301, 0xc02c, 0xc030, 0x009f, 0xcca9, 0xcca8, 0xccaa,
-		0xc02b, 0xc02f, 0x009e, 0xc024, 0xc028, 0x006b, 0xc023, 0xc027, 0x0067,
-		0xc00a, 0xc014, 0x0039, 0xc009, 0xc013, 0x0033, 0x009d, 0x009c, 0x003d,
-		0x003c, 0x0035, 0x002f,
+		0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9,
+		0xcca8, 0xc009, 0xc013, 0xc00a, 0xc014, 0x009c, 0x009d, 0x002f,
+		0x0035,
 	}
 	claudeFaceExtTypes = []uint16{
-		65281, 11, 10, 35, 22, 23, 13, 43, 45, 51,
+		23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43,
 	}
 	claudeFaceSigAlgs = []uint16{
-		0x0905, 0x0906, 0x0904, 0x0403, 0x0503, 0x0603, 0x0807, 0x0808,
-		0x081a, 0x081b, 0x081c, 0x0809, 0x080a, 0x080b, 0x0804, 0x0805, 0x0806,
-		0x0401, 0x0501, 0x0601, 0x0303, 0x0301, 0x0302, 0x0402, 0x0502, 0x0602,
+		0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601,
+		0x0201,
 	}
-	claudeFaceGroups = []uint16{0x11ec, 0x001d, 0x0017, 0x001e, 0x0018, 0x0019, 0x0100, 0x0101}
+	claudeFaceGroups = []uint16{0x11ec, 0x001d, 0x0017, 0x0018}
 
 	faceKeyShareGroups = []uint16{0x11ec, 0x001d}
 )
@@ -124,21 +124,30 @@ type capturedClientHello struct {
 	ciphers    []uint16
 	extTypes   []uint16
 	alpn       []string
+	sni        []string
 	groups     []uint16
 	sigAlgs    []uint16
 	shareGrps  []uint16
 	sessionLen int
 }
 
-// parseClientHelloRecord parses the ClientHello handshake message out of the
-// first TLS record(s) on the wire (test-only mini parser).
+// parseClientHelloRecord parses the ClientHello handshake message out of a
+// single captured TLS record (test-only mini parser; the captures here, and the
+// synthetic case below, always fit one record <16k — a hello split across TLS
+// records would carry the next record's 5-byte header mid-`rec` and is not
+// handled).
 func parseClientHelloRecord(t *testing.T, rec []byte) *capturedClientHello {
 	t.Helper()
 	if len(rec) < 9 || rec[0] != 0x16 {
 		t.Fatalf("not a handshake record: % x", rec[:min(9, len(rec))])
 	}
-	hsLen := int(rec[6])<<16 | int(rec[7])<<8 | int(rec[8])
-	ch := rec[9 : 9+hsLen-4] // skip handshake header (type+len) already consumed
+	hsLen := int(rec[6])<<16 | int(rec[7])<<8 | int(rec[8]) // handshake body length, excludes the 4-byte handshake header
+	// rec[9:] is the ClientHello body: the 4-byte handshake header (type + length)
+	// is already behind us, so the body is exactly hsLen bytes — NOT hsLen-4.
+	if len(rec) < 9+hsLen {
+		t.Fatalf("captured ClientHello truncated: len(rec)=%d < 9+hsLen=%d", len(rec), 9+hsLen)
+	}
+	ch := rec[9 : 9+hsLen]
 	// ch: version(2) random(32) sidLen(1) sid ciphersLen(2) ciphers compLen(1) comp extLen(2) exts
 	pos := 0
 	pos += 2 + 32
@@ -163,6 +172,17 @@ func parseClientHelloRecord(t *testing.T, rec []byte) *capturedClientHello {
 		edata := ch[pos+4 : pos+4+elen]
 		out.extTypes = append(out.extTypes, etype)
 		switch etype {
+		case 0: // server_name
+			l := int(edata[0])<<8 | int(edata[1])
+			p := 2
+			for p < 2+l {
+				nt := edata[p]
+				nl := int(edata[p+1])<<8 | int(edata[p+2])
+				if nt == 0 {
+					out.sni = append(out.sni, string(edata[p+3:p+3+nl]))
+				}
+				p += 3 + nl
+			}
 		case 16: // ALPN
 			p := 2
 			listLen := int(edata[0])<<8 | int(edata[1])
@@ -194,6 +214,39 @@ func parseClientHelloRecord(t *testing.T, rec []byte) *capturedClientHello {
 		pos += 4 + elen
 	}
 	return out
+}
+
+// TestParseClientHelloRecordKeepsFinalEmptyExtension regresses the truncation
+// where the parser sliced the ClientHello body as 9+hsLen-4, dropping the final
+// 4 bytes: a zero-length trailing extension then made the extension walk run
+// past the slice and panic. The synthetic hello is one record holding a minimal
+// ClientHello whose only extension is a final, empty type 23 — the shape the old
+// fixed-key-share-last captures happened to hide.
+func TestParseClientHelloRecordKeepsFinalEmptyExtension(t *testing.T) {
+	var body []byte
+	body = append(body, 0x03, 0x03)             // legacy_version
+	body = append(body, make([]byte, 32)...)    // random
+	body = append(body, 0x00)                   // session_id length (0)
+	body = append(body, 0x00, 0x02, 0x13, 0x01) // cipher_suites: len 2, TLS_AES_128_GCM_SHA256
+	body = append(body, 0x01, 0x00)             // compression: len 1, null
+	body = append(body, 0x00, 0x04)             // extensions length 4
+	body = append(body, 0x00, 0x17, 0x00, 0x00) // final extension: type 23, len 0
+
+	rec := []byte{
+		0x16, 0x03, 0x03, // record: handshake, TLS 1.2 record version
+		byte((len(body) + 4) >> 8), byte(len(body) + 4), // record length = handshake header(4) + body
+		0x01,                                                         // handshake type: client_hello
+		byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body)), // handshake body length
+	}
+	rec = append(rec, body...)
+
+	hello := parseClientHelloRecord(t, rec)
+	if !reflect.DeepEqual(hello.extTypes, []uint16{23}) {
+		t.Fatalf("extTypes = %v, want [23] (final empty extension dropped?)", hello.extTypes)
+	}
+	if hello.sessionLen != 0 {
+		t.Fatalf("session id length = %d, want 0", hello.sessionLen)
+	}
 }
 
 // replayConn feeds already-read bytes back to a tls.Server before delegating
@@ -233,7 +286,7 @@ func readClientHelloRecords(t *testing.T, conn net.Conn) []byte {
 		buf = append(buf, body...)
 		if len(buf) >= 9 {
 			hsLen := int(buf[6])<<16 | int(buf[7])<<8 | int(buf[8])
-			if len(buf) >= 9+hsLen-4 {
+			if len(buf) >= 9+hsLen {
 				return buf
 			}
 		}
@@ -296,8 +349,8 @@ func newFaceTestRoundTripper(t *testing.T) *utlsRoundTripper {
 
 // TestClaudeFaceEmitsCapturedClientHello drives a /messages request through the
 // full round tripper against a TLS server that captures the ClientHello, and
-// asserts the wire shape matches the live-captured Claude Code face (no ALPN,
-// HTTP/1.1 carried over the uTLS connection).
+// asserts the wire shape matches the captured business Claude Code face (ALPN
+// http/1.1, HTTP/1.1 carried over the uTLS connection).
 func TestClaudeFaceEmitsCapturedClientHello(t *testing.T) {
 	pair := genTestCert(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -353,8 +406,8 @@ func TestClaudeFaceEmitsCapturedClientHello(t *testing.T) {
 	if !reflect.DeepEqual(hello.extTypes, claudeFaceExtTypes) {
 		t.Fatalf("claude face extension order mismatch:\n got=%v\nwant=%v", hello.extTypes, claudeFaceExtTypes)
 	}
-	if len(hello.alpn) != 0 {
-		t.Fatalf("claude face must offer no ALPN (CLI speaks h1), got %v", hello.alpn)
+	if !reflect.DeepEqual(hello.alpn, []string{"http/1.1"}) {
+		t.Fatalf("claude face ALPN mismatch:\n got=%v\nwant=[http/1.1]", hello.alpn)
 	}
 	if !reflect.DeepEqual(hello.groups, claudeFaceGroups) {
 		t.Fatalf("claude face groups mismatch:\n got=%v\nwant=%v", hello.groups, claudeFaceGroups)
@@ -370,11 +423,13 @@ func TestClaudeFaceEmitsCapturedClientHello(t *testing.T) {
 	}
 }
 
-// TestCodexFaceEmitsCapturedClientHello drives a /responses request through the
-// full round tripper against a TLS+h2 server that captures the ClientHello, and
-// asserts the wire shape matches the live-captured codex CLI face (ALPN
-// h2+http/1.1, request served over the pooled fhttp2 connection).
-func TestCodexFaceEmitsCapturedClientHello(t *testing.T) {
+// TestClaudeFaceHostnameSendsSNI pins that hostname targets still prepend the
+// server_name extension (IP targets omit it, covered by the captured-shape test
+// above) while keeping the Claude face's cipher and extension shape. The dial
+// trusts the throwaway capture cert (test-only InsecureSkipVerify), so this
+// asserts the ClientHello wire shape only — it makes no claim about a verified
+// production handshake.
+func TestClaudeFaceHostnameSendsSNI(t *testing.T) {
 	pair := genTestCert(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -383,7 +438,6 @@ func TestCodexFaceEmitsCapturedClientHello(t *testing.T) {
 	defer ln.Close()
 
 	helloCh := make(chan []byte, 1)
-	orderCh := make(chan []string, 1)
 	go func() {
 		raw, err := ln.Accept()
 		if err != nil {
@@ -393,55 +447,144 @@ func TestCodexFaceEmitsCapturedClientHello(t *testing.T) {
 		helloCh <- hello
 		replay := &replayConn{Conn: raw, pending: hello}
 		_ = raw.SetReadDeadline(time.Time{})
-		tlsConn := tls.Server(replay, &tls.Config{
-			Certificates: []tls.Certificate{pair},
-			NextProtos:   []string{"h2"},
-		})
-		if err := tlsConn.Handshake(); err != nil {
-			return
-		}
-		serveH2Frames(tlsConn, orderCh)
+		tlsConn := tls.Server(replay, &tls.Config{Certificates: []tls.Certificate{pair}})
+		_ = tlsConn.Handshake()
+		_ = tlsConn.Close()
 	}()
 
 	rt := newFaceTestRoundTripper(t)
-	req, err := http.NewRequest(http.MethodPost, "https://"+ln.Addr().String()+"/v1/responses", strings.NewReader("{}"))
+	uConn, err := rt.dialUTLS(context.Background(), "tcp", ln.Addr().String(), "upstream.example", tlsFaceClaude, claudeCodeNodeClientHelloSpec())
 	if err != nil {
-		t.Fatalf("build request: %v", err)
+		t.Fatalf("hostname dial failed: %v", err)
 	}
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("codex face roundtrip: %v", err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("codex face response: status=%d", resp.StatusCode)
-	}
-	if proto := resp.ProtoMajor; proto != 2 {
-		t.Fatalf("codex face must be served over h2, got HTTP/%d", proto)
-	}
+	_ = uConn.Close()
 
 	hello := parseClientHelloRecord(t, <-helloCh)
-	if !reflect.DeepEqual(hello.ciphers, codexFaceCiphers) {
-		t.Fatalf("codex face cipher suites mismatch:\n got=%v\nwant=%v", hello.ciphers, codexFaceCiphers)
+	if len(hello.extTypes) == 0 || hello.extTypes[0] != 0 {
+		t.Fatalf("hostname target must send server_name first, ext types = %v", hello.extTypes)
 	}
-	if !reflect.DeepEqual(hello.extTypes, codexFaceExtTypes) {
-		t.Fatalf("codex face extension order mismatch:\n got=%v\nwant=%v", hello.extTypes, codexFaceExtTypes)
+	if !reflect.DeepEqual(hello.sni, []string{"upstream.example"}) {
+		t.Fatalf("SNI = %v, want [upstream.example]", hello.sni)
 	}
-	if !reflect.DeepEqual(hello.alpn, []string{"h2", "http/1.1"}) {
-		t.Fatalf("codex face ALPN mismatch: got %v", hello.alpn)
+	wantExt := append([]uint16{0}, claudeFaceExtTypes...)
+	if !reflect.DeepEqual(hello.extTypes, wantExt) {
+		t.Fatalf("hostname target extension order mismatch:\n got=%v\nwant=%v", hello.extTypes, wantExt)
 	}
-	if !reflect.DeepEqual(hello.groups, codexFaceGroups) {
-		t.Fatalf("codex face groups mismatch:\n got=%v\nwant=%v", hello.groups, codexFaceGroups)
+	if !reflect.DeepEqual(hello.ciphers, claudeFaceCiphers) {
+		t.Fatalf("hostname target cipher suites mismatch:\n got=%v\nwant=%v", hello.ciphers, claudeFaceCiphers)
 	}
-	if !reflect.DeepEqual(hello.sigAlgs, codexFaceSigAlgs) {
-		t.Fatalf("codex face signature algorithms mismatch:\n got=%v\nwant=%v", hello.sigAlgs, codexFaceSigAlgs)
+}
+
+// sortedExtTypes returns a sorted copy of an extension-type list, for
+// order-independent (multiset) comparison of a shuffled ClientHello.
+func sortedExtTypes(exts []uint16) []uint16 {
+	cp := append([]uint16(nil), exts...)
+	slices.Sort(cp)
+	return cp
+}
+
+// TestCodexFaceEmitsCapturedClientHello drives /responses requests through the
+// full round tripper against a TLS+h2 server, captures each ClientHello, and
+// asserts the codex face matches the captured genuine-CLI shape. The codex CLI
+// reorders its extension order per connection from a fresh rustls order seed, so
+// each dial is checked for a stable cipher/group/sig/ALPN/key-share shape, an
+// identical extension multiset and membership in the rustls 0.23.45 seed space,
+// while the raw extension order is expected to vary across dials.
+func TestCodexFaceEmitsCapturedClientHello(t *testing.T) {
+	const dials = 8
+	pair := genTestCert(t)
+
+	hellos := make([]*capturedClientHello, 0, dials)
+	for i := 0; i < dials; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		helloCh := make(chan []byte, 1)
+		orderCh := make(chan []string, 1)
+		go func() {
+			raw, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			hello := readClientHelloRecords(t, raw)
+			helloCh <- hello
+			replay := &replayConn{Conn: raw, pending: hello}
+			_ = raw.SetReadDeadline(time.Time{})
+			tlsConn := tls.Server(replay, &tls.Config{
+				Certificates: []tls.Certificate{pair},
+				NextProtos:   []string{"h2"},
+			})
+			if err := tlsConn.Handshake(); err != nil {
+				return
+			}
+			serveH2Frames(tlsConn, orderCh)
+		}()
+
+		rt := newFaceTestRoundTripper(t)
+		req, err := http.NewRequest(http.MethodPost, "https://"+ln.Addr().String()+"/v1/responses", strings.NewReader("{}"))
+		if err != nil {
+			_ = ln.Close()
+			t.Fatalf("build request: %v", err)
+		}
+		resp, err := rt.RoundTrip(req)
+		if err != nil {
+			_ = ln.Close()
+			t.Fatalf("codex face roundtrip %d: %v", i+1, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			_ = ln.Close()
+			t.Fatalf("codex face response %d: status=%d", i+1, resp.StatusCode)
+		}
+		if proto := resp.ProtoMajor; proto != 2 {
+			_ = ln.Close()
+			t.Fatalf("codex face must be served over h2, got HTTP/%d", proto)
+		}
+		hello := parseClientHelloRecord(t, <-helloCh)
+		hellos = append(hellos, hello)
+		_ = ln.Close()
 	}
-	if !reflect.DeepEqual(hello.shareGrps, faceKeyShareGroups) {
-		t.Fatalf("codex face key share groups mismatch:\n got=%v\nwant=%v", hello.shareGrps, faceKeyShareGroups)
+
+	// Ciphers, groups, sig algs and ALPN stay pinned; only the extension order
+	// is randomized per connection. JA3 includes that order, so it differs
+	// between connections — the invariants are the extension multiset and
+	// membership in the rustls 0.23.45 reachable seed space, not any one order
+	// and not equality with another independent random sample.
+	wantExtSet := sortedExtTypes(codexFaceExtTypes)
+	reachableOrders := rustlsReachableCodexOrders(t)
+	orders := make(map[string]bool, dials)
+	for i, hello := range hellos {
+		if !reflect.DeepEqual(hello.ciphers, codexFaceCiphers) {
+			t.Fatalf("codex face cipher suites mismatch (dial %d):\n got=%v\nwant=%v", i+1, hello.ciphers, codexFaceCiphers)
+		}
+		if !reflect.DeepEqual(hello.alpn, []string{"h2", "http/1.1"}) {
+			t.Fatalf("codex face ALPN mismatch (dial %d): got %v", i+1, hello.alpn)
+		}
+		if !reflect.DeepEqual(hello.groups, codexFaceGroups) {
+			t.Fatalf("codex face groups mismatch (dial %d):\n got=%v\nwant=%v", i+1, hello.groups, codexFaceGroups)
+		}
+		if !reflect.DeepEqual(hello.sigAlgs, codexFaceSigAlgs) {
+			t.Fatalf("codex face signature algorithms mismatch (dial %d):\n got=%v\nwant=%v", i+1, hello.sigAlgs, codexFaceSigAlgs)
+		}
+		if !reflect.DeepEqual(hello.shareGrps, faceKeyShareGroups) {
+			t.Fatalf("codex face key share groups mismatch (dial %d):\n got=%v\nwant=%v", i+1, hello.shareGrps, faceKeyShareGroups)
+		}
+		if hello.sessionLen != 32 {
+			t.Fatalf("codex face session id length = %d, want 32 (dial %d)", hello.sessionLen, i+1)
+		}
+		if got := sortedExtTypes(hello.extTypes); !reflect.DeepEqual(got, wantExtSet) {
+			t.Fatalf("codex face extension multiset mismatch (dial %d):\n got=%v\nwant=%v", i+1, got, wantExtSet)
+		}
+		if !reachableOrders[fmt.Sprint(hello.extTypes)] {
+			t.Fatalf("codex face extension order not reachable from the rustls 0.23.45 seed space (dial %d): %v", i+1, hello.extTypes)
+		}
+		t.Logf("codex dial %d raw extension order: %v", i+1, hello.extTypes)
+		orders[fmt.Sprint(hello.extTypes)] = true
 	}
-	if hello.sessionLen != 32 {
-		t.Fatalf("codex face session id length = %d, want 32", hello.sessionLen)
+	if len(orders) < 2 {
+		t.Fatalf("codex face extension order never varied across %d dials (per-connection ordering missing): %v", dials, orders)
 	}
 }
 
@@ -502,7 +645,14 @@ func keyShareRawBytes(t *testing.T, rec []byte) []byte {
 		return nil
 	}
 	hsLen := int(rec[6])<<16 | int(rec[7])<<8 | int(rec[8])
-	ch := rec[9 : 9+hsLen-4]
+	// The 4-byte handshake header is already behind us, so the body is exactly
+	// hsLen bytes — NOT hsLen-4 (see parseClientHelloRecord above). Guard the
+	// length first: a record split across TLS records (or a short read) must
+	// report "absent", not panic on an out-of-range slice.
+	if len(rec) < 9+hsLen {
+		return nil
+	}
+	ch := rec[9 : 9+hsLen]
 	pos := 0
 	pos += 2 + 32
 	sidLen := int(ch[pos])
@@ -523,6 +673,55 @@ func keyShareRawBytes(t *testing.T, rec []byte) []byte {
 		pos += 4 + elen
 	}
 	return nil
+}
+
+// TestKeyShareRawBytesBodyAndTruncation pins keyShareRawBytes to the exact
+// ClientHello body length (9+hsLen) and to safe behaviour on a short record.
+//
+// History: the helper used to slice rec[9 : 9+hsLen-4]. That did NOT panic in
+// the captures we have: Go bounds-checks a slice expression against cap, not
+// len, and append-built records carry spare capacity, so the walk stayed inside
+// cap and merely read the wrong logical extent. It only became observable on a
+// record that is itself short — where the correct slice panics unless guarded.
+// Both halves are asserted here so the helper cannot regress either way.
+func TestKeyShareRawBytesBodyAndTruncation(t *testing.T) {
+	key := bytes.Repeat([]byte{0xa5}, 32)
+	var ks []byte
+	ks = append(ks, 0x00, 0x00) // client_shares length, patched below
+	ks = append(ks, 0x00, 0x1d) // group: x25519
+	ks = append(ks, 0x00, byte(len(key)))
+	ks = append(ks, key...)
+	ks[0], ks[1] = byte((len(ks)-2)>>8), byte(len(ks)-2)
+
+	var body []byte
+	body = append(body, 0x03, 0x03)                            // legacy_version
+	body = append(body, make([]byte, 32)...)                   // random
+	body = append(body, 0x00)                                  // session_id length (0)
+	body = append(body, 0x00, 0x02, 0x13, 0x01)                // cipher_suites
+	body = append(body, 0x01, 0x00)                            // compression: null
+	body = append(body, byte((4+len(ks))>>8), byte(4+len(ks))) // extensions length
+	body = append(body, 0x00, 0x33)                            // final extension: key_share
+	body = append(body, byte(len(ks)>>8), byte(len(ks)))
+	body = append(body, ks...)
+
+	// Exact-size buffer: append() leaves spare capacity, and spare cap is what
+	// let the old 9+hsLen-4 slice silently "work" (Go checks cap, not len).
+	rec := make([]byte, 9+len(body))
+	copy(rec, []byte{0x16, 0x03, 0x03, byte((len(body) + 4) >> 8), byte(len(body) + 4), 0x01})
+	rec[6], rec[7], rec[8] = byte(len(body)>>16), byte(len(body)>>8), byte(len(body))
+	copy(rec[9:], body)
+
+	if got := keyShareRawBytes(t, rec); !bytes.Equal(got, ks) {
+		t.Fatalf("key_share payload = % x, want % x", got, ks)
+	}
+
+	// A record shorter than its declared handshake length must yield nil, never a
+	// panic (a ClientHello split across TLS records lands here).
+	short := make([]byte, 9+len(body)-8)
+	copy(short, rec)
+	if got := keyShareRawBytes(t, short); got != nil {
+		t.Fatalf("truncated record: got %d bytes, want nil", len(got))
+	}
 }
 
 // TestSpecForDialGivesFreshKeySharesPerDial regression-tests shared-spec
@@ -568,7 +767,7 @@ func TestSpecForDialGivesFreshKeySharesPerDial(t *testing.T) {
 	addr := ln.Addr().String()
 	var hellos [2][]byte
 	for i := 0; i < 2; i++ {
-		uConn, dialErr := rt.dialUTLS(context.Background(), "tcp", addr, "127.0.0.1", spec)
+		uConn, dialErr := rt.dialUTLS(context.Background(), "tcp", addr, "127.0.0.1", tlsFaceClaude, spec)
 		if dialErr != nil {
 			t.Fatalf("dial %d failed (shared-spec poisoning regression): %v", i+1, dialErr)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -25,8 +26,8 @@ import (
 //     order). If the server declines h2, HTTP/1.1 is carried over a uTLS
 //     connection wearing the same face — never a second, stock-Go handshake —
 //     wrapped in the plaintext wire-order rewriter.
-//   - claude face (no ALPN — the CLI speaks HTTP/1.1 over TLS): always the
-//     HTTP/1.1-over-uTLS path.
+//   - claude face (ALPN http/1.1 — never h2): always the HTTP/1.1-over-uTLS
+//     path.
 //   - chrome face: pooled fhttp2 when the server negotiates h2, otherwise the
 //     standard transport fallback (pre-existing, documented behaviour).
 //
@@ -81,8 +82,8 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(host, port)
 
-	// The claude face carries no ALPN: the genuine CLI speaks HTTP/1.1 over
-	// TLS, so h2 can never be negotiated — skip the h2 probe entirely.
+	// The claude face is h1-only: its ALPN advertises http/1.1 (never h2), so
+	// skip the h2 probe entirely and carry the request over the h1 path.
 	if family == tlsFaceClaude {
 		return t.h1RoundTrip(req, family, spec)
 	}
@@ -161,7 +162,7 @@ func (t *utlsRoundTripper) h1TransportForFamily(family string, spec *utls.Client
 		if splitErr != nil {
 			host = addr
 		}
-		uConn, dialErr := t.dialUTLS(ctx, network, addr, host, spec)
+		uConn, dialErr := t.dialUTLS(ctx, network, addr, host, family, spec)
 		if dialErr != nil {
 			return nil, dialErr
 		}
@@ -173,7 +174,10 @@ func (t *utlsRoundTripper) h1TransportForFamily(family string, spec *utls.Client
 
 // dialUTLS dials addr and completes a uTLS handshake wearing spec. A nil spec
 // keeps the Chrome preset (the pre-existing default face for non-CLI paths).
-func (t *utlsRoundTripper) dialUTLS(ctx context.Context, network, addr, serverName string, spec *utls.ClientHelloSpec) (*utls.UConn, error) {
+// family selects the face's per-dial behaviour: the codex face reorders its
+// ClientHello extensions into rustls's per-connection seed-derived order (see
+// rustls_order.go), others keep the captured order.
+func (t *utlsRoundTripper) dialUTLS(ctx context.Context, network, addr, serverName, family string, spec *utls.ClientHelloSpec) (*utls.UConn, error) {
 	rawConn, err := t.dialContext(ctx, network, addr)
 	if err != nil {
 		return nil, err
@@ -187,6 +191,21 @@ func (t *utlsRoundTripper) dialUTLS(ctx context.Context, network, addr, serverNa
 	// caller (the per-family h1 transport closure) would poison every dial
 	// after the first with stale key-share bytes and no private key.
 	spec = specForDial(spec)
+	// The real codex CLI (rustls) reorders its ClientHello extension order on
+	// every connection from a fresh per-connection order seed, so a fixed order
+	// would itself be a fingerprint. Reproduce rustls's exact uint16-seed hash
+	// sort on the per-dial clone (never the shared base spec, which specForDial
+	// already deep-copied) right before it is applied; the claude and chrome
+	// faces keep their captured order. On any ordering failure close the
+	// already-dialed raw connection and fail the dial.
+	if spec != nil && family == tlsFaceCodex {
+		ordered, orderErr := codexRustlsOrderedExtensions(spec.Extensions)
+		if orderErr != nil {
+			_ = rawConn.Close()
+			return nil, orderErr
+		}
+		spec.Extensions = ordered
+	}
 	var uConn *utls.UConn
 	if spec != nil {
 		uConn = utls.UClient(rawConn, cfg, utls.HelloCustom)
@@ -297,7 +316,8 @@ func (t *utlsRoundTripper) h2ConnForHost(ctx context.Context, serverName, addr, 
 	}
 	t.mu.Unlock()
 
-	uConn, err := t.dialUTLS(ctx, "tcp", addr, serverName, spec)
+	family, _, _ := strings.Cut(poolKey, "\x00")
+	uConn, err := t.dialUTLS(ctx, "tcp", addr, serverName, family, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -311,6 +331,27 @@ func (t *utlsRoundTripper) h2ConnForHost(ctx context.Context, serverName, addr, 
 	// any upstream Content-Encoding itself (unwrapResponseEncoding). Claude still sends
 	// its explicit gzip,deflate,br,zstd value, so this only suppresses auto-injection.
 	h2 := &fhttp2.Transport{DisableCompression: true}
+	// The codex CLI (rustls h2) opens its connection with a fixed SETTINGS frame
+	// and connection window; fhttp lets us replay them verbatim on the initial
+	// preface. Settings is a map plus an explicit order slice, and the library
+	// emits them in SettingsOrder (including SETTINGS_INITIAL_WINDOW_SIZE, which
+	// its comment discourages but the code does not reject). Only the codex face
+	// is dressed this way; every other family keeps the default opening frames.
+	if strings.HasPrefix(poolKey, tlsFaceCodex+"\x00") {
+		h2.Settings = map[fhttp2.SettingID]uint32{
+			fhttp2.SettingEnablePush:        0,
+			fhttp2.SettingInitialWindowSize: 2097152,
+			fhttp2.SettingMaxFrameSize:      16384,
+			fhttp2.SettingMaxHeaderListSize: 16384,
+		}
+		h2.SettingsOrder = []fhttp2.SettingID{
+			fhttp2.SettingEnablePush,
+			fhttp2.SettingInitialWindowSize,
+			fhttp2.SettingMaxFrameSize,
+			fhttp2.SettingMaxHeaderListSize,
+		}
+		h2.ConnectionFlow = 5177345
+	}
 	cc, err := h2.NewClientConn(uConn)
 	if err != nil {
 		_ = uConn.Close()
