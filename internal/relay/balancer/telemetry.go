@@ -171,6 +171,9 @@ func MarkRuntimeSelection(channelID int, modelName string) {
 func BeginRuntimeAttempt(channelID, keyID int, modelName string) func() {
 	entries := runtimeEntriesForAttempt(channelID, keyID, modelName)
 	now := time.Now()
+	// 真实流量（不是探测）在打这个确切 tuple：熔断探测调度据此跳过 10 分钟并清零
+	// 连续未恢复计数。只写一个 sync.Map 时间戳 + 一次 Delete，不碰任何转发路径。
+	noteCircuitProbeRealTraffic(channelID, keyID, modelName, now)
 	for i, entry := range entries {
 		entry.mu.Lock()
 		entry.inFlight++
@@ -235,6 +238,9 @@ func (e *runtimeEntry) recordSuccess(metrics AttemptRuntimeMetrics) {
 // (retryAfter > 0) it takes precedence over the fixed per-status cooldown so the
 // channel/key is backed off for exactly as long as the provider asked.
 func RecordRuntimeFailure(channelID, keyID int, modelName string, statusCode int, duration time.Duration, retryAfter time.Duration) {
+	// 上游等待也要让熔断探测调度看见（探测专用旁路，下面的软冷却口径不变）。
+	// 这里不持任何调度器锁：noteCircuitProbeUpstreamWait 里自己去 ApplyCircuitProbeWait。
+	noteCircuitProbeUpstreamWait(channelID, keyID, modelName, statusCode, retryAfter)
 	for _, entry := range runtimeEntriesForAttempt(channelID, keyID, modelName) {
 		entry.recordFailure(statusCode, duration, retryAfter)
 	}

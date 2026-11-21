@@ -32,6 +32,8 @@ import { MonoSafeText, SafeText } from '@/components/common/SafeText';
 import { cn } from '@/lib/utils';
 import { ModelAuditList } from './audit/ModelAuditList';
 import { CircuitList } from './CircuitList';
+import { ChannelProbeToggle } from './ChannelProbeToggle';
+import { ProbeHistoryList } from './ProbeHistoryList';
 import { getSelectedChannelModels } from './channel-utils';
 
 export function CardContent({ channel, stats }: { channel: Channel; stats: StatsMetricsFormatted }) {
@@ -422,6 +424,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
 
                                 <ModelAuditList channelId={channel.id} models={getSelectedChannelModels(channel)} />
 
+                                {/* 主动探测（P3）：开关在上、熔断明细在中、最近探测在下，和设计稿同序。 */}
+                                <ChannelProbeToggle channel={channel} />
+
                                 <CircuitList
                                     channelId={channel.id}
                                     keyLabel={(keyId) => {
@@ -431,6 +436,8 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                         return remark ? remark : `key ${index + 1}`;
                                     }}
                                 />
+
+                                <ProbeHistoryList channelId={channel.id} />
 
                                 {/* Base URLs */}
                                 <section className="space-y-3">

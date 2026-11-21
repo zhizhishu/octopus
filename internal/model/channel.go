@@ -62,6 +62,16 @@ type Channel struct {
 	SelectedModels        []string          `json:"selected_models" gorm:"serializer:json"`
 	ModelMapping          map[string]string `json:"model_mapping" gorm:"serializer:json"`
 	AnthropicContext1M    bool              `json:"anthropic_context_1m" gorm:"column:anthropic_context_1m;default:false"`
+	// ProbeEnabled 是这个渠道的**自动**熔断探测开关，出厂 false（= 关）。
+	//
+	// 关着时调度方不会替这个渠道排期任何自动探测；运营商手动/审计探测不受它约束
+	// （那些人已经在看现场，不再需要一道“它是不是自己开了”的闸门）。默认关的理由
+	// 与 model_audit_enabled 一致：每次探测都是真实出站、真实计费，一次升级不该让
+	// 全站渠道自己开始花钱。存量渠道由迁移 027 显式写成 false，行为与改动前一致。
+	//
+	// 单独一行、不带对齐缩进：它是相邻两组之间的一个新组，往上面那组里插一行会让
+	// gofmt 重排十几行空白，把一次两行的改动变成一大片纯空白 diff。
+	ProbeEnabled bool `json:"probe_enabled" gorm:"not null;default:false"`
 	// RedactEnabled (opt-in, default false) enables credential redaction for this
 	// channel: outbound request bodies are scanned and secrets are replaced with
 	// reversible {{Redact:...}} placeholders BEFORE octopus sends the request with
@@ -285,6 +295,9 @@ type ChannelUpdateRequest struct {
 	OpenAIImagesPath      *string                `json:"openai_images_path,omitempty"`
 	OpenAIVideosPath      *string                `json:"openai_videos_path,omitempty"`
 	OpenAITasksPath       *string                `json:"openai_tasks_path,omitempty"`
+	// ProbeEnabled 用指针：显式 false 必须能真的把开关关掉，而整体省略（nil）表示
+	// 本次没提这个字段，库里的值不动。
+	ProbeEnabled *bool `json:"probe_enabled,omitempty"`
 	// BatchImage 部分更新批处理接入参数。nil = 不动这一列（与其余指针字段同语义）。
 	// 传一个空对象 `{}` 则是**清空**（= 这个渠道不再承接批处理流量）。
 	BatchImage *ChannelBatchImage `json:"batch_image,omitempty"`

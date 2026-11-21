@@ -44,6 +44,7 @@ func SnapshotChannel(channelID int) model.ChannelCircuitStatus {
 			remaining := cooldown - time.Since(entry.LastFailureTime)
 			if remaining <= 0 {
 				entry.State = StateHalfOpen
+				entry.writeSeq = nextCircuitRevision()
 				remaining = 0
 			}
 			status.Tripped = true

@@ -85,6 +85,10 @@ var startCmd = &cobra.Command{
 		// 放在 server.Start 之后启动，确保任何入队请求到达时 worker 已在轮询。
 		handlers.StartModelAuditQueueWorker()
 
+		// 熔断探测 worker：独立、串行、全局只有一条车道。它自己会读口径并在有到期的
+		// 审计探测时让出车道；总开关出厂关（circuit_probe_enabled=false）。
+		handlers.StartCircuitProbeWorker()
+
 		// 全部初始化成功，现在才进入阻塞等待退出信号。
 		shutdown.Listen()
 	},

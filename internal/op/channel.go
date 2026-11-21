@@ -362,6 +362,12 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "disable_circuit_breaker")
 		updates.DisableCircuitBreaker = *req.DisableCircuitBreaker
 	}
+	if req.ProbeEnabled != nil {
+		// 指针语义：显式 false 必须真的落库（把一个已经打开的渠道关掉）。
+		// 与上面几条同理走 Select：Updates(struct) 会跳过零值，而那正是“关闭”。
+		selectFields = append(selectFields, "probe_enabled")
+		updates.ProbeEnabled = *req.ProbeEnabled
+	}
 	if req.RaceMode != nil {
 		selectFields = append(selectFields, "race_mode")
 		updates.RaceMode = *req.RaceMode

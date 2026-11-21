@@ -313,7 +313,7 @@ func listChannelCircuits(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
 		return
 	}
-	resp.Success(c, balancer.ListChannelCircuits(id))
+	resp.Success(c, channelCircuitsWithProbe(id))
 }
 
 func deleteChannel(c *gin.Context) {

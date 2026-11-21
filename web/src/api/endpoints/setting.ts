@@ -73,6 +73,13 @@ export const SettingKey = {
     CircuitBreakerCooldown: 'circuit_breaker_cooldown',
     CircuitBreakerMaxCooldown: 'circuit_breaker_max_cooldown',
     CircuitBreakerErrorRules: 'circuit_breaker_error_rules',
+    // 主动探测（P3）：总开关 + 每日上限。键名与后端 seed 默认值（false/200/20/3/false）对齐，
+    // 开关按 'true'/'false' 写，数值键按十进制整数写。
+    CircuitProbeEnabled: 'circuit_probe_enabled',
+    CircuitProbeDailyCap: 'circuit_probe_daily_cap',
+    CircuitProbeChannelDailyCap: 'circuit_probe_channel_daily_cap',
+    CircuitProbeMaxConsecutiveFailures: 'circuit_probe_max_consecutive_failures',
+    CircuitProbeEmbeddingsEnabled: 'circuit_probe_embeddings_enabled',
     UpstreamErrorStatusPassthrough: 'upstream_error_status_passthrough',
     UpstreamErrorBodyMode: 'upstream_error_body_mode',
     UpstreamErrorCustomMessage: 'upstream_error_custom_message',

@@ -1084,7 +1084,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// Do not let downstream disconnects or caller-side timeouts poison channel health.
 	if recordChannelHealth {
 		balancer.RecordFailureWithStatusScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode)
-		applyCircuitErrorRules(ra.channel.ID, ra.usedKey.ID, runtimeModel, recordStatusCode, fwdErr)
+		applyCircuitErrorRulesScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, recordStatusCode, fwdErr, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
 		if ra.iter != nil && ra.iter.IsStickyChannel(ra.channel.ID) {
 			balancer.ClearStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey)
 			log.Infof("cleared sticky route for api key %d model %s after channel %s failure", ra.apiKeyID, ra.requestModel, ra.channel.Name)

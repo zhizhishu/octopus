@@ -28,7 +28,17 @@ type circuitEntry struct {
 	LastFailureTime     time.Time
 	TripCount           int // 累计熔断触发次数（用于指数退避）
 	Policy              circuitFailurePolicy
-	mu                  sync.Mutex
+	// writeSeq 是这条条目最近一次被写时的**全局唯一版本号**（circuit_commit.go 的
+	// circuitRevision）。每次写都取一个新值，单调递增、永不重复。
+	//
+	// 它只服务一个用处：让拿在手上的"准入时那一条"能被不可变地认出来。条目内部计数器
+	// 不够用：从 0 开始、重建后重新计数，旧 claim 的"第 3 版"很容易正好撞上重建后的
+	// "第 3 版"，于是把新一代当成自己那一条给清了。全局号不会重合。
+	//
+	// 它不影响任何真实判定（IsTripped/RecordFailure/RecordSuccess 的语义不变），
+	// 也不落检查点。
+	writeSeq uint64
+	mu       sync.Mutex
 }
 
 type circuitFailurePolicy struct {
@@ -195,6 +205,7 @@ func IsTrippedScoped(channelID, keyID int, modelName, endpoint, capability strin
 		elapsed := time.Since(entry.LastFailureTime)
 		if elapsed >= cooldown {
 			entry.State = StateHalfOpen
+			entry.writeSeq = nextCircuitRevision()
 			log.Infof("circuit breaker [%s] Open -> HalfOpen (cooldown %v elapsed)", key, cooldown)
 			return false, 0
 		}
@@ -234,6 +245,7 @@ func RecordSuccessScoped(channelID, keyID int, modelName, endpoint, capability s
 	entry.State = StateClosed
 	entry.ConsecutiveFailures = 0
 	entry.TripCount = 0
+	entry.writeSeq = nextCircuitRevision()
 }
 
 // RecordFailure 记录失败，可能触发熔断
@@ -248,6 +260,11 @@ func RecordFailureWithStatus(channelID, keyID int, modelName string, statusCode 
 }
 
 func RecordFailureWithStatusScoped(channelID, keyID int, modelName, endpoint, capability string, statusCode int) {
+	// tuple 级提交锁：这是唯一会**新建**熔断条目的真实路径，探测重置的
+	// "复核 → 删 → 扫"必须与它串行，否则清除会漏掉刚刚新建的条目。
+	unlock := lockCircuitTuple(channelID, keyID, modelName)
+	defer unlock()
+
 	key := circuitScopedKey(channelID, keyID, modelName, endpoint, capability)
 	entry := getOrCreateEntry(key)
 	policy := failurePolicyForStatusAndCapability(statusCode, modelName, capability)
@@ -257,6 +274,8 @@ func RecordFailureWithStatusScoped(channelID, keyID int, modelName, endpoint, ca
 
 	entry.LastFailureTime = time.Now()
 	entry.Policy = policy
+	// 任何一条失败都算写过一次（下面的分支不一定改 State/TripCount，但时间戳已经变了）。
+	entry.writeSeq = nextCircuitRevision()
 
 	switch entry.State {
 	case StateClosed:
