@@ -5,7 +5,7 @@
 //
 // 覆盖：
 //   A 设置页「主动探测」整块可折叠、摘要带开关/今日已用/上限，5 个键写到正确的 key
-//   B 渠道详情：熔断明细默认展开当且仅当有条目、折叠后仍能看到条数、移动端三列等宽
+//   B 渠道详情：熔断明细默认折叠、折叠后仍能看到条数、移动端三列等宽
 //   C 探测状态徽标只说后端给的秒数（wait_upstream 用 remaining_seconds）
 //   D 手动探测发 {id,key_id,model}，被拒绝时用后端的 remaining_seconds 说话
 //   E 最近探测默认折叠、与熔断条目多少无关；摘要给最新一条的时间 + 结果；最多 20 条
@@ -340,9 +340,14 @@ function makeCircuitHarness({ entries = [] } = {}) {
         '@/lib/utils': { cn: (...values) => values.filter(Boolean).join(' ') },
         'lucide-react': lucide,
     });
+    const render = () => hooks.render(CircuitList, { channelId: 7, keyLabel: (id) => `key ${id}` });
     return {
-        notes, reset, probe,
-        render() { return hooks.render(CircuitList, { channelId: 7, keyLabel: (id) => `key ${id}` }); },
+        notes, reset, probe, render,
+        renderExpanded() {
+            const tree = render();
+            collect(tree, (node) => node.type === 'button' && node.props?.['aria-expanded'] === false)[0].props.onClick();
+            return render();
+        },
     };
 }
 
@@ -362,16 +367,22 @@ test('B: 没有熔断条目时整块不渲染', async () => {
     assert.equal(tree, null, '没有条目就不该占位');
 });
 
-test('B: 有条目时默认展开，折叠后标题行仍给出条数', async () => {
+test('B: 有条目时默认折叠，展开和折叠均给出条数', async () => {
     const h = makeCircuitHarness({ entries: [openEntry, { ...openEntry, model: 'deepseek-v4', state: 'half_open' }] });
     let tree = h.render();
     const header = collect(tree, (node) => node.type === 'button' && node.props?.['aria-expanded'] !== undefined)[0];
     assert.ok(header, '标题行是一个可折叠按钮');
-    assert.equal(header.props['aria-expanded'], true, '有条目 → 默认展开');
+    assert.equal(header.props['aria-expanded'], false, '有条目也默认折叠');
     assert.equal(header.props['aria-label'], 'title({"count":2})', '折叠/展开都显示条数标题');
+    assert.equal(collect(tree, (node) => node.type === 'li').length, 0);
+    header.props.onClick();
+    tree = h.render();
+    const expanded = collect(tree, (node) => node.type === 'button' && node.props?.['aria-expanded'] !== undefined)[0];
+    assert.equal(expanded.props['aria-expanded'], true);
+    assert.equal(expanded.props['aria-label'], header.props['aria-label']);
     assert.ok(collect(tree, (node) => node.type === 'li').length === 2, '两条熔断项都渲染');
 
-    header.props.onClick();
+    expanded.props.onClick();
     tree = h.render();
     const collapsed = collect(tree, (node) => node.type === 'button' && node.props?.['aria-expanded'] !== undefined)[0];
     assert.equal(collapsed.props['aria-expanded'], false);
@@ -380,7 +391,7 @@ test('B: 有条目时默认展开，折叠后标题行仍给出条数', async ()
 
 test('B: 每一行的操作按钮正好三个，且移动端是三列等宽', async () => {
     const h = makeCircuitHarness({ entries: [openEntry] });
-    const tree = h.render();
+    const tree = h.renderExpanded();
     const row = collect(tree, (node) => node.type === 'li')[0];
     const actionRow = collect(row, (node) => typeof node.props?.className === 'string'
         && node.props.className.includes('grid-cols-3'))[0];
@@ -418,7 +429,7 @@ test('C: wait_upstream 用 remaining_seconds 说话，scheduled 用 next_in_seco
             },
         ],
     });
-    const tree = h.render();
+    const tree = h.renderExpanded();
     const pills = collect(tree, (node) => node.props && node.props['data-probe-state'] !== undefined);
     assert.deepEqual(pills.map((node) => node.props['data-probe-state']), ['waitUpstream', 'scheduled', 'notProbed']);
     assert.match(text(pills[0]), /probe\.state\.waitUpstreamMinutes\(\{"minutes":25\}\)/, '25 分用的是 remaining_seconds 而不是 5 秒');
@@ -430,7 +441,7 @@ test('C: 认不出的探测状态原样露出，不吞成「未知」', async ()
     const h = makeCircuitHarness({
         entries: [{ ...openEntry, probe: { state: 'some_future_state', next_in_seconds: 0 } }],
     });
-    const tree = h.render();
+    const tree = h.renderExpanded();
     const pill = collect(tree, (node) => node.props && node.props['data-probe-state'] !== undefined)[0];
     assert.equal(pill.props['data-probe-state'], 'unknown');
     assert.match(text(pill), /some future state/, '原文要能看见');
@@ -438,7 +449,7 @@ test('C: 认不出的探测状态原样露出，不吞成「未知」', async ()
 
 test('D: 立即探测发指定条目的作用域，拒绝时用后端的 remaining_seconds 说话', async () => {
     const h = makeCircuitHarness({ entries: [{ ...openEntry, endpoint: 'responses', capability: 'stream' }] });
-    let tree = h.render();
+    let tree = h.renderExpanded();
     const row = collect(tree, (node) => node.type === 'li')[0];
     const probeButton = collect(row, (node) => node.type === 'button' && text(node) === 'probe.run')[0];
     assert.ok(probeButton);
@@ -464,7 +475,7 @@ test('D: 立即探测发指定条目的作用域，拒绝时用后端的 remaini
 
 test('D: 通配模型（*）不提供具体模型名，手探按钮禁用并说明原因', async () => {
     const h = makeCircuitHarness({ entries: [{ ...openEntry, model: '*' }] });
-    const tree = h.render();
+    const tree = h.renderExpanded();
     const row = collect(tree, (node) => node.type === 'li')[0];
     const buttons = collect(row, (node) => node.type === 'button');
     const probeButton = buttons.find((node) => text(node) === 'probe.run');

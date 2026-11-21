@@ -574,7 +574,7 @@
         "skipped": "Skipped {count}",
         "master": {
           "label": "Master switch",
-          "hint": "Off = nothing is probed anywhere. On = only channels that opt in are probed."
+          "hint": "Off stops automatic probes; eligible manual probes are still allowed. On enables automatic probes only for channels that opt in."
         },
         "dailyCap": {
           "label": "Site-wide daily cap (probes)",
@@ -599,7 +599,7 @@
           "whenTitle": "When it probes: ",
           "when": "key×model pairs whose cooldown is about to expire and which had no real request in the last 10 minutes; fires 10–60 seconds early at a random moment, never on a fixed schedule.",
           "whatTitle": "What it sends: ",
-          "what": "the same random four-digit addition as the channel test, with the same request shape; only a correct answer counts as recovered.",
+          "what": "text probes ask a random addition, subtraction, or multiplication question; only a correct answer counts as recovery.",
           "skipTitle": "Not probed: ",
           "skip": "images and videos (real traffic with half-open only); anything upstream told us to wait for with Retry-After until that time passes."
         }

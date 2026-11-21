@@ -45,14 +45,11 @@ export function CircuitList({ channelId, keyLabel }: { channelId: number; keyLab
     const activeProbe = useRunChannelProbe();
     const entries: ChannelCircuitEntry[] = data ?? [];
 
-    // null = 还没表态；有条目时默认展开，一旦用户点过就按用户的选择（轮询刷新不会把它抢回来）。
-    const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+    const [expanded, setExpanded] = useState(false);
 
     if (entries.length === 0) {
         return null;
     }
-
-    const expanded = expandedOverride ?? true;
 
     const run = (payload: { id: number; key_id?: number; model?: string }) => {
         reset.mutate(payload, {
@@ -89,7 +86,7 @@ export function CircuitList({ channelId, keyLabel }: { channelId: number; keyLab
         <section className="space-y-3">
             <button
                 type="button"
-                onClick={() => setExpandedOverride(!expanded)}
+                onClick={() => setExpanded((open) => !open)}
                 aria-expanded={expanded}
                 aria-label={t('title', { count: entries.length })}
                 className="flex w-full min-w-0 items-center gap-2 rounded-xl text-left transition-colors hover:bg-muted/40 max-sm:min-h-11"
