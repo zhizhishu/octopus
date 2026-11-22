@@ -76,6 +76,7 @@ func lockUser(userID int) *sync.Mutex {
 // 与 userRelayIPPending 不同，这里**必须**是内存态：进程重启即清零是正确语义
 // （重启后不存在在途请求）。
 var userQuotaInflight = make(map[int]float64)
+var userQuotaInflightMu sync.RWMutex
 
 // userQuotaReserveDefault 是单次准入的预留估值。
 //
@@ -92,7 +93,15 @@ const userQuotaInflightEpsilon = 1e-9
 
 // userQuotaInflightOf 返回该用户当前在途预留总额。调用方必须已持有 lockUser。
 func userQuotaInflightOf(userID int) float64 {
+	userQuotaInflightMu.RLock()
+	defer userQuotaInflightMu.RUnlock()
 	return userQuotaInflight[userID]
+}
+
+func setUserQuotaInflight(userID int, value float64) {
+	userQuotaInflightMu.Lock()
+	defer userQuotaInflightMu.Unlock()
+	userQuotaInflight[userID] = value
 }
 
 func userQuotaReserveOf(available float64) float64 {
@@ -599,7 +608,7 @@ func UserCanRelay(userID int, ctx context.Context) (float64, error) {
 			return 0, fmt.Errorf("monthly quota has been used up")
 		}
 		reservation := userQuotaReserveOf(available)
-		userQuotaInflight[user.ID] = inflight + reservation
+		setUserQuotaInflight(user.ID, inflight+reservation)
 		return reservation, nil
 	}
 	available := user.Balance - inflight
@@ -607,7 +616,7 @@ func UserCanRelay(userID int, ctx context.Context) (float64, error) {
 		return 0, fmt.Errorf("user quota has been used up")
 	}
 	reservation := userQuotaReserveOf(available)
-	userQuotaInflight[user.ID] = inflight + reservation
+	setUserQuotaInflight(user.ID, inflight+reservation)
 	return reservation, nil
 }
 
@@ -626,6 +635,8 @@ func UserReleaseQuota(userID int, reservation float64) {
 	mu := lockUser(userID)
 	mu.Lock()
 	defer mu.Unlock()
+	userQuotaInflightMu.Lock()
+	defer userQuotaInflightMu.Unlock()
 	remaining := maxFloat(userQuotaInflight[userID]-reservation, 0)
 	// 浮点累加残渣：1000 次 0.01 的加减会留下 ~1e-16 的尾巴（实测 1.353e-16）。
 	// 不清掉的话，健康用户在高并发之后会永久残留一个微小的"在途"额度占用，
