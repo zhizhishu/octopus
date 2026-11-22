@@ -28,10 +28,12 @@ const Prompt_Module = lazyWithPreload(() => import('@/components/modules/prompt'
 const Audit_Module = lazyWithPreload(() => import('@/components/modules/model-audit').then(m => ({ default: m.ModelAudit })));
 const User_Module = lazyWithPreload(() => import('@/components/modules/user').then(m => ({ default: m.UserManagement })));
 const MCP_Module = lazyWithPreload(() => import('@/components/modules/mcp').then(m => ({ default: m.MCP })));
+const Usage_Module = lazyWithPreload(() => import('@/components/modules/usage').then(m => ({ default: m.Usage })));
 
 export const ROUTES: RouteConfig[] = [
     { id: 'home', label: 'Home', icon: Home, component: Home_Module },
     { id: 'dashboard', label: 'Dashboard', icon: ChartColumn, component: Dashboard_Module },
+    { id: 'usage', label: 'Usage', icon: ChartColumn, component: Usage_Module },
     { id: 'user', label: 'Users', icon: Users, component: User_Module },
     { id: 'key', label: 'API Key', icon: KeyRound, component: Key_Module },
     { id: 'channel', label: 'Channel', icon: Radio, component: Channel_Module },
@@ -52,8 +54,8 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
 }, {} as Record<string, LazyComponent>);
 
 // 'dashboard'（仪表盘）只给管理员：它的接口是全站口径、AdminOnly。
-export const ADMIN_ROUTE_IDS = ['home', 'dashboard', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'mcp', 'setting'] as const;
-export const USER_ROUTE_IDS = ['home', 'key', 'log', 'mcp'] as const;
+export const ADMIN_ROUTE_IDS = ['home', 'dashboard', 'usage', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'mcp', 'setting'] as const;
+export const USER_ROUTE_IDS = ['home', 'usage', 'key', 'log', 'mcp'] as const;
 
 export function routeIdsForRole(role?: string | null) {
     return role === 'admin' ? ADMIN_ROUTE_IDS : USER_ROUTE_IDS;
