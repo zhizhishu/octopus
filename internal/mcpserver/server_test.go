@@ -266,6 +266,7 @@ func TestMCPIntegration(t *testing.T) {
 			if err != nil || usage.Totals.Cost != 100-user.Balance || usage.Totals.Cost != stats.InputCost+stats.OutputCost {
 				t.Fatalf("stats/balance/key spending differ: usage=%+v balance=%v spent=%+v error=%v", usage, user.Balance, stats, err)
 			}
+			t.Logf("ISOLATION U%d user_id=%d api_key_id=%d relay_logs=%d request_source=mcp calls=1+20 balance=100->%.2f balance_delta=%.2f key_spent_delta=%.2f stats_cost=%.2f", i+1, user.ID, e.keys[i].ID, counts[e.keys[i].ID], user.Balance, 100-user.Balance, stats.InputCost+stats.OutputCost, usage.Totals.Cost)
 		}
 	})
 	t.Run("session-hijack", func(t *testing.T) {
@@ -284,6 +285,7 @@ func TestMCPIntegration(t *testing.T) {
 			if w.Code != 403 && w.Code != 404 {
 				t.Fatalf("%s hijack = %d %s", method, w.Code, w.Body.String())
 			}
+			t.Logf("SESSION key_B_using_key_A_session method=%s status=%d rejected=true", method, w.Code)
 		}
 		if _, err := a.ListTools(e.ctx, nil); err != nil {
 			t.Fatalf("hijack damaged original session: %v", err)
@@ -392,6 +394,7 @@ func TestMCPIntegration(t *testing.T) {
 		if !strings.HasPrefix(y.RequestUserAgent, "octopus-mcp/") {
 			t.Fatal("missing MCP user agent prefix")
 		}
+		t.Logf("BILLING direct_balance_delta=%.2f mcp_balance_delta=%.2f direct_key_spent_delta=%.2f mcp_key_spent_delta=%.2f log_billing_fields_equal=true", directCost, mcpCost, spentDirect.InputCost+spentDirect.OutputCost-spentBefore.InputCost-spentBefore.OutputCost, spentMCP.InputCost+spentMCP.OutputCost-spentDirect.InputCost-spentDirect.OutputCost)
 	})
 	t.Run("Gemini-generation-and-mask", func(t *testing.T) {
 		result, err := call(a, map[string]any{"model": geminiModel, "prompt": "fake Gemini", "size": "2048x1152"}, "generate_image")
