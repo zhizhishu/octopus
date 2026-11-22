@@ -1062,7 +1062,11 @@ func (ra *relayAttempt) attempt() attemptResult {
 		})
 
 		// 熔断器：记录成功
-		balancer.RecordSuccessScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
+		if ra.streamResumeRun == nil {
+			balancer.RecordSuccessScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
+		} else if !ra.channel.DisableCircuitBreaker {
+			balancer.RecordContinuationCircuitOutcomeScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), statusCode, true)
+		}
 		// 会话保持：更新粘性记录（仅当该请求参与 sticky；轮询模式纯优化型会话不写，保证轮转）
 		if ra.stickyEnabled {
 			balancer.SetStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey, ra.channel.ID, ra.usedKey.ID)
@@ -1113,7 +1117,11 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 熔断器：记录失败
 	// Do not let downstream disconnects or caller-side timeouts poison channel health.
 	if recordChannelHealth {
-		balancer.RecordFailureWithStatusScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode)
+		if ra.streamResumeRun == nil {
+			balancer.RecordFailureWithStatusScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode)
+		} else {
+			balancer.RecordContinuationCircuitOutcomeScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode, false)
+		}
 		applyCircuitErrorRulesScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, recordStatusCode, fwdErr, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
 		if ra.iter != nil && ra.iter.IsStickyChannel(ra.channel.ID) {
 			balancer.ClearStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey)

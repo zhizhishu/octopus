@@ -239,6 +239,10 @@ func RecordSuccess(channelID, keyID int, modelName string) {
 }
 
 func RecordSuccessScoped(channelID, keyID int, modelName, endpoint, capability string) {
+	recordSuccessScoped(channelID, keyID, modelName, endpoint, capability, false)
+}
+
+func recordSuccessScoped(channelID, keyID int, modelName, endpoint, capability string, closedOnly bool) {
 	key := circuitScopedKey(channelID, keyID, modelName, endpoint, capability)
 	v, ok := globalBreaker.Load(key)
 	if !ok {
@@ -249,6 +253,9 @@ func RecordSuccessScoped(channelID, keyID int, modelName, endpoint, capability s
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
+	if closedOnly && entry.State != StateClosed {
+		return
+	}
 	if entry.State == StateHalfOpen {
 		log.Infof("circuit breaker [%s] HalfOpen -> Closed (probe succeeded)", key)
 	}
@@ -272,6 +279,19 @@ func RecordFailureWithStatus(channelID, keyID int, modelName string, statusCode 
 }
 
 func RecordFailureWithStatusScoped(channelID, keyID int, modelName, endpoint, capability string, statusCode int) {
+	recordFailureWithStatusScoped(channelID, keyID, modelName, endpoint, capability, statusCode, false)
+}
+
+// RecordContinuationCircuitOutcomeScoped cannot settle another request's half-open probe.
+func RecordContinuationCircuitOutcomeScoped(channelID, keyID int, modelName, endpoint, capability string, statusCode int, success bool) {
+	if success {
+		recordSuccessScoped(channelID, keyID, modelName, endpoint, capability, true)
+	} else {
+		recordFailureWithStatusScoped(channelID, keyID, modelName, endpoint, capability, statusCode, true)
+	}
+}
+
+func recordFailureWithStatusScoped(channelID, keyID int, modelName, endpoint, capability string, statusCode int, closedOnly bool) {
 	// tuple 级提交锁：这是唯一会**新建**熔断条目的真实路径，探测重置的
 	// "复核 → 删 → 扫"必须与它串行，否则清除会漏掉刚刚新建的条目。
 	unlock := lockCircuitTuple(channelID, keyID, modelName)
@@ -284,6 +304,9 @@ func RecordFailureWithStatusScoped(channelID, keyID int, modelName, endpoint, ca
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
+	if closedOnly && entry.State != StateClosed {
+		return
+	}
 	entry.LastFailureTime = time.Now()
 	entry.Policy = policy
 	// 任何一条失败都算写过一次（下面的分支不一定改 State/TripCount，但时间戳已经变了）。

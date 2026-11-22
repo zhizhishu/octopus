@@ -118,6 +118,39 @@ func TestClosedCircuitCheckDoesNotClaimHalfOpenProbe(t *testing.T) {
 	}
 }
 
+func TestStreamResumeOutcomeDoesNotSettleAnOrdinaryHalfOpenProbe(t *testing.T) {
+	const channelID, keyID = 1015, 1016
+	const name, endpoint, capability = "claude-sonnet-4-5", "messages", "stream"
+	key := circuitScopedKey(channelID, keyID, name, endpoint, capability)
+	t.Cleanup(func() { globalBreaker.Delete(key) })
+
+	entry := &circuitEntry{State: StateClosed}
+	globalBreaker.Store(key, entry)
+	RecordContinuationCircuitOutcomeScoped(channelID, keyID, name, endpoint, capability, 500, false)
+	if entry.ConsecutiveFailures != 1 {
+		t.Fatal("continuation failure was not counted while closed")
+	}
+	RecordContinuationCircuitOutcomeScoped(channelID, keyID, name, endpoint, capability, 200, true)
+	if entry.ConsecutiveFailures != 0 {
+		t.Fatal("continuation success was not counted while closed")
+	}
+
+	lastFailure := time.Now().Add(-time.Hour)
+	entry.State, entry.TripCount, entry.LastFailureTime = StateOpen, 1, lastFailure
+	if tripped, _ := IsTrippedScoped(channelID, keyID, name, endpoint, capability); tripped {
+		t.Fatal("ordinary request could not claim the probe")
+	}
+	RecordContinuationCircuitOutcomeScoped(channelID, keyID, name, endpoint, capability, 200, true)
+	RecordContinuationCircuitOutcomeScoped(channelID, keyID, name, endpoint, capability, 500, false)
+	if entry.State != StateHalfOpen || entry.TripCount != 1 || !entry.LastFailureTime.Equal(lastFailure) {
+		t.Fatal("continuation settled or changed the ordinary probe")
+	}
+	RecordSuccessScoped(channelID, keyID, name, endpoint, capability)
+	if entry.State != StateClosed || entry.TripCount != 0 {
+		t.Fatal("the ordinary probe could not settle normally")
+	}
+}
+
 func TestSnapshotAndResetChannelCircuit(t *testing.T) {
 	globalBreaker = sync.Map{}
 
