@@ -816,11 +816,11 @@
       "clearFailed": "Failed to clear logs",
       "intervention": {
         "label": "Automatic rescue for upstream errors",
-        "description": "Automatic rescue retries the same user message on other channels once, at one retry per second, for at most 300 seconds. It runs at most once per new user message: once the rescue is exhausted, later requests carrying that same message are forwarded normally until one succeeds or a new user message arrives. Identical conversation histories cannot be told apart, so a repeated message shares the same rescue."
+        "description": "When all automatic channels fail, each rescue round reselects and retries the entire route, including any key changes allowed by the retry rules. Rounds run on a one-second cadence for up to 300 seconds, or less if the auto rescue duration setting is lower. It runs at most once per new user message: once the rescue is exhausted, later requests carrying that same message are forwarded normally until one succeeds or a new user message arrives. Identical conversation histories cannot be told apart, so a repeated message shares the same rescue."
       },
       "noBreaker": {
         "label": "Automatic rescue window (sec)",
-        "hint": "Default and maximum are both 300 seconds; 0 turns automatic rescue off. It applies to channels with the circuit breaker disabled, regardless of the switch above."
+        "hint": "Sets the global time limit for automatic rescue. Default and maximum: 300 seconds. A value of 0 turns off all automatic rescue. For channels with the circuit breaker disabled, this setting controls rescue independently of the switch above."
       },
       "reclaim": {
         "label": "Auto-reclaim disk space",
