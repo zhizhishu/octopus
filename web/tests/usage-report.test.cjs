@@ -70,7 +70,7 @@ function render(report, admin = false) {
     const ui = new Proxy({}, { get: () => wrap });
     const dashboard = load('src/components/modules/dashboard/model.ts');
     const { Usage, usageCacheRate } = load('src/components/modules/usage.tsx', {
-        'next-intl': { useTranslations: () => key => key },
+        'next-intl': { useTranslations: namespace => { assert.equal(namespace, 'usageReport'); return key => key; } },
         'lucide-react': ui, recharts: ui,
         '@/components/common/PageWrapper': ui,
         '@/components/ui/button': { Button: ({ children, ...props }) => React.createElement('button', props, children) },

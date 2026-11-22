@@ -11,24 +11,22 @@ const config = load('src/route/config.tsx', {
     './lazy-with-preload': { lazyWithPreload: (factory) => ({ preload: factory }) },
 });
 
-test('billing mockup routes preserve ordering and are available to both roles', () => {
+test('real Usage follows dashboard and remains available to both roles', () => {
     const ids = config.ROUTES.map(r => r.id);
     assert.equal(ids[ids.indexOf('dashboard') + 1], 'usage');
-    assert.equal(ids[ids.indexOf('user') + 1], 'billing');
     for (const role of ['admin', 'user', undefined]) {
-        const available = config.routesForRole(role).map(r => r.id);
-        assert.ok(available.includes('usage'));
-        assert.ok(available.includes('billing'));
+        assert.ok(config.routesForRole(role).some(r => r.id === 'usage'));
     }
+    assert.deepEqual([...config.USER_ROUTE_IDS], ['home', 'usage', 'key', 'log']);
+    assert.deepEqual([...config.ADMIN_ROUTE_IDS], ['home', 'dashboard', 'usage', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting']);
 });
 
-test('all billing mockup translations exist in all three locales', () => {
+test('real Usage translations exist in all three locales', () => {
     const locales = ['en', 'zh_hans', 'zh_hant'].map(locale => JSON.parse(readFileSync(path.join(__dirname, '..', 'public', 'locale', `${locale}.json`), 'utf8')));
-    const expected = Object.keys(locales[0].billingMock).sort();
+    const expected = Object.keys(locales[0].usageReport).sort();
     for (const locale of locales) {
-        assert.deepEqual(Object.keys(locale.billingMock).sort(), expected);
+        assert.deepEqual(Object.keys(locale.usageReport).sort(), expected);
         assert.ok(locale.navbar.usage);
-        assert.ok(locale.navbar.billing);
-        assert.ok(Object.values(locale.billingMock).every(s => typeof s === 'string' && s.length > 0));
+        assert.ok(Object.values(locale.usageReport).every(s => typeof s === 'string' && s.length > 0));
     }
 });

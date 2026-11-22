@@ -28,7 +28,7 @@ function Filter({ label, value, options, onChange }: { label: string; value: str
 }
 
 export function Usage() {
-    const t = useTranslations('billingMock');
+    const t = useTranslations('usageReport');
     const user = useAuthStore(s => s.user);
     const admin = user?.role === 'admin';
     const { locale, setLocale } = useSettingStore();
