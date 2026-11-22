@@ -282,10 +282,11 @@ func (s *streamResumeCapture) continuation() *http.Request {
 }
 
 type streamResumeWire struct {
-	opened      bool
-	textStarted bool
-	textStopped bool
-	terminal    bool
+	opened       bool
+	textStarted  bool
+	textStopped  bool
+	terminal     bool
+	chatUsageEnd bool
 }
 
 func (s *streamResumeWire) textOnly(raw string, mode streamPrefill) bool {
@@ -307,6 +308,11 @@ func (s *streamResumeWire) textOnly(raw string, mode streamPrefill) bool {
 			return false
 		}
 		if len(choices) == 0 {
+			var usage map[string]json.RawMessage
+			if json.Unmarshal(event["usage"], &usage) == nil && usage != nil {
+				s.terminal = true
+				s.chatUsageEnd = true
+			}
 			return true
 		}
 		c := choices[0]
@@ -388,9 +394,21 @@ func (s *streamResumeWire) textOnly(raw string, mode streamPrefill) bool {
 		s.terminal = d.StopReason == "end_turn" || d.StopReason == "max_tokens" || d.StopReason == "stop_sequence"
 		return s.terminal
 	case `"message_stop"`:
+		s.terminal = s.textStarted
 		return s.terminal
 	}
 	return false
+}
+
+func (ra *relayAttempt) streamResumeChatWire() *streamResumeWire {
+	if r := ra.streamResumeRun; r != nil && r.first.mode == chatStreamPrefix && r.textWritten.Len() > 0 {
+		return &r.wire
+	}
+	if s := ra.streamResumeCapture; s != nil && s.mode == chatStreamPrefix && !s.invalid && strings.TrimSpace(s.text.String()) != "" &&
+		ra.wroteMeaningfulDownstream {
+		return &s.wire
+	}
+	return nil
 }
 
 func streamResumeTemporaryEvent(raw string, mode streamPrefill) bool {

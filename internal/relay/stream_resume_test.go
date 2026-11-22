@@ -78,8 +78,15 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 		{name: "chat temporary SSE error", mode: chatStreamPrefix, condition: "temporary", enabled: true, calls: 2, finished: true},
 		{name: "chat upstream idle", mode: chatStreamPrefix, condition: "idle", enabled: true, calls: 2, finished: true},
 		{name: "chat already finished", mode: chatStreamPrefix, condition: "finished", enabled: true, calls: 1, finished: true},
+		{name: "chat DONE without waiting for EOF", mode: chatStreamPrefix, condition: "done_only", enabled: true, calls: 1, finished: true},
+		{name: "chat finish reason then idle", mode: chatStreamPrefix, condition: "finish_idle", enabled: true, calls: 1, finished: true},
+		{name: "chat usage without waiting for EOF", mode: chatStreamPrefix, condition: "usage_only", enabled: true, calls: 1, finished: true},
+		{name: "chat null usage is not a terminal", mode: chatStreamPrefix, condition: "null_usage", enabled: true, calls: 2, finished: true},
+		{name: "resumed chat ends at usage", mode: chatStreamPrefix, condition: "resume_usage_only", enabled: true, calls: 2, finished: true},
 		{name: "anthropic EOF with split echo", mode: anthropicStreamPrefill, enabled: true, calls: 2, finished: true},
 		{name: "anthropic temporary SSE error", mode: anthropicStreamPrefill, condition: "temporary", enabled: true, calls: 2, finished: true},
+		{name: "anthropic message stop without waiting for EOF", mode: anthropicStreamPrefill, condition: "message_stop", enabled: true, calls: 1, finished: true},
+		{name: "resumed anthropic ends at message stop", mode: anthropicStreamPrefill, condition: "resume_message_stop", enabled: true, calls: 2, finished: true},
 		{name: "disabled", mode: chatStreamPrefix, calls: 1},
 		{name: "unconfirmed endpoint", mode: chatStreamPrefix, condition: "unconfirmed", enabled: true, calls: 1},
 		{name: "already started reasoning", mode: chatStreamPrefix, condition: "thinking", enabled: true, calls: 1},
@@ -109,7 +116,8 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
-			if tc.condition == "idle" {
+			switch tc.condition {
+			case "idle", "done_only", "finish_idle", "usage_only", "resume_usage_only", "message_stop", "resume_message_stop":
 				setIdleSetting(t, dbmodel.SettingKeyRelayStreamDataTimeoutSec, "1")
 			}
 			var calls atomic.Int32
@@ -164,6 +172,10 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 						if tc.condition == "temporary" {
 							send(`{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`)
 						}
+						if tc.condition == "message_stop" {
+							send(`{"type":"message_stop"}`, `{"type":"error","error":{"type":"api_error","message":"late failure"}}`)
+							<-r.Context().Done()
+						}
 						return
 					}
 					send(resumeChatEvent("chat_original", `{"role":"assistant"}`, ""))
@@ -191,6 +203,17 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 						f.Flush()
 					case "finished":
 						send(resumeChatEvent("chat_original", "{}", `,"finish_reason":"stop"`), "[DONE]")
+					case "done_only":
+						send("[DONE]")
+						<-r.Context().Done()
+					case "finish_idle":
+						send(resumeChatEvent("chat_original", "{}", `,"finish_reason":"stop"`))
+						<-r.Context().Done()
+					case "usage_only":
+						send(`{"id":"chat_original","object":"chat.completion.chunk","created":5,"model":"trunc-model","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":8,"total_tokens":17}}`)
+						<-r.Context().Done()
+					case "null_usage":
+						send(`{"id":"chat_original","object":"chat.completion.chunk","created":5,"model":"trunc-model","choices":[],"usage":null}`)
 					case "idle", "cancel":
 						<-r.Context().Done()
 					}
@@ -199,6 +222,11 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 				if tc.mode == anthropicStreamPrefill {
 					send(resumeAnthropicStart("msg_new")...)
 					send(resumeAnthropicText("第一"), resumeAnthropicText(strings.TrimPrefix(resumeTestPrefix, "第一")+resumeTestSuffix))
+					if tc.condition == "resume_message_stop" {
+						send(`{"type":"message_stop"}`)
+						<-r.Context().Done()
+						return
+					}
 					send(`{"type":"content_block_stop","index":0}`,
 						`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":499,"output_tokens":76}}`,
 						`{"type":"message_stop"}`)
@@ -230,8 +258,13 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 				if tc.condition == "double_eof" {
 					return
 				}
-				send(resumeChatEvent("chat_new", "{}", `,"finish_reason":"stop"`),
-					`{"id":"chat_new","object":"chat.completion.chunk","created":5,"model":"trunc-model","choices":[],"usage":{"prompt_tokens":499,"completion_tokens":76,"total_tokens":575}}`, "[DONE]")
+				const usage = `{"id":"chat_new","object":"chat.completion.chunk","created":5,"model":"trunc-model","choices":[],"usage":{"prompt_tokens":499,"completion_tokens":76,"total_tokens":575}}`
+				if tc.condition == "resume_usage_only" {
+					send(usage)
+					<-r.Context().Done()
+					return
+				}
+				send(resumeChatEvent("chat_new", "{}", `,"finish_reason":"stop"`), usage, "[DONE]")
 			}))
 			t.Cleanup(upstream.Close)
 			balancer.ResetRuntimeTelemetry()
@@ -295,7 +328,7 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 			if got := calls.Load(); got != tc.calls {
 				t.Fatalf("calls=%d; want %d; downstream=%s", got, tc.calls, rec.Body.String())
 			}
-			assertStreamResumeOutput(t, tc.mode, tc.condition, tc.finished, rec.Body.String())
+			assertStreamResumeOutput(t, tc.mode, tc.condition, tc.finished, tc.finished && tc.calls == 2 || tc.condition == "double_eof", rec.Body.String())
 			if tc.condition == "shape_on_resume" || tc.condition == "sse_shape_on_resume" {
 				stats := op.StatsChannelGet(channel.ID)
 				if stats.RequestFailed != 2 {
@@ -352,7 +385,7 @@ func TestStreamResumeSimulatedUpstream(t *testing.T) {
 	}
 }
 
-func assertStreamResumeOutput(t *testing.T, mode streamPrefill, condition string, finished bool, wire string) {
+func assertStreamResumeOutput(t *testing.T, mode streamPrefill, condition string, finished, wantSuffix bool, wire string) {
 	t.Helper()
 	var text strings.Builder
 	var stops, errors, roles, blocks int
@@ -401,7 +434,7 @@ func assertStreamResumeOutput(t *testing.T, mode streamPrefill, condition string
 		}
 	}
 	want := resumeTestPrefix
-	if finished && condition != "finished" || condition == "double_eof" {
+	if wantSuffix {
 		want += resumeTestSuffix
 	}
 	if text.String() != want || strings.Contains(wire, "chat_new") || strings.Contains(wire, "msg_new") ||
@@ -432,7 +465,11 @@ func TestStreamResumeAllowlist(t *testing.T) {
 		{"https://api.deepseek.com.example.com/beta/chat/completions", "deepseek-chat", noStreamPrefill},
 		{"http://api.deepseek.com/beta/chat/completions", "deepseek-chat", noStreamPrefill},
 		{"https://api.anthropic.com/v1/messages", "claude-sonnet-4-5-20250929", anthropicStreamPrefill},
+		{"https://api.anthropic.com/v1/messages", "claude-opus-4-5-20251101", anthropicStreamPrefill},
+		{"https://api.anthropic.com/v1/messages", "claude-haiku-4-5-20251001", anthropicStreamPrefill},
 		{"https://api.anthropic.com/v1/messages", "claude-sonnet-4-6", noStreamPrefill},
+		{"https://api.anthropic.com/v1/messages", "claude-opus-4-6", noStreamPrefill},
+		{"https://api.anthropic.com/v1/messages", "claude-fable-5", noStreamPrefill},
 		{"https://api.anthropic.com/v1/messages", "claude-opus-4-5", noStreamPrefill},
 		{"https://api.openai.com/v1/responses", "gpt-5", noStreamPrefill},
 	} {

@@ -3021,6 +3021,16 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return nil
 	}
 
+	finishAfterChatTerminal := func() (bool, error) {
+		if wire := ra.streamResumeChatWire(); wire == nil || !wire.terminal {
+			return false, nil
+		}
+		if err := writeSynthesizedDone(); err != nil {
+			return true, err
+		}
+		return true, flushRedactRestore()
+	}
+
 	if data, err := ra.streamPreludeData(ctx, outAdapter); err != nil {
 		return err
 	} else if len(data) > 0 {
@@ -3057,6 +3067,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 			}
 		case <-dataTimeoutC:
+			if done, err := finishAfterChatTerminal(); done {
+				return err
+			}
 			log.Warnf("stream data interval timeout (%s), closing upstream stream", dataIntervalTimeout)
 			_ = response.Body.Close()
 			ra.streamInterrupted = ra.streamResumeCapture != nil && !streamTerminalSeen() && !upstreamFinishSeen
@@ -3140,6 +3153,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return nil
 			}
 			if r.err != nil {
+				if done, err := finishAfterChatTerminal(); done {
+					return err
+				}
 				// go-sse 在上游没发 data:[DONE] / 完整事件边界就断开时返回
 				// io.ErrUnexpectedEOF（错误串 "unexpected end of input"）。这是「流自然
 				// 结束」而非协议错误：已提交过内容就按正常结束收尾（补 [DONE]），别再
@@ -3213,7 +3229,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if eventType == "response.completed" {
 				upstreamResponsesCompletedSeen = true
 			}
-			isTerminalEvent := eventClass.isTerminal(r.eventType)
+			resumeWire := ra.streamResumeChatWire()
+			isTerminalEvent := eventClass.isTerminal(r.eventType) || (resumeWire != nil && resumeWire.chatUsageEnd)
 			if isTerminalEvent {
 				disarmToolCallCompletionFallback()
 			} else if ra.shouldTreatResponsesToolCallDoneAsTerminal(outAdapter, eventClass) {
