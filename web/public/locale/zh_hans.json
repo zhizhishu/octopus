@@ -1,4 +1,17 @@
 {
+  "mcp": {
+    "subtitle": "通过 MCP 将 AI 客户端连接到 Octopus 图像工具。",
+    "endpoint": "接入地址", "endpointHint": "支持 Streamable HTTP 和传统 SSE",
+    "billingNote": "请使用你自己的 Octopus API Key，模型权限、额度与费用均归属该 Key。",
+    "clientConfig": "客户端配置", "copy": "复制", "copied": "已复制", "copyFailed": "复制失败",
+    "tools": "工具", "toolsHint": "配置变更同时适用于已有会话与新连接。",
+    "globalEnabled": "启用 MCP", "defaultModel": "默认模型（两个工具共用）", "tool": "工具", "description": "说明", "enabled": "启用",
+    "generateDescription": "根据文字提示生成图像。", "editDescription": "通过 base64 图像及可选蒙版编辑图像。",
+    "usage": "用量 · 最近 7 天", "usageHint": "全站 MCP Key 用量", "ownUsageHint": "仅显示你自己的 MCP Key 用量",
+    "calls": "调用次数", "images": "图片数", "cost": "费用", "failed": "失败次数", "topKeys": "用量最高的 Key", "keyName": "Key 名称",
+    "usageDelay": "统计基于转发日志，可能延迟数秒更新；图片数按成功请求的生成张数计算。",
+    "loading": "加载中…", "empty": "暂无 MCP 用量", "settingsError": "无法读取或保存 MCP 设置，请重试。", "usageError": "无法读取 MCP 用量。"
+  },
   "login": {
     "username": "用户名",
     "usernamePlaceholder": "请输入用户名",
@@ -62,6 +75,7 @@
     "supportedModels": "支持的模型"
   },
   "navbar": {
+    "mcp": "MCP",
     "home": "主页",
     "dashboard": "仪表盘",
     "user": "用户",

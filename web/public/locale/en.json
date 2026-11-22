@@ -1,4 +1,17 @@
 {
+  "mcp": {
+    "subtitle": "Connect your AI client to Octopus image tools via MCP.",
+    "endpoint": "Endpoint", "endpointHint": "Streamable HTTP and legacy SSE",
+    "billingNote": "Use your own Octopus API key. Model access, limits and billing belong to that key.",
+    "clientConfig": "Client configuration", "copy": "Copy", "copied": "Copied", "copyFailed": "Copy failed",
+    "tools": "Tools", "toolsHint": "Changes apply to existing sessions as well as new connections.",
+    "globalEnabled": "Enable MCP", "defaultModel": "Default model (both tools)", "tool": "Tool", "description": "Description", "enabled": "Enabled",
+    "generateDescription": "Generate images from a text prompt.", "editDescription": "Edit images using base64 inputs and an optional mask.",
+    "usage": "Usage · Last 7 days", "usageHint": "All MCP keys across the site", "ownUsageHint": "Only your own MCP keys",
+    "calls": "Calls", "images": "Images", "cost": "Cost", "failed": "Failed", "topKeys": "Top keys", "keyName": "Key name",
+    "usageDelay": "Usage is based on relay logs and may take a few seconds to update. Images counts successful requested outputs.",
+    "loading": "Loading…", "empty": "No MCP usage yet", "settingsError": "Could not load or save MCP settings. Please retry.", "usageError": "Could not load MCP usage."
+  },
   "login": {
     "username": "Username",
     "usernamePlaceholder": "Enter your username",
@@ -62,6 +75,7 @@
     "supportedModels": "Supported Models"
   },
   "navbar": {
+    "mcp": "MCP",
     "home": "Home",
     "dashboard": "Dashboard",
     "user": "Users",
