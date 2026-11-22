@@ -181,6 +181,19 @@ func TestModelRequestRankUsesCacheInputForEffectiveTotalTokens(t *testing.T) {
 		t.Fatalf("create log: %v", err)
 	}
 
+	if err := db.GetDB().WithContext(ctx).Create(&model.RelayLog{
+		ID:               5102,
+		Time:             now,
+		RequestModelName: "deepseek",
+		ActualModelName:  "deepseek",
+		InputTokens:      5033,
+		OutputTokens:     5,
+		CacheHitTokens:   4864,
+		CacheInputTokens: 5033,
+	}).Error; err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+
 	rank, err := ModelRequestRank(ctx)
 	if err != nil {
 		t.Fatalf("model request rank: %v", err)
@@ -191,6 +204,11 @@ func TestModelRequestRankUsesCacheInputForEffectiveTotalTokens(t *testing.T) {
 	}
 	if math.Abs(got.CacheHitRate-0.3) > 1e-12 {
 		t.Fatalf("expected cache hit rate 30/100, got %f", got.CacheHitRate)
+	}
+	got = findModelRankItem(t, rank, "deepseek")
+	if got.InputToken != 5033 || got.OutputToken != 5 || got.TotalToken != 5038 ||
+		math.Abs(got.CacheHitRate-4864.0/5033.0) > 1e-12 {
+		t.Fatalf("expected included cache to count once, got %#v", got)
 	}
 }
 

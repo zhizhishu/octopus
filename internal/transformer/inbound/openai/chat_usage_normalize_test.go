@@ -184,6 +184,22 @@ func TestChatTransformResponseNormalizesSeparateCacheInputTokens(t *testing.T) {
 	}
 }
 
+func TestChatTransformResponseDoesNotReaddIncludedCacheAlias(t *testing.T) {
+	var usage model.Usage
+	if err := json.Unmarshal([]byte(`{"prompt_tokens":5033,"completion_tokens":5,"total_tokens":5038,"cache_read_input_tokens":4864}`), &usage); err != nil {
+		t.Fatal(err)
+	}
+	in := &ChatInbound{}
+	body, err := in.TransformResponse(context.Background(), &model.InternalLLMResponse{Usage: &usage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeChatWireUsage(t, body)
+	if got.PromptTokens != 5033 || got.CompletionTokens != 5 || got.TotalTokens != 5038 || cachedTokensOf(got) != 4864 {
+		t.Fatalf("unexpected wire usage: %s", body)
+	}
+}
+
 // TestChatTransformStreamNormalizesUsageChunks checks every usage-bearing stream chunk (not
 // just the last one) on the wire, while the chunks kept for aggregation keep raw numbers.
 func TestChatTransformStreamNormalizesUsageChunks(t *testing.T) {

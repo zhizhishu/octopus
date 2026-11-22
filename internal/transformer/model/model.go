@@ -1164,7 +1164,6 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	}
 	if aux.CacheCreationInputTokens > 0 {
 		u.CacheCreationInputTokens = aux.CacheCreationInputTokens
-		u.SeparateCacheInputTokens = true
 	}
 	if aux.CacheCreation != nil {
 		u.CacheCreation5mInputTokens = aux.CacheCreation.Ephemeral5m
@@ -1174,12 +1173,8 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		if u.CacheCreationInputTokens == 0 {
 			if total := aux.CacheCreation.Ephemeral5m + aux.CacheCreation.Ephemeral1h; total > 0 {
 				u.CacheCreationInputTokens = total
-				u.SeparateCacheInputTokens = true
 			}
 		}
-	}
-	if aux.CacheReadInputTokens > 0 {
-		u.SeparateCacheInputTokens = true
 	}
 	if u.PromptTokensDetails == nil {
 		u.PromptTokensDetails = aux.InputTokensDetails
@@ -1203,10 +1198,22 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 			u.PromptTokensDetails.CachedTokens = *aux.PromptCacheHitTokens
 		}
 	}
+	if aux.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
+		u.SeparateCacheInputTokens = u.CacheTokensExceedPrompt()
+	}
 	if u.CompletionTokensDetails == nil {
 		u.CompletionTokensDetails = aux.OutputTokensDetails
 	}
 	return nil
+}
+
+// CacheTokensExceedPrompt reports whether the cache buckets cannot fit in the reported prompt.
+func (u *Usage) CacheTokensExceedPrompt() bool {
+	var hit int64
+	if u.PromptTokensDetails != nil {
+		hit = max(0, u.PromptTokensDetails.CachedTokens)
+	}
+	return hit > u.PromptTokens || u.CacheCreationInputTokens > u.PromptTokens-hit
 }
 
 func positiveInt64Ptr(v *int64) int64 {

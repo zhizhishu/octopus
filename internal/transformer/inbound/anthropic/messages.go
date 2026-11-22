@@ -1225,7 +1225,7 @@ func convertAnthropicClientUsage(usage *model.Usage) *Usage {
 		anthropicUsage.CacheReadInputTokens = usage.PromptTokensDetails.CachedTokens
 	}
 	if !usage.AnthropicUsage && !usage.SeparateCacheInputTokens {
-		anthropicUsage.InputTokens -= anthropicUsage.CacheReadInputTokens
+		anthropicUsage.InputTokens -= anthropicUsage.CacheReadInputTokens + anthropicUsage.CacheCreationInputTokens
 		if anthropicUsage.InputTokens < 0 {
 			anthropicUsage.InputTokens = 0
 		}

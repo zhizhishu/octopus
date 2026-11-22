@@ -207,7 +207,7 @@ func TestProtocolCompatibilityMatrix(t *testing.T) {
 					t.Fatalf("unmarshal usage: %v", err)
 				}
 				hit, write, input := usageCacheStats(&usage)
-				if hit != 30 || write != 10 || input != 100 {
+				if hit != 30 || write != 10 || input != 60 {
 					t.Fatalf("cache usage alias matrix failed: hit=%d write=%d input=%d usage=%#v", hit, write, input, usage)
 				}
 			},

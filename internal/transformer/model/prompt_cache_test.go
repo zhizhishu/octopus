@@ -60,8 +60,8 @@ func TestUsageUnmarshalOpenAIAliasesPreservesCacheTokens(t *testing.T) {
 	if usage.CacheCreationInputTokens != 16 {
 		t.Fatalf("cache creation tokens were not preserved: %d", usage.CacheCreationInputTokens)
 	}
-	if !usage.SeparateCacheInputTokens {
-		t.Fatalf("cache creation alias should mark separate cache input tokens")
+	if usage.SeparateCacheInputTokens {
+		t.Fatalf("cache creation alias fits in the reported input")
 	}
 }
 
@@ -97,14 +97,14 @@ func TestUsageUnmarshalCacheCreationTTLDerivesTotal(t *testing.T) {
 	if usage.CacheCreationInputTokens != 10 {
 		t.Fatalf("total should be derived from buckets (7+3), got %d", usage.CacheCreationInputTokens)
 	}
-	if !usage.SeparateCacheInputTokens {
-		t.Fatalf("deriving a cache-creation total from the TTL split should mark separate cache input tokens")
+	if usage.SeparateCacheInputTokens {
+		t.Fatalf("cache-creation total equals the reported input, so treat it as included")
 	}
 }
 
 func TestUsageUnmarshalAnthropicStyleAliasesMarkSeparateCacheTokens(t *testing.T) {
 	body := []byte(`{
-		"input_tokens":60,
+		"input_tokens":35,
 		"output_tokens":20,
 		"cache_read_input_tokens":30,
 		"cache_creation_input_tokens":10
@@ -114,7 +114,7 @@ func TestUsageUnmarshalAnthropicStyleAliasesMarkSeparateCacheTokens(t *testing.T
 	if err := json.Unmarshal(body, &usage); err != nil {
 		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
-	if usage.PromptTokens != 60 || usage.CompletionTokens != 20 {
+	if usage.PromptTokens != 35 || usage.CompletionTokens != 20 {
 		t.Fatalf("unexpected token counts: prompt=%d completion=%d", usage.PromptTokens, usage.CompletionTokens)
 	}
 	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedTokens != 30 {
@@ -178,6 +178,32 @@ func TestUsageUnmarshalOpenAICompatibleCacheTokenAliases(t *testing.T) {
 			}
 			if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedTokens != tt.want {
 				t.Fatalf("cached token alias was not preserved: %#v", usage.PromptTokensDetails)
+			}
+		})
+	}
+}
+
+func TestUsageUnmarshalInfersSeparateCacheFromTokenCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name, body         string
+		prompt, hit, write int64
+		separate           bool
+	}{
+		{"mixed DeepSeek read alias", `{"prompt_tokens":5033,"completion_tokens":5,"total_tokens":5038,"cache_read_input_tokens":4864}`, 5033, 4864, 0, false},
+		{"prefer canonical cached count", `{"prompt_tokens":5033,"prompt_tokens_details":{"cached_tokens":4864},"cache_read_input_tokens":6000}`, 5033, 4864, 0, false},
+		{"separate read alias", `{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":30}`, 10, 30, 0, true},
+		{"sum exceeds prompt", `{"input_tokens":60,"cache_read_input_tokens":40,"cache_creation_input_tokens":30}`, 60, 40, 30, true},
+		{"zero uncached prompt", `{"input_tokens":0,"cache_read_input_tokens":30}`, 0, 30, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var usage Usage
+			if err := json.Unmarshal([]byte(tc.body), &usage); err != nil {
+				t.Fatal(err)
+			}
+			if usage.PromptTokens != tc.prompt || usage.PromptTokensDetails == nil ||
+				usage.PromptTokensDetails.CachedTokens != tc.hit ||
+				usage.CacheCreationInputTokens != tc.write || usage.SeparateCacheInputTokens != tc.separate {
+				t.Fatalf("unexpected usage: %+v (details: %+v)", usage, usage.PromptTokensDetails)
 			}
 		})
 	}
