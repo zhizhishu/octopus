@@ -3,10 +3,10 @@ package middleware
 import (
 	"strings"
 
-	"github.com/zhizhishu/octopus/internal/model"
-	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 )
 
 func Cors() gin.HandlerFunc {
@@ -14,7 +14,7 @@ func Cors() gin.HandlerFunc {
 	config.AllowCredentials = true
 	config.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
 	config.AllowHeaders = []string{"*"}
-	config.ExposeHeaders = []string{"Content-Disposition"}
+	config.ExposeHeaders = []string{"Content-Disposition", "Mcp-Session-Id", "MCP-Protocol-Version"}
 	// CORS 白名单:
 	// - 为空: 不允许跨域
 	// - "*": 允许所有来源

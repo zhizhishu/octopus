@@ -14,6 +14,10 @@ export interface Setting {
 }
 
 export const SettingKey = {
+    MCPEnabled: 'mcp_enabled',
+    MCPGenerateEnabled: 'mcp_tool_generate_enabled',
+    MCPEditEnabled: 'mcp_tool_edit_enabled',
+    MCPDefaultModel: 'mcp_default_model',
     ProxyURL: 'proxy_url',
     TrustedProxies: 'trusted_proxies',
     StatsSaveInterval: 'stats_save_interval',

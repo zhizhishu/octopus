@@ -114,7 +114,7 @@ type RelayLog struct {
 	UserID    int    `json:"user_id" gorm:"index;default:0"`
 	APIKeyID  int    `json:"api_key_id" gorm:"index;default:0"`
 	RequestIP string `json:"request_ip,omitempty" gorm:"size:128;index"`
-	Time      int64  `json:"time" gorm:"index;index:idx_relay_logs_time_severity,priority:1"`
+	Time      int64  `json:"time" gorm:"index;index:idx_relay_logs_time_severity,priority:1;index:idx_relay_logs_source_time,priority:2"`
 	// Severity 是写入时算好的成功/警告/错误桶。日志页计数只读 (time, severity)，
 	// 不再为了 TRIM(error) 去翻 request_content / response_content 的溢出页。
 	//
@@ -123,9 +123,11 @@ type RelayLog struct {
 	// 计数才能退回旧的 TRIM 条件，数字不会在半成品上算错。
 	// 值由 ClassifyRelayLogSeverity（Go strings.TrimSpace）决定，与前端
 	// getRelayLogSeverity 的 String.trim() 一致。不要改回 SQL TRIM()——它只剥空格。
-	Severity        int    `json:"-" gorm:"not null;default:0;index:idx_relay_logs_severity;index:idx_relay_logs_time_severity,priority:2"`
-	RequestEndpoint string `json:"request_endpoint" gorm:"size:64;index"`
-	RequestPath     string `json:"request_path" gorm:"size:256"`
+	Severity        int     `json:"-" gorm:"not null;default:0;index:idx_relay_logs_severity;index:idx_relay_logs_time_severity,priority:2"`
+	RequestEndpoint string  `json:"request_endpoint" gorm:"size:64;index"`
+	RequestPath     string  `json:"request_path" gorm:"size:256"`
+	RequestSource   *string `json:"request_source,omitempty" gorm:"size:32;index:idx_relay_logs_source_time,priority:1"`
+	ImageCount      int     `json:"image_count,omitempty" gorm:"default:0"`
 	// RequestUserAgent 是调用端 User-Agent 的原样快照(512 rune 截断), 供日志页识别
 	// 客户端(claude-cli/codex/cursor/cherry/浏览器/SDK)。做法对齐 new-api/axonhub:
 	// 原样存库、前端解析展示; 服务端不做 UA→名称映射表, 避免随客户端生态漂移。

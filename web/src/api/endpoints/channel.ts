@@ -416,11 +416,11 @@ export function useCopyChannel() {
 
     return useMutation({
         mutationFn: async (source: Channel): Promise<{ server: ChannelServer; newName: string }> => {
-            const cached = queryClient.getQueryData<any>(['channels', 'list']);
+            const cached = queryClient.getQueryData<ChannelServer[]>(['channels', 'list']);
             const existingNames = new Set<string>();
             if (Array.isArray(cached)) {
                 cached.forEach((item) => {
-                    const name = item?.raw?.name ?? item?.name;
+                    const name = item.name;
                     if (name) {
                         existingNames.add(name);
                     }

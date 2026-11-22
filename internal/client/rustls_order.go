@@ -12,6 +12,9 @@ import (
 )
 
 // rustls ClientHello extension ordering — a faithful port of rustls 0.23.45.
+// Source: ClientExtensions::order_insensitive_extensions_in_random_order and
+// low_quality_integer_hash in https://docs.rs/crate/rustls/0.23.45/source/src/msgs/handshake.rs.
+// This local port was introduced in commit b72bb22.
 //
 // The genuine codex CLI (linux-x64 musl) uses rustls. Unlike Chrome — and
 // unlike the previous codex dressing here, uTLS's ShuffleChromeTLSExtensions

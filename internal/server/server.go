@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/conf"
+	"github.com/zhizhishu/octopus/internal/mcpserver"
 	"github.com/zhizhishu/octopus/internal/relay/bodycache"
 	_ "github.com/zhizhishu/octopus/internal/server/handlers"
 	"github.com/zhizhishu/octopus/internal/server/middleware"
@@ -57,6 +58,9 @@ func Start() error {
 	r.Use(middleware.StaticEmbed("/", static.StaticFS))
 
 	router.RegisterAll(r)
+	mcpHandler := gin.WrapH(mcpserver.NewHandler(r))
+	r.Any("/mcp", mcpHandler)
+	r.Any("/mcp/sse", mcpHandler)
 
 	httpSrv.Addr = fmt.Sprintf("%s:%d", conf.AppConfig.Server.Host, conf.AppConfig.Server.Port)
 	// 入站客户端指纹：给每条入站连接挂一个旁路记录器，记下请求头的原始顺序和大小写

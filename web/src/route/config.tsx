@@ -27,6 +27,7 @@ const Key_Module = lazyWithPreload(() => import('@/components/modules/key').then
 const Prompt_Module = lazyWithPreload(() => import('@/components/modules/prompt').then(m => ({ default: m.PromptManagement })));
 const Audit_Module = lazyWithPreload(() => import('@/components/modules/model-audit').then(m => ({ default: m.ModelAudit })));
 const User_Module = lazyWithPreload(() => import('@/components/modules/user').then(m => ({ default: m.UserManagement })));
+const MCP_Module = lazyWithPreload(() => import('@/components/modules/mcp').then(m => ({ default: m.MCP })));
 
 export const ROUTES: RouteConfig[] = [
     { id: 'home', label: 'Home', icon: Home, component: Home_Module },
@@ -41,6 +42,7 @@ export const ROUTES: RouteConfig[] = [
     { id: 'prompt', label: 'Prompt', icon: MessageSquareText, component: Prompt_Module },
     { id: 'audit', label: 'Audit', icon: Shield, component: Audit_Module },
     { id: 'log', label: 'Log', icon: Logs, component: Log_Module },
+    { id: 'mcp', label: 'MCP', icon: Radio, component: MCP_Module },
     { id: 'setting', label: 'Setting', icon: Settings, component: Setting_Module },
 ];
 
@@ -50,8 +52,8 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
 }, {} as Record<string, LazyComponent>);
 
 // 'dashboard'（仪表盘）只给管理员：它的接口是全站口径、AdminOnly。
-export const ADMIN_ROUTE_IDS = ['home', 'dashboard', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting'] as const;
-export const USER_ROUTE_IDS = ['home', 'key', 'log'] as const;
+export const ADMIN_ROUTE_IDS = ['home', 'dashboard', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'mcp', 'setting'] as const;
+export const USER_ROUTE_IDS = ['home', 'key', 'log', 'mcp'] as const;
 
 export function routeIdsForRole(role?: string | null) {
     return role === 'admin' ? ADMIN_ROUTE_IDS : USER_ROUTE_IDS;

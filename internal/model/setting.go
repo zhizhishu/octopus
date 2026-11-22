@@ -26,6 +26,10 @@ func SettingKeyIs(key any) clause.Expression {
 type SettingKey string
 
 const (
+	SettingKeyMCPEnabled              SettingKey = "mcp_enabled"
+	SettingKeyMCPGenerateEnabled      SettingKey = "mcp_tool_generate_enabled"
+	SettingKeyMCPEditEnabled          SettingKey = "mcp_tool_edit_enabled"
+	SettingKeyMCPDefaultModel         SettingKey = "mcp_default_model"
 	SettingKeyProxyURL                SettingKey = "proxy_url"
 	SettingKeyTrustedProxies          SettingKey = "trusted_proxies"            // 逗号分隔的可信反代 IP/CIDR; 命中时才认其 X-Forwarded-For/CF-Connecting-IP 解析真实客户端 IP。空=仅信内置 Cloudflare 段(安全默认)
 	SettingKeyStatsSaveInterval       SettingKey = "stats_save_interval"        // 将统计信息写入数据库的周期(分钟)
@@ -620,6 +624,10 @@ const ClaudeDefaultEffortDefault = "high"
 
 func DefaultSettings() []Setting {
 	return []Setting{
+		{Key: SettingKeyMCPEnabled, Value: "false"},
+		{Key: SettingKeyMCPGenerateEnabled, Value: "true"},
+		{Key: SettingKeyMCPEditEnabled, Value: "true"},
+		{Key: SettingKeyMCPDefaultModel, Value: "gpt-image-2"},
 		{Key: SettingKeyProxyURL, Value: ""},
 		{Key: SettingKeyTrustedProxies, Value: ""},                // 空=仅信内置 Cloudflare 段; 本地反代部署填反代所在网段(如 172.16.0.0/12)后真实客户端 IP 才会被记录
 		{Key: SettingKeyStatsSaveInterval, Value: "10"},           // 默认10分钟保存一次统计信息
@@ -844,6 +852,11 @@ func MergeProxyURLPassword(incoming, stored string) string {
 
 func (s *Setting) Validate() error {
 	switch s.Key {
+	case SettingKeyMCPDefaultModel:
+		if strings.TrimSpace(s.Value) == "" || len(s.Value) > 256 || strings.ContainsAny(s.Value, "\r\n\x00") {
+			return fmt.Errorf("%s must be a non-empty model name (max 256 bytes)", s.Key)
+		}
+		return nil
 	case SettingKeyCircuitBreakerErrorRules:
 		_, err := ParseCircuitErrorRules(s.Value)
 		return err
@@ -918,7 +931,8 @@ func (s *Setting) Validate() error {
 		default:
 			return fmt.Errorf("%s must be spread or fill_first (empty uses the default)", s.Key)
 		}
-	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
+	case SettingKeyMCPEnabled, SettingKeyMCPGenerateEnabled, SettingKeyMCPEditEnabled,
+		SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
 		SettingKeyClaudeHeaderStabilize, SettingKeyCodexFastMode, SettingKeyRelayClaudeCLIShapeKeys,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,
