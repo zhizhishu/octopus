@@ -56,7 +56,7 @@ func setupDashFixture(t *testing.T) dashFixture {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	t.Setenv(strings.ToUpper(conf.APP_NAME)+"_ADMIN_TOKEN", "")
-	if err := db.InitDB("sqlite", filepath.Join(t.TempDir(), "dash_test.db"), false); err != nil {
+	if err := initTestDB(filepath.Join(t.TempDir(), "dash_test.db")); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
 	ctx := context.Background()

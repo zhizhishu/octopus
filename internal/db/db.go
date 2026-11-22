@@ -17,6 +17,8 @@ import (
 
 var db *gorm.DB
 
+const maxIdleConns = 10
+
 func InitDB(dbType, dsn string, debug bool) error {
 	var err error
 	// SkipDefaultTransaction: GORM otherwise wraps every single Create/Update/Delete in
@@ -60,7 +62,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 		return err
 	}
 
-	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
 	sqlDB.SetMaxOpenConns(100)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
@@ -68,7 +70,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 	if err := migrate.BeforeAutoMigrate(db); err != nil {
 		return err
 	}
-	if err := db.AutoMigrate(
+	autoMigrateModels := []any{
 		&model.User{},
 		&model.UserCheckIn{},
 		&model.UserBalanceLog{},
@@ -143,7 +145,11 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.BatchImageJob{},
 		&model.BatchImageItem{},
 		&migrate.MigrationRecord{},
-	); err != nil {
+	}
+	if err := dropMySQLTextDefaults(db, autoMigrateModels); err != nil {
+		return err
+	}
+	if err := db.AutoMigrate(autoMigrateModels...); err != nil {
 		return err
 	}
 	// 搜索投影表的"已补齐"标记要在任何迁移/搜索读它之前核对一次: 表若是刚被上面的
@@ -156,10 +162,14 @@ func InitDB(dbType, dsn string, debug bool) error {
 		return err
 	}
 	// Postgres: schema changes during migrations can invalidate cached prepared plans
-	// (e.g. "cached plan must not change result type"). Clear them.
+	// (e.g. "cached plan must not change result type"). The pgx driver keeps its own
+	// per-connection statement cache, so DEALLOCATE ALL / DISCARD ALL only cleared the
+	// server side and the next query on that connection failed with
+	// `prepared statement "stmtcache_..." does not exist`. Closing the idle connections
+	// drops the server-side statements and the driver cache together.
 	if db.Dialector != nil && db.Dialector.Name() == "postgres" {
-		db.Exec("DEALLOCATE ALL")
-		db.Exec("DISCARD ALL")
+		sqlDB.SetMaxIdleConns(0)
+		sqlDB.SetMaxIdleConns(maxIdleConns)
 	}
 	return nil
 }
