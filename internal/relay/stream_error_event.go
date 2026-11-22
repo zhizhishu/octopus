@@ -9,10 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/gin-gonic/gin"
 )
 
 type responsesFailedError struct {
@@ -377,4 +379,48 @@ func writeUpstreamRetryAfterHint(c *gin.Context, httpStatus int, err error) {
 		seconds = 1
 	}
 	c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+}
+
+func writeFinalRetryAfterHint(c *gin.Context, status int, err error, attempts []dbmodel.ChannelAttempt) {
+	if c.Writer.Written() || c.Writer.Header().Get("Retry-After") != "" {
+		return
+	}
+	if status == http.StatusBadGateway {
+		// Preserve the pacing signal for an upstream 503 masked by status passthrough.
+		upstreamStatus, _, _, _ := upstreamErrorDetails(err)
+		if upstreamStatus == http.StatusServiceUnavailable {
+			status = http.StatusServiceUnavailable
+		}
+	}
+	if status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable {
+		return
+	}
+	writeUpstreamRetryAfterHint(c, status, err)
+	if c.Writer.Header().Get("Retry-After") == "" {
+		writeUpstreamRetryAfterHint(c, status, &localRelayError{retryAfter: finalRetryAfterFallback(attempts)})
+	}
+}
+
+func finalRetryAfterFallback(attempts []dbmodel.ChannelAttempt) time.Duration {
+	if remaining := earliestCircuitRetryAfter(attempts); remaining > 0 {
+		return min(remaining, time.Minute)
+	}
+	var earliest time.Duration
+	for _, attempt := range attempts {
+		if attempt.ChannelID == 0 && attempt.ChannelName == "" {
+			continue
+		}
+		remaining := attempt.RetryAfter
+		if attempt.Status == dbmodel.AttemptFailed && attempt.ChannelKeyID > 0 {
+			key := balancer.SnapshotKeyRuntime(attempt.ChannelID, attempt.ChannelKeyID, attempt.ModelName)
+			remaining = time.Duration(key.CooldownRemainingMs) * time.Millisecond
+		}
+		if remaining <= 0 {
+			return time.Second
+		}
+		if earliest == 0 || remaining < earliest {
+			earliest = remaining
+		}
+	}
+	return min(max(earliest, time.Second), time.Minute)
 }

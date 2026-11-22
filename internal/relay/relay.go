@@ -947,7 +947,7 @@ attemptChannels:
 		}
 		return
 	}
-	writeUpstreamRetryAfterHint(c, status, finalErr)
+	writeFinalRetryAfterHint(c, status, finalErr, iter.Attempts())
 	writeRelayErrorPreStream(c, inboundType, status, "api_error", code, message)
 }
 
