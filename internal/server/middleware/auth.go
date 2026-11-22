@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -97,29 +99,9 @@ func APIKeyAuth() gin.HandlerFunc {
 			return
 		}
 
-		if !strings.HasPrefix(apiKey, "sk-"+conf.APP_NAME+"-") {
-			resp.Error(c, http.StatusUnauthorized, resp.ErrUnauthorized)
-			c.Abort()
-			return
-		}
-		apiKeyObj, err := op.APIKeyGetByAPIKey(apiKey, c.Request.Context())
+		apiKeyObj, owner, err := ValidateAPIKey(c.Request.Context(), apiKey)
 		if err != nil {
-			resp.Error(c, http.StatusUnauthorized, resp.ErrUnauthorized)
-			c.Abort()
-			return
-		}
-		if !apiKeyObj.Enabled {
-			resp.Error(c, http.StatusUnauthorized, "API key is disabled")
-			c.Abort()
-			return
-		}
-		if apiKeyObj.ExpireAt > 0 && apiKeyObj.ExpireAt < time.Now().Unix() {
-			resp.Error(c, http.StatusUnauthorized, "API key has expired")
-			c.Abort()
-			return
-		}
-		if apiKeyObj.IsRevoked() {
-			resp.Error(c, http.StatusUnauthorized, "API key has been revoked")
+			resp.Error(c, http.StatusUnauthorized, err.Error())
 			c.Abort()
 			return
 		}
@@ -128,17 +110,6 @@ func APIKeyAuth() gin.HandlerFunc {
 		// 这里是把 APIKeyAuth 自己挂着的那几条 /api/ 路由也关上。
 		if apiKeyObj.Guest && isAPIManagementPath(c.Request.URL.Path) {
 			resp.ErrorWithCode(c, http.StatusForbidden, "guest_key_forbidden", "guest key can only call model endpoints")
-			c.Abort()
-			return
-		}
-		owner, err := op.UserGet(apiKeyObj.UserID)
-		if err != nil || !owner.IsActive() {
-			resp.Error(c, http.StatusUnauthorized, "API key owner is disabled")
-			c.Abort()
-			return
-		}
-		if err := op.GuestKeyAuthCheck(apiKeyObj, owner); err != nil {
-			resp.Error(c, http.StatusUnauthorized, "guest key is not usable: "+err.Error())
 			c.Abort()
 			return
 		}
@@ -200,6 +171,35 @@ func APIKeyAuth() gin.HandlerFunc {
 		c.Set("user_id", owner.ID)
 		c.Next()
 	}
+}
+
+func ValidateAPIKey(ctx context.Context, secret string) (model.APIKey, model.User, error) {
+	var key model.APIKey
+	var owner model.User
+	if !strings.HasPrefix(secret, "sk-"+conf.APP_NAME+"-") {
+		return key, owner, fmt.Errorf("%s", resp.ErrUnauthorized)
+	}
+	key, err := op.APIKeyGetByAPIKey(secret, ctx)
+	if err != nil {
+		return key, owner, fmt.Errorf("%s", resp.ErrUnauthorized)
+	}
+	if !key.Enabled {
+		return key, owner, fmt.Errorf("API key is disabled")
+	}
+	if key.ExpireAt > 0 && key.ExpireAt < time.Now().Unix() {
+		return key, owner, fmt.Errorf("API key has expired")
+	}
+	if key.IsRevoked() {
+		return key, owner, fmt.Errorf("API key has been revoked")
+	}
+	owner, err = op.UserGet(key.UserID)
+	if err != nil || !owner.IsActive() {
+		return key, owner, fmt.Errorf("API key owner is disabled")
+	}
+	if err := op.GuestKeyAuthCheck(key, owner); err != nil {
+		return key, owner, fmt.Errorf("guest key is not usable: %w", err)
+	}
+	return key, owner, nil
 }
 
 // GuestKeyRole 是访客 Key 请求在上下文里的角色（不是可分配的用户角色，库里没有这个值）。

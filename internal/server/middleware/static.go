@@ -24,7 +24,7 @@ func static(urlPrefix string, fileSystem http.FileSystem) gin.HandlerFunc {
 		fileserver = http.StripPrefix(urlPrefix, fileserver)
 	}
 	return func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api") {
+		if strings.HasPrefix(c.Request.URL.Path, "/api") || c.Request.URL.Path == "/mcp" || strings.HasPrefix(c.Request.URL.Path, "/mcp/") {
 			c.Next()
 			return
 		}

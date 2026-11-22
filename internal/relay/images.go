@@ -23,6 +23,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/price"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/bodycache"
+	"github.com/zhizhishu/octopus/internal/requestsource"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
@@ -142,6 +143,7 @@ func ImagesHandler(endpoint string, c *gin.Context) {
 
 	// 初始化 Metrics（Images 独立，避免 b64_json 内存膨胀）
 	metrics := newImagesRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, imageEndpointName(endpoint), c.Request.URL.Path)
+	metrics.RequestSource = requestsource.FromContext(ctx)
 	metrics.quota, err = admitRelayUserQuota(c, requestModel)
 	if err != nil {
 		resp.Error(c, relayUserQuotaErrorStatus(err), err.Error())
@@ -256,6 +258,11 @@ runIterator:
 			usedAt := time.Now().Unix()
 
 			if fwdErr == nil {
+				if isMultipart {
+					metrics.ImageCount = multipartImageCount(bc, boundary)
+				} else {
+					metrics.ImageCount = imageRequestCount(jsonPayload)
+				}
 				// ====== 成功 ======
 				metrics.ActualModel = item.ModelName
 				if usage != nil {
@@ -466,6 +473,8 @@ type imagesRelayMetrics struct {
 	RequestModel     string
 	RequestEndpoint  string
 	RequestPath      string
+	RequestSource    *string
+	ImageCount       int
 	ActualModel      string
 	StartTime        time.Time
 	FirstToken       time.Time
@@ -725,6 +734,8 @@ func (m *imagesRelayMetrics) saveLog(ctx context.Context, err error, duration ti
 		Time:                      m.StartTime.Unix(),
 		RequestEndpoint:           m.RequestEndpoint,
 		RequestPath:               m.RequestPath,
+		RequestSource:             m.RequestSource,
+		ImageCount:                m.ImageCount,
 		RequestModelName:          m.RequestModel,
 		ChannelName:               channelName,
 		ChannelId:                 channelID,
