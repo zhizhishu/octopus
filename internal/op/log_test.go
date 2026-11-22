@@ -22,7 +22,7 @@ func init() {
 func setupRelayLogTest(t *testing.T) context.Context {
 	t.Helper()
 
-	if err := db.InitDB("sqlite", filepath.Join(t.TempDir(), "octopus.db"), false); err != nil {
+	if err := initTestDB(filepath.Join(t.TempDir(), "octopus.db")); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
 	t.Cleanup(func() {

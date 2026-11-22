@@ -9,7 +9,7 @@ const (
 
 type RedeemCode struct {
 	ID              int            `json:"id" gorm:"primaryKey"`
-	Code            string         `json:"code" gorm:"uniqueIndex;not null"`
+	Code            string         `json:"code" gorm:"size:191;uniqueIndex;not null"`
 	Type            RedeemCodeType `json:"type" gorm:"index;not null"`
 	Enabled         bool           `json:"enabled" gorm:"default:true"`
 	Used            bool           `json:"used" gorm:"default:false;index"`
