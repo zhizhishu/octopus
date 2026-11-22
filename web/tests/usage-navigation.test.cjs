@@ -17,8 +17,8 @@ test('real Usage follows dashboard and remains available to both roles', () => {
     for (const role of ['admin', 'user', undefined]) {
         assert.ok(config.routesForRole(role).some(r => r.id === 'usage'));
     }
-    assert.deepEqual([...config.USER_ROUTE_IDS], ['home', 'usage', 'key', 'log']);
-    assert.deepEqual([...config.ADMIN_ROUTE_IDS], ['home', 'dashboard', 'usage', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'setting']);
+    assert.deepEqual([...config.USER_ROUTE_IDS], ['home', 'usage', 'key', 'log', 'mcp']);
+    assert.deepEqual([...config.ADMIN_ROUTE_IDS], ['home', 'dashboard', 'usage', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'mcp', 'setting']);
 });
 
 test('real Usage translations exist in all three locales', () => {
