@@ -8,6 +8,17 @@ import (
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
+func TestConvertAnthropicClientUsageSubtractsIncludedReadAndWrite(t *testing.T) {
+	usage := convertAnthropicClientUsage(&transformerModel.Usage{
+		PromptTokens:             100,
+		CacheCreationInputTokens: 10,
+		PromptTokensDetails:      &transformerModel.PromptTokensDetails{CachedTokens: 30},
+	})
+	if usage.InputTokens != 60 || usage.CacheReadInputTokens != 30 || usage.CacheCreationInputTokens != 10 {
+		t.Fatalf("unexpected converted usage: %+v", usage)
+	}
+}
+
 func TestConvertAnthropicClientUsageKeepsProviderNativeInputTokens(t *testing.T) {
 	usage := convertAnthropicClientUsage(&transformerModel.Usage{
 		PromptTokens:             60,

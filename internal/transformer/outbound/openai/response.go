@@ -1861,13 +1861,13 @@ func convertResponsesUsage(usage *ResponsesUsage) *model.Usage {
 		}
 	}
 	if usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 {
-		result.SeparateCacheInputTokens = true
 		if result.PromptTokensDetails == nil {
 			result.PromptTokensDetails = &model.PromptTokensDetails{}
 		}
 		if result.PromptTokensDetails.CachedTokens == 0 {
 			result.PromptTokensDetails.CachedTokens = usage.CacheReadInputTokens
 		}
+		result.SeparateCacheInputTokens = result.CacheTokensExceedPrompt()
 	}
 
 	if usage.OutputTokenDetails.ReasoningTokens > 0 || usage.OutputTokenDetails.AudioTokens > 0 || usage.OutputTokenDetails.AcceptedPredictionTokens > 0 || usage.OutputTokenDetails.RejectedPredictionTokens > 0 {

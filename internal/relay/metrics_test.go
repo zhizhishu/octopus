@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/db"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/price"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 )
 
@@ -65,6 +67,41 @@ func TestUsageCacheStatsSeparateCacheInputAliases(t *testing.T) {
 	}
 	if diff := math.Abs(cacheHitRate(hit, input) - 0.3); diff > 1e-9 {
 		t.Fatalf("unexpected cache hit rate diff: %f", diff)
+	}
+}
+
+func TestMixedCacheUsageStatsAndBilling(t *testing.T) {
+	const modelName = "mixed-cache-billing-test"
+	price.SetLLMPrice(modelName, dbmodel.LLMPrice{Input: 10, Output: 20, CacheRead: 2, CacheWrite: 15})
+	t.Cleanup(func() { price.SetLLMPrice(modelName, dbmodel.LLMPrice{}) })
+
+	for _, tc := range []struct {
+		name, body        string
+		hit, write, input int64
+		uncachedCost      float64
+	}{
+		{"included DeepSeek cache", `{"prompt_tokens":5033,"completion_tokens":5,"total_tokens":5038,"cache_read_input_tokens":4864}`, 4864, 0, 5033, 1690e-6},
+		{"included cache read and write", `{"prompt_tokens":100,"completion_tokens":5,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}`, 30, 10, 100, 600e-6},
+		{"separate cache read and write", `{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":30,"cache_creation_input_tokens":5}`, 30, 5, 45, 100e-6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var usage transformerModel.Usage
+			if err := json.Unmarshal([]byte(tc.body), &usage); err != nil {
+				t.Fatal(err)
+			}
+			hit, write, input := usageCacheStats(&usage)
+			if hit != tc.hit || write != tc.write || input != tc.input ||
+				math.Abs(cacheHitRate(hit, input)-float64(tc.hit)/float64(tc.input)) > 1e-12 {
+				t.Fatalf("unexpected cache stats: hit=%d write=%d input=%d", hit, write, input)
+			}
+			snapshot := (&RelayMetrics{RequestModel: modelName}).buildBillingSnapshot(modelName, &usage)
+			if math.Abs(snapshot.FinalInputCost-tc.uncachedCost) > 1e-12 ||
+				math.Abs(snapshot.FinalCacheReadCost-float64(tc.hit)*2e-6) > 1e-12 ||
+				math.Abs(snapshot.FinalCacheWriteCost-float64(tc.write)*15e-6) > 1e-12 ||
+				math.Abs(snapshot.FinalOutputCost-100e-6) > 1e-12 {
+				t.Fatalf("unexpected billing: %+v", snapshot)
+			}
+		})
 	}
 }
 

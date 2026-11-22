@@ -562,6 +562,28 @@ func TestConvertToResponsesRequestPreservesReasoningEncryptedContent(t *testing.
 	}
 }
 
+func TestConvertResponsesUsageInfersSeparateCacheFromTokenCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		usage    ResponsesUsage
+		separate bool
+	}{
+		{"included cache", ResponsesUsage{InputTokens: 5033, OutputTokens: 5, TotalTokens: 5038, CacheReadInputTokens: 4864}, false},
+		{"included cache equal to input", ResponsesUsage{InputTokens: 40, CacheReadInputTokens: 30, CacheCreationInputTokens: 10}, false},
+		{"separate cache", ResponsesUsage{InputTokens: 35, CacheReadInputTokens: 30, CacheCreationInputTokens: 10}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := convertResponsesUsage(&tc.usage)
+			if got.PromptTokens != tc.usage.InputTokens || got.TotalTokens != tc.usage.TotalTokens ||
+				got.PromptTokensDetails == nil || got.PromptTokensDetails.CachedTokens != tc.usage.CacheReadInputTokens ||
+				got.CacheCreationInputTokens != tc.usage.CacheCreationInputTokens ||
+				got.SeparateCacheInputTokens != tc.separate {
+				t.Fatalf("unexpected usage: %+v (details: %+v)", got, got.PromptTokensDetails)
+			}
+		})
+	}
+}
+
 func TestConvertResponsesUsagePreservesTokenDetails(t *testing.T) {
 	var usage ResponsesUsage
 	usage.InputTokens = 10

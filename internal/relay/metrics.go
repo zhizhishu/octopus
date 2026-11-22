@@ -722,7 +722,7 @@ func (m *RelayMetrics) buildBillingSnapshot(actualModel string, usage *transform
 	cacheReadTokens := usage.PromptTokensDetails.CachedTokens
 	cacheWriteTokens := usage.CacheCreationInputTokens
 	if !usage.AnthropicUsage && !usage.SeparateCacheInputTokens {
-		inputTokens -= cacheReadTokens
+		inputTokens -= cacheReadTokens + cacheWriteTokens
 		if inputTokens < 0 {
 			inputTokens = 0
 		}
