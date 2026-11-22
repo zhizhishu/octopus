@@ -851,6 +851,10 @@
           "never": "Never"
         }
       },
+      "streamResume": {
+        "label": "Stream continuation",
+                "description": "Try once on supported endpoints after a plain-text stream breaks. Give up after 15 seconds without new text. Does not affect auto rescue before text starts."
+      },
       "rescue": {
         "title": "Auto rescue"
       }

@@ -221,6 +221,18 @@ func IsTrippedScoped(channelID, keyID int, modelName, endpoint, capability strin
 	}
 }
 
+// CircuitClosedScoped reads the breaker without taking a half-open probe slot.
+func CircuitClosedScoped(channelID, keyID int, modelName, endpoint, capability string) bool {
+	v, ok := globalBreaker.Load(circuitScopedKey(channelID, keyID, modelName, endpoint, capability))
+	if !ok {
+		return true
+	}
+	entry := v.(*circuitEntry)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	return entry.State == StateClosed
+}
+
 // RecordSuccess 记录成功，重置熔断器状态
 func RecordSuccess(channelID, keyID int, modelName string) {
 	RecordSuccessScoped(channelID, keyID, modelName, "", "")

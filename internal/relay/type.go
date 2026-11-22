@@ -347,6 +347,12 @@ type relayAttempt struct {
 	usedKey              dbmodel.ChannelKey
 	firstTokenTimeOutSec int
 
+	streamPrefillLookup streamPrefillLookup
+	streamResumeCapture *streamResumeCapture
+	streamResumeRun     *streamResumeRun
+	streamResumeTail    func()
+	streamInterrupted   bool
+
 	// modelMapped is set to true by applyModelMapping when channel.ModelMapping
 	// translated internalRequest.Model to an upstream name. Response transformers
 	// use this flag to restore the original client-visible name (ra.requestModel)

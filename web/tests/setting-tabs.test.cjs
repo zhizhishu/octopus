@@ -305,7 +305,7 @@ test('log sections: 自动救援 lives in its own card, the log card keeps the l
     assert.ok(log.has('log.title') && log.has('log.upstreamRequestBody.label') && log.has('log.clear.label'));
     assert.ok(!log.has('log.intervention.label') && !log.has('log.noBreaker.label'), 'rescue is no longer inside 日志设置');
     const rescue = render('rescue');
-    assert.ok(rescue.has('log.rescue.title') && rescue.has('log.intervention.label') && rescue.has('log.noBreaker.label'));
+    assert.ok(rescue.has('log.rescue.title') && rescue.has('log.intervention.label') && rescue.has('log.noBreaker.label') && rescue.has('log.streamResume.label'));
     assert.ok(!rescue.has('log.title') && !rescue.has('log.upstreamRequestBody.label'));
 });
 
@@ -319,6 +319,7 @@ test('locale: tab labels/descriptions, section titles and the new switch exist i
         for (const k of ['network', 'stats', 'claude', 'codex', 'stream', 'registration']) assert.ok(s.sections?.[k], `${lang}: sections.${k}`);
         assert.ok(s.log.upstreamRequestBody?.label && s.log.upstreamRequestBody?.hint, `${lang}: log.upstreamRequestBody`);
         assert.ok(s.log.rescue?.title, `${lang}: log.rescue.title`);
+        assert.ok(s.log.streamResume?.label && s.log.streamResume?.description, `${lang}: log.streamResume`);
         assert.ok(s.checkIn.randomRange, `${lang}: checkIn.randomRange`);
     }
     const zh = JSON.parse(readFileSync(path.join(__dirname, '..', 'public', 'locale', 'zh_hans.json'), 'utf8')).setting;

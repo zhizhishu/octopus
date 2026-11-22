@@ -96,6 +96,28 @@ func TestScopedCircuitBreakerDoesNotBleedAcrossEndpointCapability(t *testing.T) 
 	}
 }
 
+func TestClosedCircuitCheckDoesNotClaimHalfOpenProbe(t *testing.T) {
+	const channelID, keyID = 1013, 1014
+	const name, endpoint, capability = "claude-sonnet-4-5", "messages", "stream"
+	key := circuitScopedKey(channelID, keyID, name, endpoint, capability)
+	t.Cleanup(func() { globalBreaker.Delete(key) })
+	if !CircuitClosedScoped(channelID, keyID, name, endpoint, capability) {
+		t.Fatal("new scope must start closed")
+	}
+	globalBreaker.Store(key, &circuitEntry{
+		State: StateOpen, TripCount: 1, LastFailureTime: time.Now().Add(-time.Hour),
+	})
+	if CircuitClosedScoped(channelID, keyID, name, endpoint, capability) {
+		t.Fatal("continuation admitted after cooldown but before a successful probe")
+	}
+	if tripped, _ := IsTrippedScoped(channelID, keyID, name, endpoint, capability); tripped {
+		t.Fatal("an ordinary attempt must still be able to claim the half-open probe")
+	}
+	if CircuitClosedScoped(channelID, keyID, name, endpoint, capability) {
+		t.Fatal("continuation admitted while a probe is in flight")
+	}
+}
+
 func TestSnapshotAndResetChannelCircuit(t *testing.T) {
 	globalBreaker = sync.Map{}
 

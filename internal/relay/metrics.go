@@ -86,7 +86,8 @@ type RelayMetrics struct {
 	// usageEstimated is true when Stats' token/cost figures were counted locally
 	// because the upstream omitted usage (see SetInternalResponse). saveLog surfaces
 	// this as usage_source=local_estimate so the numbers read as an estimate.
-	usageEstimated bool
+	usageEstimated            bool
+	streamResumeProviderStats *model.StatsMetrics
 
 	// usageDelivered 标记"本次请求已经向下游交付了实质内容", 即使最终终态是失败。
 	// 见 MarkUsageDelivered 与 Save 里的计费闸门。
@@ -829,7 +830,14 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 	op.StatsHourlyUpdate(globalStats)
 	op.StatsDailyUpdate(persistCtx, globalStats)
 	op.StatsAPIKeyUpdate(m.APIKeyID, globalStats)
-	op.StatsChannelUpdate(channelID, globalStats)
+	channelStats := globalStats
+	if provider := m.streamResumeProviderStats; provider != nil {
+		channelStats = *provider
+		channelStats.RequestSuccess = globalStats.RequestSuccess
+		channelStats.RequestFailed = globalStats.RequestFailed
+		channelStats.WaitTime = globalStats.WaitTime
+	}
+	op.StatsChannelUpdate(channelID, channelStats)
 	// 落库分工: UserRecordRelayIP 是纯审计字段, 只写内存 + 周期任务批量补 DB;
 	// UserRecordUsage 是计费(月卡/余额), 必须留在同步路径上扣减——额度判断零滞后,
 	// 不能等批刷(用户定)。saveLog 里的中继日志同样已改成后台批量落库。

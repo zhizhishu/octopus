@@ -44,6 +44,10 @@ const maxRelayInterventionRounds = 0 // 0 = unlimited; machine rescue never exha
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
+	handleRelay(inboundType, c, streamPrefillCapability)
+}
+
+func handleRelay(inboundType inbound.InboundType, c *gin.Context, prefill streamPrefillLookup) {
 	// 解析请求。解析失败的审计在 parseRequest 内部的两个静默点补（读体失败/入站转换
 	// 失败）；Validate/空请求那类错误 parseRequest 自己已落行，这里不再补，避免双写。
 	internalRequest, inAdapter, err := parseRequest(inboundType, c)
@@ -572,9 +576,15 @@ attemptChannels:
 				usedKey:              usedKey,
 				firstTokenTimeOutSec: group.FirstTokenTimeOut,
 			}
+			if !channel.RaceMode && streamResumeEnabled(inboundType, channel.Type) {
+				ra.streamPrefillLookup = prefill
+			}
 
 			endAttempt := beginControlledAttempt()
 			result := ra.attempt()
+			if ra.streamResumeTail != nil {
+				result = ra.finishStreamResume(result)
+			}
 			endAttempt()
 			recoveryStartedAt = startRecovery(recoveryStartedAt, result.Err)
 			if result.Err == nil {
@@ -990,6 +1000,9 @@ func (ra *relayAttempt) resolveRuntimeModel() string {
 	if ra == nil {
 		return ""
 	}
+	if ra.streamResumeRun != nil {
+		return ra.streamResumeRun.first.runtimeModel
+	}
 	modelName := ""
 	if ra.internalRequest != nil {
 		modelName = ra.internalRequest.Model
@@ -1022,6 +1035,14 @@ func (ra *relayAttempt) attempt() attemptResult {
 		// ====== 成功 ======
 		ra.collectResponse()
 		costDelta := ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
+		outputTokens := ra.metrics.Stats.OutputToken
+		firstToken := ra.metrics.FirstTokenTime
+		if ra.streamResumeRun != nil {
+			usage := ra.streamResumeAttemptUsage()
+			costDelta = ra.recordStreamResumeProviderUsage(usage)
+			outputTokens = usage.CompletionTokens
+			firstToken = ra.streamResumeRun.firstToken
+		}
 		op.ChannelKeyRecordUse(ra.usedKey, statusCode, usedAt, costDelta)
 
 		// 纯观测: 流式分支若已记下输出不完整, 带到审计 span 上; 状态/消息/返回值一律不变。
@@ -1029,8 +1050,8 @@ func (ra *relayAttempt) attempt() attemptResult {
 		span.End(dbmodel.AttemptSuccess, statusCode, "")
 		balancer.RecordRuntimeSuccess(ra.channel.ID, ra.usedKey.ID, runtimeModel, balancer.AttemptRuntimeMetrics{
 			Duration:     span.Duration(),
-			FirstToken:   firstTokenDurationSince(ra.metrics.FirstTokenTime, span.StartedAt()),
-			OutputTokens: ra.metrics.Stats.OutputToken,
+			FirstToken:   firstTokenDurationSince(firstToken, span.StartedAt()),
+			OutputTokens: outputTokens,
 			Stream:       internalRequestPrefersStream(ra.internalRequest),
 		})
 
@@ -1057,7 +1078,16 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 错误都指向真实原因; 调用端自己的取消照旧保留原有归因。
 	fwdErr = ra.classifyTotalTimeout(fwdErr)
 	recordStatusCode := attemptStatusCode(statusCode, fwdErr)
-	op.ChannelKeyRecordUse(ra.usedKey, recordStatusCode, usedAt, 0)
+	costDelta := 0.0
+	if ra.streamResumeRun != nil {
+		ra.collectResponse()
+		costDelta = ra.recordStreamResumeProviderUsage(ra.streamResumeAttemptUsage())
+	} else if ra.streamResumeTail != nil || ra.streamInterrupted && ra.deferStreamResumeTail(func() { writeCommittedStreamFailure(ra, fwdErr) }) {
+		ra.streamResumeCapture.runtimeModel = runtimeModel
+		costDelta = ra.recordStreamResumeProviderUsage(ra.streamResumeFirstUsage())
+	}
+	op.ChannelKeyRecordUse(ra.usedKey, recordStatusCode, usedAt, costDelta)
+	span.SetOutputIncompleteReason(ra.outputIncompleteReason)
 	span.End(dbmodel.AttemptFailed, recordStatusCode, attemptAuditMessage(ra.upstreamResponded, recordStatusCode, fwdErr))
 
 	breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
@@ -1103,8 +1133,14 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// channels and must instead surface the failure as an in-band error event.
 	committed := ra.wroteMeaningfulDownstream
 	if committed {
-		writeCommittedStreamFailure(ra, fwdErr)
-		ra.collectResponse()
+		if ra.streamResumeRun != nil {
+			if ra.streamResumeTail == nil {
+				ra.deferStreamResumeTail(func() { writeCommittedStreamFailure(ra, fwdErr) })
+			}
+		} else if ra.streamResumeTail == nil {
+			writeCommittedStreamFailure(ra, fwdErr)
+			ra.collectResponse()
+		}
 	}
 	return attemptResult{
 		Success:    false,
@@ -1233,6 +1269,9 @@ func (ra *relayAttempt) forward(span *balancer.AttemptSpan) (int, error) {
 	// 死线上。流式路径有自己的计时器(好在到点时分辨"已交付/未交付"), 这里保证没有计时器的路径
 	// (例如纯粹的流式响应体读取) 同样不会被拖到客户端自己放弃。
 	ctx = ra.boundUpstreamLifetime(ctx)
+	if ra.streamResumeRun != nil {
+		return ra.forwardStreamContinuation(ctx, span)
+	}
 	ra.responsesDowngradedToChat = false
 	originalInternalRequest := cloneInternalRequestForRetry(ra.internalRequest)
 	// A responses request bound for a chat channel that carries an unresolvable
@@ -1402,6 +1441,7 @@ retryWithAdapter:
 	// 绝不能注入；originalStream 同时覆盖 handleStreamResponse 与 forceNonStreamUpstream
 	// （非流上游→SSE 下游重放）两条真正的下游流式路径。
 	willStream := originalStream != nil && *originalStream
+	ra.captureStreamResume(outboundRequest, willStream && !forceNonStreamUpstream)
 	var stopFirstByteKeepalive func()
 	if willStream {
 		stopFirstByteKeepalive = ra.startFirstByteKeepalive(ctx)
@@ -3011,6 +3051,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		case <-dataTimeoutC:
 			log.Warnf("stream data interval timeout (%s), closing upstream stream", dataIntervalTimeout)
 			_ = response.Body.Close()
+			ra.streamInterrupted = ra.streamResumeCapture != nil && !streamTerminalSeen() && !upstreamFinishSeen
 			return &localRelayError{
 				status:   http.StatusGatewayTimeout,
 				code:     "octopus_upstream_stream_timeout",
@@ -3074,6 +3115,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					}
 					// 观测: 本条尝试交付的输出不完整(上游缺终止事件), 但状态仍是 success。
 					ra.outputIncompleteReason = dbmodel.RelayLogOutputIncompleteUpstreamMissingTerminal
+					if ra.deferStreamResumeTail(ra.writeTruncatedStreamTerminal) {
+						return errStreamResumeEOF
+					}
 					ra.writeTruncatedStreamTerminal()
 					log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
 					return nil
@@ -3108,6 +3152,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 							}
 							// 观测: 同上 — 输出不完整但这次尝试仍记为 success。
 							ra.outputIncompleteReason = dbmodel.RelayLogOutputIncompleteUpstreamMissingTerminal
+							if ra.deferStreamResumeTail(ra.writeTruncatedStreamTerminal) {
+								return errStreamResumeEOF
+							}
 							ra.writeTruncatedStreamTerminal()
 							log.Warnf("upstream stream truncated before terminal event; wrote in-band failure frame (inbound=%v)", ra.inboundType)
 							return nil
@@ -3130,9 +3177,24 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						log.Errorf("redact: flush before stream error failed: %v", flushErr)
 					}
 				}
+				ra.streamInterrupted = ra.streamResumeCapture != nil && !streamTerminalSeen() && !upstreamFinishSeen &&
+					streamResumeReadInterrupted(r.err)
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 			resetDataTimeout()
+			if s := ra.streamResumeCapture; s != nil && !s.invalid && r.data != "" {
+				if streamResumeTemporaryEvent(r.data, s.mode) {
+					ra.streamInterrupted = !streamTerminalSeen() && !upstreamFinishSeen
+				} else if !s.wire.textOnly(r.data, s.mode) {
+					s.invalid = true
+				}
+			}
+			if s := ra.streamResumeRun; s != nil && r.data != "" && !s.wire.textOnly(r.data, s.first.mode) {
+				if shapeErr := streamResumeShapeError(r.data); shapeErr != nil {
+					return shapeErr
+				}
+				return errStreamResumeUnsafe
+			}
 			// Classify the event once: the terminal / tool-call-done / completed /
 			// [DONE] / keepalive checks below all used to JSON-decode this same
 			// payload again just to read its "type", so every event was parsed three
@@ -3243,6 +3305,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				if err := bufferPrelude(data); err != nil {
 					return err
 				}
+				// Leading whitespace is eligible only if a later meaningful write
+				// commits this buffered prelude to the client.
+				ra.streamResumeTextWritten(internalStream)
 				continue
 			}
 			if err := commitPendingPrelude(); err != nil {
@@ -3252,7 +3317,13 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 				return err
 			}
-			if firstToken {
+			if s := ra.streamResumeRun; s != nil && strings.TrimSpace(streamResumeChunkText(internalStream)) != "" {
+				if !s.timer.Stop() {
+					return errStreamResumeWait
+				}
+				s.timer.Reset(streamResumeWait)
+			}
+			if firstToken && (ra.streamResumeRun == nil || meaningfulNow) {
 				ra.setFirstTokenTime(time.Now())
 				firstToken = false
 				if firstTokenTimer != nil {
@@ -3277,6 +3348,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if meaningfulNow {
 				ra.noteMeaningfulContent()
 			}
+			ra.streamResumeTextWritten(internalStream)
 			if streamTerminalSeen() {
 				// 凭据脱敏: 合成帧先写 (进还原器), 再 flush 把缓冲按 FIFO 吐净。
 				if err := writeSynthesizedDone(); err != nil {
@@ -4032,6 +4104,11 @@ func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, o
 	// Capture envelope ids on this chunk before the client projection.
 	ra.captureUpstreamEnvelope(internalStream)
 	ra.captureUpstreamIdentity(internalStream)
+	ra.observeStreamResumeChunk(internalStream)
+	internalStream, err = ra.projectStreamContinuation(internalStream)
+	if err != nil || internalStream == nil {
+		return nil, nil, err
+	}
 	// The inbound adapter stores the pointer it is given. Hand it a shallow copy
 	// whose client-visible model is A and whose system_fingerprint is cleared.
 	// Return the original chunk: callers use it only as the unprojected observation.
@@ -4052,6 +4129,10 @@ func (ra *relayAttempt) transformStreamChunk(ctx context.Context, data string, o
 // 就是一次空指针解引用（envelope-only 的 relayAttempt —— 只建 attempt、不建
 // relayRequest 的单测 fixture 就是这样），所以先挡 relayRequest，再挡 metrics。
 func (ra *relayAttempt) setFirstTokenTime(t time.Time) {
+	if ra != nil && ra.streamResumeRun != nil {
+		ra.streamResumeRun.firstToken = t
+		return
+	}
 	if ra == nil || ra.relayRequest == nil || ra.metrics == nil {
 		return
 	}
@@ -4713,6 +4794,10 @@ func (ra *relayAttempt) collectResponse() {
 	// metrics 与存档——这样 metrics 与本次保存的助手历史看到的内容与客户端实际收到的还原
 	// 原文一致，不会把占位符存进 transcript（后续独立会话无该 token 映射会形成还原缺口）。
 	internalResponse = ra.restoreInternalResponseTexts(internalResponse)
+	if ra.streamResumeRun != nil {
+		internalResponse.Usage = ra.streamResumeLogicalUsage()
+		ra.metrics.usageEstimated = true
+	}
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
 	// Declared model, envelope, and identity are committed together from this
 	// attempt. The inbound aggregate is the client projection, so fingerprint and

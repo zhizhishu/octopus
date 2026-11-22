@@ -42,6 +42,7 @@ const (
 	SettingKeyRelayLogMaxStorageGB      SettingKey = "relay_log_max_storage_gb"     // 日志最大保存容量(GB), 0 表示不限制
 	SettingKeyAnthropicAutoCacheControl SettingKey = "anthropic_auto_cache_control" // Anthropic 出站自动为稳定长前缀注入 cache_control
 	SettingKeyRelayStreamKeepaliveSec   SettingKey = "relay_stream_keepalive_interval_seconds"
+	SettingKeyRelayStreamResumeEnabled  SettingKey = "relay_stream_resume_enabled"
 	SettingKeyOpenAIAutoPromptCacheKey  SettingKey = "openai_auto_prompt_cache_key"
 	SettingKeyUpstreamUTLSFingerprint   SettingKey = "upstream_utls_fingerprint"   // 直连上游用 Chrome uTLS ClientHello (JA3); opt-in, 默认关, 启用前须过 the relay 复验
 	SettingKeyUpstreamHTTP1HeaderOrder  SettingKey = "upstream_http1_header_order" // 明文 HTTP/1.1 出站按真 CLI 的 21 项逐字节头序(含头名大小写与 Connection: keep-alive)重写; 默认开(种子 "true", 读失败也当开), 设为 false 才回到 Go 自己的头序
@@ -635,6 +636,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayLogReclaimEnabled, Value: "true"},    // 默认开：删日志只标空闲不还文件，一直不回收会让库无限膨胀；用户可随时关
 		{Key: SettingKeyAnthropicAutoCacheControl, Value: "true"}, // 默认开启稳定前缀缓存断点，提升 provider 原生命中率
 		{Key: SettingKeyRelayStreamKeepaliveSec, Value: defaultRelayStreamKeepaliveIntervalSeconds()},
+		{Key: SettingKeyRelayStreamResumeEnabled, Value: "false"},
 		{Key: SettingKeyOpenAIAutoPromptCacheKey, Value: "true"},
 		{Key: SettingKeyUpstreamUTLSFingerprint, Value: "false"}, // 默认关：改 TLS 指纹影响所有上游，须先过 the relay 复验再开
 		{Key: SettingKeyUpstreamHTTP1HeaderOrder, Value: "true"}, // 默认开：明文 HTTP/1.1 出站按真 CLI 的 21 项头序重写（2026-10-10 抓包已定稿）
@@ -918,7 +920,7 @@ func (s *Setting) Validate() error {
 		default:
 			return fmt.Errorf("%s must be spread or fill_first (empty uses the default)", s.Key)
 		}
-	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey,
+	case SettingKeyRelayLogKeepEnabled, SettingKeyAnthropicAutoCacheControl, SettingKeyOpenAIAutoPromptCacheKey, SettingKeyRelayStreamResumeEnabled,
 		SettingKeyClaudeHeaderStabilize, SettingKeyCodexFastMode, SettingKeyRelayClaudeCLIShapeKeys,
 		SettingKeyUserRegistrationEnabled, SettingKeyUpstreamErrorStatusPass, SettingKeyCheckInEnabled,
 		SettingKeyDebugLoadBalancer, SettingKeyEmailVerificationEnabled, SettingKeyEmailSMTPSSL,

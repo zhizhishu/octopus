@@ -43,6 +43,7 @@ export const SettingKey = {
     AnthropicAutoCacheControl: 'anthropic_auto_cache_control',
     OpenAIAutoPromptCacheKey: 'openai_auto_prompt_cache_key',
     RelayStreamKeepaliveIntervalSeconds: 'relay_stream_keepalive_interval_seconds',
+    RelayStreamResumeEnabled: 'relay_stream_resume_enabled',
     RelayStreamDataIntervalTimeoutSeconds: 'relay_stream_data_interval_timeout_seconds',
     UpstreamHeaderTimeoutSeconds: 'upstream_header_timeout_seconds',
     FirstByteKeepaliveDelaySeconds: 'first_byte_keepalive_delay_seconds',

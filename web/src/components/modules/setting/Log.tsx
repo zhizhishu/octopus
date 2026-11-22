@@ -74,6 +74,7 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
     const [keepPeriod, setKeepPeriod] = useState('7');
     const [maxStorageGB, setMaxStorageGB] = useState(savedLimit ?? '');
     const [interventionEnabled, setInterventionEnabled] = useState(true);
+    const [streamResumeEnabled, setStreamResumeEnabled] = useState(false);
     const [noBreakerRetryBudget, setNoBreakerRetryBudget] = useState('300');
     const [isClearing, setIsClearing] = useState(false);
     const [clearOpen, setClearOpen] = useState(false);
@@ -96,6 +97,10 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
             const periodSetting = settings.find(s => s.key === SettingKey.RelayLogKeepPeriod);
             const maxStorageSetting = settings.find(s => s.key === SettingKey.RelayLogMaxStorageGB);
             const interventionEnabledSetting = settings.find(s => s.key === SettingKey.RelayInterventionEnabled);
+            const streamResumeSetting = settings.find(s => s.key === SettingKey.RelayStreamResumeEnabled);
+            if (streamResumeSetting) {
+                queueMicrotask(() => setStreamResumeEnabled(streamResumeSetting.value === 'true'));
+            }
             const noBreakerRetryBudgetSetting = settings.find(s => s.key === SettingKey.RelayNoBreakerRetryBudgetSeconds);
             const reclaimSetting = settings.find(s => s.key === SettingKey.RelayLogReclaimEnabled);
             const upstreamBodyLogSetting = settings.find(s => s.key === SettingKey.UpstreamRequestBodyLog);
@@ -270,6 +275,21 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
                     toast.error(t('saveFailed'));
                 }
             }
+        );
+    };
+
+    const handleStreamResumeChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
+        setStreamResumeEnabled(checked);
+        setSetting.mutate(
+            { key: SettingKey.RelayStreamResumeEnabled, value: String(checked) },
+            {
+                onSuccess: () => toast.success(t('saved')),
+                onError: () => {
+                    setStreamResumeEnabled(!checked);
+                    toast.error(t('saveFailed'));
+                },
+            },
         );
     };
 
@@ -527,6 +547,19 @@ export function SettingLog({ section }: { section?: SettingLogSection } = {}) {
                         onChange={(e) => setNoBreakerRetryBudget(e.target.value)}
                         onBlur={handleNoBreakerRetryBudgetSave}
                         className="w-28 shrink-0 rounded-xl sm:w-32"
+                    />
+                </div>
+                <div className="flex items-center justify-between gap-4 border-t border-amber-500/20 pt-3">
+                    <div className="flex flex-col gap-1">
+                        <label htmlFor="stream-resume-enabled" className="text-sm font-medium">{t('log.streamResume.label')}</label>
+                        <span id="stream-resume-description" className="text-xs text-muted-foreground">{t('log.streamResume.description')}</span>
+                    </div>
+                    <Switch
+                        id="stream-resume-enabled"
+                        aria-describedby="stream-resume-description"
+                        checked={streamResumeEnabled}
+                        disabled={setSetting.isPending || !settings}
+                        onCheckedChange={handleStreamResumeChange}
                     />
                 </div>
             </div>
