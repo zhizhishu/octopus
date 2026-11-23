@@ -10,6 +10,8 @@ import { useHomeViewStore, type RankSortMode } from '@/components/modules/home/s
 export function Rank() {
     const { data: modelRankData, isPending, isError } = useStatsModelRank();
     const t = useTranslations('home.rank');
+    // 吞吐中位数的文案键在 home.modelHealth（与模型健康卡同一份，不另造一个）。
+    const tHealth = useTranslations('home.modelHealth');
     const rankSortMode = useHomeViewStore((state) => state.rankSortMode);
     const setRankSortMode = useHomeViewStore((state) => state.setRankSortMode);
 
@@ -68,6 +70,13 @@ export function Rank() {
 
                             <div className="flex-1 min-w-0">
                                 <p className="font-medium text-sm truncate">{model.model}</p>
+                                <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                                    <span>{tHealth('avgThroughput')}</span>
+                                    <span>
+                                        {/* API 侧已把无样本格式化为 '--'：只有 '--' 不带单位，有效值才带 tok/s。 */}
+                                        {model.avg_throughput === '--' ? '--' : `${model.avg_throughput} tok/s`}
+                                    </span>
+                                </div>
                                 {mode === 'count' && (() => {
                                     const successCount = model.request_success.raw;
                                     const failedCount = model.request_failed.raw;

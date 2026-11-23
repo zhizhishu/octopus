@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 import { formatUSD } from '@/components/modules/user/lib/balance-preview';
 import { useRelTime } from '@/components/modules/user/components/shared';
 import { Bar, Pill, Tip } from '@/components/modules/user/components/ui-bits';
-import { expiryState, isAllFamilies, keyFamilies, keyModels, maskKey, spendState, type KeyFamily, type KeyStatus } from '../lib/key-filters';
+import { expiryState, formatSpendPct, isAllFamilies, keyFamilies, keyModels, maskKey, spendState, type KeyFamily, type KeyStatus } from '../lib/key-filters';
 
 export const inputCls = 'flex h-9 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring disabled:opacity-60';
 
@@ -38,22 +38,36 @@ export function MaskedKey({ value, className }: { value: string; className?: str
     );
 }
 
-export function SpendCell({ spent, cap, className }: { spent: number; cap?: number; className?: string }) {
+/**
+ * 已用金额：formatUSD 在 [0.01, 1) 区间只给两位小数，小额花销会读成 $0.00 或丢细节，
+ * 这里多留一位（如 $0.135）；其余区间（含 <0.01 的 4 位小数）沿用 formatUSD。
+ */
+function formatSpentAmount(value: number): string {
+    const abs = Math.abs(value);
+    if (abs >= 0.01 && abs < 1) return `$${abs.toFixed(3)}`;
+    return formatUSD(value);
+}
+
+export function SpendCell({ spent, cap, unpriced, className }: { spent: number; cap?: number; unpriced?: boolean; className?: string }) {
     const t = useTranslations('keys.table');
     const s = spendState(spent, cap);
     if (!s.limited) {
         return (
             <div className={className}>
-                <div className="text-sm font-medium tabular-nums">{formatUSD(spent)}</div>
+                <div className="text-sm font-medium tabular-nums">{formatSpentAmount(spent)}</div>
                 <div className="text-[11px] text-muted-foreground">{t('noCap')}</div>
+                {unpriced && <div className="mt-0.5 text-[11px] text-muted-foreground">{t('unpricedNote')}</div>}
             </div>
         );
     }
+    // 有花销但占比极小时，进度条至少画 2%，不然看不见条；文字和档位仍用真实 pct。
+    const barPct = spent > 0 ? Math.max(s.pct, 2) : s.pct;
     return (
         <Tip content={t('spendTip', { spent: formatUSD(spent), cap: formatUSD(cap ?? 0), left: formatUSD(s.left) })}>
             <div tabIndex={0} className={cn('w-[8.5rem] outline-none', className)}>
-                <div className="text-sm tabular-nums"><span className="font-medium">{formatUSD(spent)}</span><span className="text-xs text-muted-foreground"> / {formatUSD(cap ?? 0)}</span></div>
-                <Bar value={s.pct} tone={s.level === 'over' ? 'danger' : 'primary'} className={cn('mt-1.5', s.level === 'near' && '[&>i]:bg-amber-500')} />
+                <div className="text-sm tabular-nums"><span className="font-medium">{formatSpentAmount(spent)}</span><span className="text-xs text-muted-foreground"> / {formatUSD(cap ?? 0)}</span><span className="text-xs text-muted-foreground"> · {formatSpendPct(s.pct)}</span></div>
+                <Bar value={barPct} tone={s.level === 'over' ? 'danger' : 'primary'} className={cn('mt-1.5', s.level === 'near' && '[&>i]:bg-amber-500')} />
+                {unpriced && <div className="mt-0.5 text-[11px] text-muted-foreground">{t('unpricedNote')}</div>}
             </div>
         </Tip>
     );

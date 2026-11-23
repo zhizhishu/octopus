@@ -141,6 +141,14 @@ export function spendState(spent: number, cap: number | undefined) {
     return { limited: true as const, pct, left: Math.max(0, c - spent), level };
 }
 
+/** 已用百分比的文字：0 → '0%'；不足 0.01% 给下限写法；10 以下两位小数，其余一位（100 → '100%'）。 */
+export function formatSpendPct(pct: number): string {
+    if (!Number.isFinite(pct) || pct <= 0) return '0%';
+    if (pct >= 100) return '100%';
+    if (pct < 0.01) return '<0.01%';
+    return pct < 10 ? `${pct.toFixed(2)}%` : `${pct.toFixed(1)}%`;
+}
+
 const DAY = 24 * 60 * 60;
 
 /** 有效期显示：永久 / 还剩 N 天（不到 1 天按 1 天）/ 过期 N 天。 */

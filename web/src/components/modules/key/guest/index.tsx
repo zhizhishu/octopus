@@ -43,7 +43,10 @@ export function GuestKeys() {
     const [nowSec] = useState(nowUnix);
 
     const spent = useMemo(() => new Map(keyStats.map((s) => [s.api_key_id, s.total_cost.raw])), [keyStats]);
+    // 有请求和 token 用量但费用为 0：所用模型没定价，花销读作 $0 不占额度（SpendCell 里给说明）。
+    const unpriced = useMemo(() => new Map(keyStats.map((s) => [s.api_key_id, (s.input_token.raw + s.output_token.raw) > 0 && s.total_cost.raw === 0])), [keyStats]);
     const spentOf = (id: number) => spent.get(id) ?? 0;
+    const unpricedOf = (id: number) => unpriced.get(id) ?? false;
     // 能用的在前，作废的沉底；同一类里新的在前。
     const sorted = useMemo(() => [...keys].sort((a, b) => Number((a.revoked_at ?? 0) > 0) - Number((b.revoked_at ?? 0) > 0) || b.id - a.id), [keys]);
     const list = guestSearch(sorted, q);
@@ -125,7 +128,7 @@ export function GuestKeys() {
                                                 <td className={td}><GuestStatusPill status={status} /></td>
                                                 <td className={cn(td, dim)}><GuestModels apiKey={k} /></td>
                                                 <td className={cn(td, dim)}><GuestExpiry expireAt={k.expire_at} nowSec={nowSec} /></td>
-                                                <td className={cn(td, dim)}><SpendCell spent={spentOf(k.id)} cap={k.max_cost} /></td>
+                                                <td className={cn(td, dim)}><SpendCell spent={spentOf(k.id)} cap={k.max_cost} unpriced={unpricedOf(k.id)} /></td>
                                                 <td className={cn(td, dim)}><LastUsedCell apiKey={k} nowSec={nowSec} /></td>
                                                 <td className={cn(td, 'w-px pl-0 pr-3')}>
                                                     <div className="flex items-center justify-end gap-0.5">
@@ -162,7 +165,7 @@ export function GuestKeys() {
                                     <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
                                         <div className="min-w-0"><div className={cap}>{t('col.models')}</div><GuestModels apiKey={k} /></div>
                                         <div className="min-w-0"><div className={cap}>{t('col.expiry')}</div><GuestExpiry expireAt={k.expire_at} nowSec={nowSec} /></div>
-                                        <div className="min-w-0"><div className={cap}>{t('col.spend')}</div><SpendCell spent={spentOf(k.id)} cap={k.max_cost} className="w-full" /></div>
+                                        <div className="min-w-0"><div className={cap}>{t('col.spend')}</div><SpendCell spent={spentOf(k.id)} cap={k.max_cost} unpriced={unpricedOf(k.id)} className="w-full" /></div>
                                         <div className="min-w-0"><div className={cap}>{t('col.lastUsed')}</div><LastUsedCell apiKey={k} nowSec={nowSec} /></div>
                                     </div>
                                 </div>

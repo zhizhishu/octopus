@@ -14,9 +14,11 @@ const th = 'h-10 px-3 text-left align-middle text-xs font-medium whitespace-nowr
 const td = 'px-3 py-3 align-middle';
 
 // 桌面表格：名称（归属 · 遮住的 Key + 复制）/ 状态 / 已用·上限 / 有效期 / 能用 / 方案 / 最近使用 / 操作。
-export function KeysTable({ keys, spentOf, ownerOf, nowSec, selected, onSelect, onSelectPage, handlers }: {
+export function KeysTable({ keys, spentOf, unpricedOf, ownerOf, nowSec, selected, onSelect, onSelectPage, handlers }: {
     keys: APIKey[];
     spentOf: (id: number) => number;
+    /** 有用量但没定价（费用记 0）的 Key：SpendCell 里显示「未定价，不计费」。 */
+    unpricedOf?: (id: number) => boolean;
     /** 管理员看到「谁的」；普通用户只有自己的 Key，不显示。 */
     ownerOf?: (key: APIKey) => string;
     nowSec: number;
@@ -71,7 +73,7 @@ export function KeysTable({ keys, spentOf, ownerOf, nowSec, selected, onSelect, 
                                 </div>
                             </td>
                             <td className={cn(td, dim)}><KeyStatusPill status={status} /></td>
-                            <td className={cn(td, dim)}><SpendCell spent={spent} cap={k.max_cost} /></td>
+                            <td className={cn(td, dim)}><SpendCell spent={spent} cap={k.max_cost} unpriced={unpricedOf?.(k.id)} /></td>
                             <td className={cn(td, dim)}><ExpiryCell expireAt={k.expire_at} nowSec={nowSec} /></td>
                             <td className={cn(td, dim, 'max-w-[12rem]')}><AccessCell apiKey={k} /></td>
                             <td className={cn(td, dim, 'max-w-[10rem]')}><PlanCell apiKey={k} /></td>

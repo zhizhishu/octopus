@@ -8,8 +8,11 @@
  * （缓冲、排队、重试、思考 token 都只是可能，单凭阈值证不出来）。
  *
  * 所以不能按 is_stream 卡（IsStream 记的是客户端意图，判不出上游是否缓冲），
- * 只能按「生成窗口是否可采信」卡。**不可采信时绝不算数**（没有返回值、不退回
- * 全程平均冒充生成速度——那是更隐蔽的骗法）。
+ * 只能按「生成窗口是否可采信」卡。**不可采信时绝不算生成速度**——但可以另给一条
+ * 明确标注为约值的「全程平均」估算（kind 'overall'，界面带 ≈ 前缀，见
+ * assessOverallThroughput），口径借自 sub2api（output*1000/duration_ms + >0 与
+ * Number.isFinite 闸门）、axonhub（分母 10ms 兜底）与 claude-code-hub（>5000 不展示），
+ * 与生成速度分开、不冒充生成速度。
  *
  * 阈值与 internal/op/throughput.go 一一对应（astra 裁决的同一套拒绝条件），
  * 改任何一边都必须同步另一边和测试。
@@ -31,6 +34,10 @@ export const TPS_MIN_GEN_MS = 1000;
 export const TPS_MIN_GEN_SHARE = 0.25;
 /** 展示上限：超过就不展示（不去区分是测量问题还是真值，也不拿它反推上游）。 */
 export const TPS_MAX_PLAUSIBLE = 1000;
+/** 全程平均估算：总耗时不足 10ms 时按 10ms 兜底，挡住除零和天文数字（axonhub 同款）。 */
+export const TPS_OVERALL_MIN_DURATION_MS = 10;
+/** 全程平均估算的展示上限：高于它的速率几乎都是测量假象（claude-code-hub 同款）。 */
+export const TPS_OVERALL_MAX_PLAUSIBLE = 5000;
 
 /**
  * 算不出来的原因码（机器码，只在前端内部流转，界面必须翻成人话）。
@@ -76,14 +83,44 @@ export type ThroughputReading = {
 };
 
 export type ThroughputAssessment =
-    | { available: true; text: string; tps: number }
+    /** kind 'generation' = 首字后窗口的生成速度；kind 'overall' = 全程平均约值（界面带 ≈ 前缀）。 */
+    | { available: true; text: string; tps: number; kind: 'generation' | 'overall'; /** 仅 kind='overall'：精确生成速度为什么算不出来（界面在弹层里解释）。 */ preciseReason?: ThroughputUnavailableReason }
     | { available: false; reason: ThroughputUnavailableReason };
+
+/** 已格式化好的速度数字（含 '<0.01' 下限写法）。精确路径与全程平均共用一份口径。 */
+function formatTpsText(tps: number): string {
+    // 别让 0.04 t/s 被舍成 "0.0"（看着像没数据）；三位数以上不要小数，免得占宽。
+    return tps < 0.01 ? '<0.01' : tps < 10 ? tps.toFixed(2) : tps >= 100 ? tps.toFixed(0) : tps.toFixed(1);
+}
+
+/**
+ * 全程平均估算（fallback，不是生成速度）：输出 tokens ÷ 总耗时（含首字等待）。
+ * 失败行与无输出行没有速度可言，不退；总耗时不足 10ms 按 10ms 兜底；算出来超过
+ * 5000 tok/s 视为测量假象不展示。闸门与精确路径各自独立，这里不改任何精确闸门。
+ */
+export function assessOverallThroughput(log: ThroughputInput): ThroughputAssessment {
+    if (classifyRelayLogSeverity(log) === 'error') return { available: false, reason: 'request_failed' };
+
+    const out = log.output_tokens ?? 0;
+    const total = log.use_time ?? 0;
+    if (!Number.isFinite(out) || out <= 0) return { available: false, reason: 'output_missing' };
+    if (!Number.isFinite(total) || total <= 0) return { available: false, reason: 'duration_invalid' };
+
+    const tps = out / (Math.max(total, TPS_OVERALL_MIN_DURATION_MS) / 1000);
+    if (!Number.isFinite(tps) || tps <= 0 || tps > TPS_OVERALL_MAX_PLAUSIBLE) {
+        return { available: false, reason: 'implausible_speed' };
+    }
+    return { available: true, text: formatTpsText(tps), tps, kind: 'overall' };
+}
 
 /**
  * 逐条判定：可采信 → 数字；不可采信 → 原因码。
  *
  * 拒绝顺序（与 internal/op/throughput.go 的 relayLogTPSSample 严格一致）：
  * 失败 → 无输出 → 输出过短 → 总耗时非法 → 首字非法 → 窗口过短 → 占比过低 → 速度离谱。
+ * 精确路径算不出来时（失败与无输出除外）退回「全程平均」约值：sub2api / axonhub /
+ * claude-code-hub 同款口径，见 assessOverallThroughput。整体退不出来时保留精确
+ * 路径的原因码。失败与无输出永远不退（没有速度概念）；闸门常量与顺序一个都不动。
  */
 export function assessThroughput(log: ThroughputInput): ThroughputAssessment {
     // 失败行不显示速度。判据用全局唯一的分桶 classifyRelayLogSeverity：
@@ -91,33 +128,38 @@ export function assessThroughput(log: ThroughputInput): ThroughputAssessment {
     // 这样管理员载荷（带 error）与用户摘要载荷（只有 error_code/error_status）结论一致。
     if (classifyRelayLogSeverity(log) === 'error') return { available: false, reason: 'request_failed' };
 
+    // 精确路径拒绝时给 fallback 一个统一的出口：可退的原因先试全程平均，
+    // 退出来带上精确路径的原因码（界面用它解释为什么是约值）；退不出来保留原原因。
+    const refuse = (reason: ThroughputUnavailableReason): ThroughputAssessment => {
+        if (reason === 'request_failed' || reason === 'output_missing') return { available: false, reason };
+        const overall = assessOverallThroughput(log);
+        if (overall.available) return { ...overall, preciseReason: reason };
+        return { available: false, reason };
+    };
+
     const out = log.output_tokens ?? 0;
     const total = log.use_time ?? 0;
     const first = log.ftut ?? 0;
 
     if (!Number.isFinite(out) || out <= 0) return { available: false, reason: 'output_missing' };
-    if (out < TPS_MIN_OUTPUT_TOKENS) return { available: false, reason: 'output_too_short' };
+    if (out < TPS_MIN_OUTPUT_TOKENS) return refuse('output_too_short');
     if (!Number.isFinite(total) || total < TPS_MIN_USE_TIME_MS) {
-        return { available: false, reason: 'duration_invalid' };
+        return refuse('duration_invalid');
     }
     if (!Number.isFinite(first) || first <= 0 || first >= total) {
-        return { available: false, reason: 'first_token_missing' };
+        return refuse('first_token_missing');
     }
 
     const genMs = total - first;
-    if (genMs < TPS_MIN_GEN_MS) return { available: false, reason: 'generation_window_short' };
-    if (genMs < total * TPS_MIN_GEN_SHARE) return { available: false, reason: 'generation_share_low' };
+    if (genMs < TPS_MIN_GEN_MS) return refuse('generation_window_short');
+    if (genMs < total * TPS_MIN_GEN_SHARE) return refuse('generation_share_low');
 
     const tps = out / (genMs / 1000);
     if (!Number.isFinite(tps) || tps <= 0 || tps > TPS_MAX_PLAUSIBLE) {
-        return { available: false, reason: 'implausible_speed' };
+        return refuse('implausible_speed');
     }
 
-    // 别让 0.04 t/s 被舍成 "0.0"（看着像没数据）；三位数以上不要小数，免得占宽。
-    const text =
-        tps < 0.01 ? '<0.01' : tps < 10 ? tps.toFixed(2) : tps >= 100 ? tps.toFixed(0) : tps.toFixed(1);
-
-    return { available: true, text, tps };
+    return { available: true, text: formatTpsText(tps), tps, kind: 'generation' as const };
 }
 
 /**

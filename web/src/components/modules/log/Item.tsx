@@ -1716,9 +1716,12 @@ export const LogCard = React.memo(function LogCard({
     // 外层是 MorphingDialogTrigger（morphing-dialog.tsx:140-154 在 click 和 Enter/Space
     // keydown 上开关整卡弹窗），所以两种事件都要就地 stopPropagation，否则会同时开整卡；
     // 这不影响按钮本身的激活（stopPropagation 不拦同元素上的处理）。
-    // 原因码在这里翻成人话（tpsReason*），机器码不外露。
+    // 原因码在这里翻成人话（tpsReason*），机器码不外露。全程平均（kind 'overall'）
+    // 带 ≈ 前缀，并用 tpsHintOverall 解释口径；精确原因码跟在约值后面解释。
     const tpsTitle = tpsAssessment.available
-        ? `${t('tps')} ${tpsAssessment.text} ${t('tpsUnit')} · ${t('tpsHintGen')}`
+        ? tpsAssessment.kind === 'overall'
+            ? `${t('tps')} ≈${tpsAssessment.text} ${t('tpsUnit')} · ${t('tpsHintOverall')}`
+            : `${t('tps')} ${tpsAssessment.text} ${t('tpsUnit')} · ${t('tpsHintGen')}`
         : `${t('tps')} — · ${t('tpsUnavailableHint')}`;
     const tpsSlot = tpsEligible ? (
         <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
@@ -1742,7 +1745,9 @@ export const LogCard = React.memo(function LogCard({
                             <Gauge className="size-3 shrink-0 opacity-70" />
                             <span>
                                 {tpsAssessment.available
-                                    ? `${t('tps')} ${tpsAssessment.text} ${t('tpsUnit')}`
+                                    ? (tpsAssessment.kind === 'overall'
+                                        ? `${t('tps')} ≈${tpsAssessment.text} ${t('tpsUnit')}`
+                                        : `${t('tps')} ${tpsAssessment.text} ${t('tpsUnit')}`)
                                     : `${t('tps')} —`}
                             </span>
                         </Badge>
@@ -1752,7 +1757,18 @@ export const LogCard = React.memo(function LogCard({
                     <p className="font-medium text-foreground">{t('tps')}</p>
                     {tpsAssessment.available ? (
                         <>
-                            <p className="text-[11px] leading-5 text-muted-foreground">{t('tpsHintGen')}</p>
+                            {tpsAssessment.kind === 'overall' ? (
+                                <>
+                                    <p className="text-[11px] leading-5 text-muted-foreground">{t('tpsHintOverall')}</p>
+                                    {tpsAssessment.preciseReason && (
+                                        <p className="text-[11px] leading-5 text-muted-foreground">
+                                            {t(throughputReasonLabelKey(tpsAssessment.preciseReason))}
+                                        </p>
+                                    )}
+                                </>
+                            ) : (
+                                <p className="text-[11px] leading-5 text-muted-foreground">{t('tpsHintGen')}</p>
+                            )}
                             {tpsEstimated && (
                                 <p className="text-[11px] leading-5 text-muted-foreground">{t('tpsEstimateCaveat')}</p>
                             )}

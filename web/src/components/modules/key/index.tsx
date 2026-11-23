@@ -62,6 +62,9 @@ export function Key() {
     const setFilters = (f: KeyFilters) => { setFiltersState(f); setPage(1); };
     const spent = useMemo(() => new Map(keyStats.map((s) => [s.api_key_id, s.total_cost.raw])), [keyStats]);
     const spentOf = (id: number) => spent.get(id) ?? 0;
+    // 有请求和 token 用量但费用为 0：所用模型没定价，花销读作 $0 不占额度（SpendCell 里给说明）。
+    const unpriced = useMemo(() => new Map(keyStats.map((s) => [s.api_key_id, (s.input_token.raw + s.output_token.raw) > 0 && s.total_cost.raw === 0])), [keyStats]);
+    const unpricedOf = (id: number) => unpriced.get(id) ?? false;
     const userByID = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
     const ownerName = (id?: number) => (id ? userByID.get(id)?.username ?? keys.find((k) => k.user_id === id)?.user_name ?? `#${id}` : '');
     const ownerOf = isAdmin ? (k: APIKey) => ownerName(k.user_id) : undefined;
@@ -162,13 +165,13 @@ export function Key() {
                             ? <KeysBulkActions selected={liveSelected} keys={keys} onClear={() => setSelected(new Set())} />
                             : <KeysToolbar filters={filters} setFilters={setFilters} counts={counts} owners={ownerOptions} plans={planOptions} />}
                         <div className="w-full overflow-x-auto">
-                            <KeysTable keys={paged.items} spentOf={spentOf} ownerOf={ownerOf} nowSec={nowSec} selected={selected} onSelect={toggleOne} onSelectPage={togglePage} handlers={handlers} />
+                            <KeysTable keys={paged.items} spentOf={spentOf} unpricedOf={unpricedOf} ownerOf={ownerOf} nowSec={nowSec} selected={selected} onSelect={toggleOne} onSelectPage={togglePage} handlers={handlers} />
                         </div>
                         {paged.total === 0 && empty}
                         <Pager size={PAGE_SIZE} page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} summary={summary} />
                     </div>
                     <div className="md:hidden">
-                        <KeysMobileList keys={paged.items} spentOf={spentOf} ownerOf={ownerOf} nowSec={nowSec} handlers={handlers} />
+                        <KeysMobileList keys={paged.items} spentOf={spentOf} unpricedOf={unpricedOf} ownerOf={ownerOf} nowSec={nowSec} handlers={handlers} />
                         {paged.total === 0 && empty}
                         {paged.pages > 1 && <Pager size={PAGE_SIZE} page={paged.page} pages={paged.pages} total={paged.total} onPage={setPage} summary={summary} />}
                     </div>

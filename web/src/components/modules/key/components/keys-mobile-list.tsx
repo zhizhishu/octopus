@@ -11,9 +11,11 @@ import { AccessCell, ExpiryCell, KeyStatusPill, LastUsedCell, MaskedKey, PlanCel
 import { KeyRowActions, type KeyRowHandlers } from './key-row-actions';
 
 // 手机：一把 Key 一张卡。上面名称 + 状态 + 操作，下面两列小格子。
-export function KeysMobileList({ keys, spentOf, ownerOf, nowSec, handlers }: {
+export function KeysMobileList({ keys, spentOf, unpricedOf, ownerOf, nowSec, handlers }: {
     keys: APIKey[];
     spentOf: (id: number) => number;
+    /** 有用量但没定价（费用记 0）的 Key：SpendCell 里显示「未定价，不计费」。 */
+    unpricedOf?: (id: number) => boolean;
     ownerOf?: (key: APIKey) => string;
     nowSec: number;
     handlers: KeyRowHandlers;
@@ -43,7 +45,7 @@ export function KeysMobileList({ keys, spentOf, ownerOf, nowSec, handlers }: {
                             <MaskedKey value={k.api_key} />
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
-                            <div className={cell}><div className={cap}>{t('spend')}</div><SpendCell spent={spent} cap={k.max_cost} className="w-full" /></div>
+                            <div className={cell}><div className={cap}>{t('spend')}</div><SpendCell spent={spent} cap={k.max_cost} unpriced={unpricedOf?.(k.id)} className="w-full" /></div>
                             <div className={cell}><div className={cap}>{t('expiry')}</div><ExpiryCell expireAt={k.expire_at} nowSec={nowSec} /></div>
                             <div className={cell}><div className={cap}>{t('access')}</div><AccessCell apiKey={k} /></div>
                             <div className={cell}><div className={cap}>{t('lastUsed')}</div><LastUsedCell apiKey={k} nowSec={nowSec} /></div>
