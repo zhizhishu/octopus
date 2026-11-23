@@ -31,21 +31,23 @@ test('爆表原型：ftut 落在 use_time-1ms（窗口只剩 1ms）→ 退回全
 });
 
 test('生成窗口占比不足 25% → 退回全程平均约值', () => {
-    // 窗口 1s 达标但只占总耗时 10%：首字落在 90% 处，窗口不可采信 → 500/10s = 50。
-    assert.deepEqual(describeThroughput({ output_tokens: 500, use_time: 10000, ftut: 9000 }), { text: '50' });
+    // 窗口 1s 达标但只占总耗时 10%：首字落在 90% 处，窗口不可采信。
+    // 全程平均 500 ÷ (10000/1000) = 50，落在 [10,100) → 保留 1 位小数 → '50.0'。
+    assert.deepEqual(describeThroughput({ output_tokens: 500, use_time: 10000, ftut: 9000 }), { text: '50.0' });
 });
 
 test('输出不足 100 token → 退回全程平均约值（样本太短只影响生成速度）', () => {
     assert.deepEqual(describeThroughput({ output_tokens: 73, use_time: 46271, ftut: 3995 }), { text: '1.58' });
-    assert.deepEqual(describeThroughput({ output_tokens: 99, use_time: 5000, ftut: 1000 }), { text: '19.80' });
+    // 全程平均 99 ÷ (5000/1000) = 19.8，落在 [10,100) → 1 位小数 → '19.8'。
+    assert.deepEqual(describeThroughput({ output_tokens: 99, use_time: 5000, ftut: 1000 }), { text: '19.8' });
 });
 
 test('首字缺失 / 脏数据 → 退回全程平均约值（约值不冒充生成速度）', () => {
-    // 约值用总耗时（含首字等待）算：500/5s = 100，300/4s = 75。
+    // 约值用总耗时（含首字等待）算：500/5s = 100（≥100 取整），300/4s = 75（[10,100) → 1 位小数）。
     assert.deepEqual(describeThroughput({ output_tokens: 500, use_time: 5000, ftut: 0 }), { text: '100' });
     assert.deepEqual(describeThroughput({ output_tokens: 500, use_time: 5000 }), { text: '100' });
-    assert.deepEqual(describeThroughput({ output_tokens: 300, use_time: 4000, ftut: 4000 }), { text: '75' });
-    assert.deepEqual(describeThroughput({ output_tokens: 300, use_time: 4000, ftut: 9000 }), { text: '75' });
+    assert.deepEqual(describeThroughput({ output_tokens: 300, use_time: 4000, ftut: 4000 }), { text: '75.0' });
+    assert.deepEqual(describeThroughput({ output_tokens: 300, use_time: 4000, ftut: 9000 }), { text: '75.0' });
 });
 
 test('生成速度超展示上限 → 退全程平均约值（约值上限更宽，5000）', () => {
@@ -141,7 +143,8 @@ test('精确路径拒算但行本身有效 → 退回全程平均约值，并带
     const shareLow = assessThroughput({ output_tokens: 500, use_time: 10000, ftut: 9000 });
     assert.equal(shareLow.available, true);
     assert.equal(shareLow.kind, 'overall');
-    assert.equal(shareLow.text, '50');
+    // 500 ÷ (10000/1000) = 50，落在 [10,100) → 1 位小数。
+    assert.equal(shareLow.text, '50.0');
     assert.equal(shareLow.preciseReason, 'generation_share_low');
 
     // 超 1000 展示上限：全程平均 5000/3 ≈ 1667 在 5000 上限内。

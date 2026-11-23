@@ -122,18 +122,31 @@ test('可采信窗口：徽标给出数字（不占位、不省略）', () => {
     assert.ok(popover, 'an available reading explains the formula');
 });
 
-test('不可采信窗口：中性「TPS —」+ 人话原因，绝不填 0', () => {
-    const { tree, badges } = renderOne(sampleLog({ ...goodTimings, output_tokens: 73 }));
-    assert.equal(badges.length, 1, 'the badge is still there — absence is not the answer');
-    const label = text(badges[0]);
-    assert.ok(label.includes('—'), `badge shows a neutral dash; got ${label}`);
-    assert.equal(/\d/.test(label), false, `never fake a speed; got ${label}`);
-    assert.doesNotMatch(String(badges[0].props.className), /amber-|destructive|red-/, 'a missing reading is not a failure colour');
-    const popover = findElement(tree, (node) => node.type === 'Popover' && text(node).includes('tpsUnavailableHint'));
-    assert.ok(popover, 'the reason is reachable in the popover');
-    const content = text(popover);
-    assert.ok(content.includes('tpsReasonTooShort'), 'reason is translated to a human label');
-    assert.equal(content.includes('output_too_short'), false, 'raw reason code never reaches the user');
+test('不可采信窗口：退全程平均给「≈」+ 精确原因；退不出的仍给中性「TPS —」，绝不填 0', () => {
+    // 73 token 样本过短：精确生成速度算不出，但行本身有效 → 退全程平均 73 ÷ 10s = 7.30（<10 → 2 位小数）。
+    const approx = renderOne(sampleLog({ ...goodTimings, output_tokens: 73 }));
+    assert.equal(approx.badges.length, 1, 'the badge is still there — absence is not the answer');
+    const approxLabel = text(approx.badges[0]);
+    assert.ok(approxLabel.includes('≈'), `approximate reading carries the ≈ marker; got ${approxLabel}`);
+    assert.ok(approxLabel.includes('7.30'), `approximate overall average 73/10s; got ${approxLabel}`);
+    const approxPopover = findElement(approx.tree, (node) => node.type === 'Popover' && text(node).includes('tpsHintOverall'));
+    assert.ok(approxPopover, 'the approximate reading explains its overall-average basis in the popover');
+    const approxContent = text(approxPopover);
+    assert.ok(approxContent.includes('tpsReasonTooShort'), 'the precise reason is translated to a human label');
+    assert.equal(approxContent.includes('output_too_short'), false, 'raw reason code never reaches the user');
+
+    // 全程平均也退不出（use_time=5ms 被兜到 10ms → 50000 > 5000 上限）→ 保留中性「TPS —」。
+    const dash = renderOne(sampleLog({ output_tokens: 500, use_time: 5 }));
+    assert.equal(dash.badges.length, 1, 'the badge is still there — absence is not the answer');
+    const dashLabel = text(dash.badges[0]);
+    assert.ok(dashLabel.includes('—'), `badge shows a neutral dash; got ${dashLabel}`);
+    assert.equal(/\d/.test(dashLabel), false, `never fake a speed; got ${dashLabel}`);
+    assert.doesNotMatch(String(dash.badges[0].props.className), /amber-|destructive|red-/, 'a missing reading is not a failure colour');
+    const dashPopover = findElement(dash.tree, (node) => node.type === 'Popover' && text(node).includes('tpsUnavailableHint'));
+    assert.ok(dashPopover, 'the reason is reachable in the popover');
+    const dashContent = text(dashPopover);
+    assert.ok(dashContent.includes('tpsReasonNoWindow'), 'reason is translated to a human label');
+    assert.equal(dashContent.includes('duration_invalid'), false, 'raw reason code never reaches the user');
 });
 
 // D1 回归：普通用户拿到的是 RelayLogUserSummary（没有 error 字段，只有 error_code/error_status）。
@@ -165,23 +178,40 @@ test('图/视频/音频/向量/审核/重排端点与连通性测试行整块不
 });
 
 test('旧行/未知端点沿用旧口径：仍然给徽标 + 原因，而不是少一个指标', () => {
-    const { badges } = renderOne(sampleLog({ output_tokens: 500, use_time: 5000, ftut: 0, request_endpoint: '', request_path: '' }));
+    // 非流式行（ftut=0）：精确路径拒算但行有效 → 全程平均 500 ÷ 5s = 100（≥100 → 取整）。
+    const { tree, badges } = renderOne(sampleLog({ output_tokens: 500, use_time: 5000, ftut: 0, request_endpoint: '', request_path: '' }));
     assert.equal(badges.length, 1, 'legacy row without an endpoint keeps the badge');
-    assert.ok(text(badges[0]).includes('—'), 'legacy row explains itself instead of disappearing');
+    const label = text(badges[0]);
+    assert.ok(label.includes('≈'), `approximate reading carries the ≈ marker; got ${label}`);
+    assert.ok(label.includes('100'), `legacy row shows the overall average 500/5s; got ${label}`);
+    const popover = findElement(tree, (node) => node.type === 'Popover' && text(node).includes('tpsHintOverall'));
+    assert.ok(text(popover).includes('tpsReasonNoFirstToken'), 'legacy row explains itself instead of disappearing');
+
+    // 全程平均也退不出（use_time=5ms 兼到 10ms → 50000 > 5000）→ 仍是中性「TPS —」。
+    const dash = renderOne(sampleLog({ output_tokens: 500, use_time: 5, request_endpoint: '', request_path: '' }));
+    assert.equal(dash.badges.length, 1, 'a row that cannot even fall back keeps the badge');
+    assert.ok(text(dash.badges[0]).includes('—'), 'a row that cannot even fall back keeps the neutral dash');
 });
 
-test('缓冲/部分窗口不冒充速度：几种真实拒算形态都只出「—」', () => {
+test('缓冲/部分窗口不冒充精确速度：退全程平均给「≈」+ 精确原因，退不出的仍给「—」', () => {
     const cases = {
-        buffered: { output_tokens: 5874, use_time: 24133, ftut: 24132 },
-        partial: { output_tokens: 500, use_time: 10000, ftut: 9000 },
-        blowup: { output_tokens: 5000, use_time: 3000, ftut: 1000 },
-        noTimings: { output_tokens: 500, use_time: 5000, ftut: 0 },
+        buffered: { output_tokens: 5874, use_time: 24133, ftut: 24132, reason: 'tpsReasonWindowShort' },
+        partial: { output_tokens: 500, use_time: 10000, ftut: 9000, reason: 'tpsReasonShareLow' },
+        blowup: { output_tokens: 5000, use_time: 3000, ftut: 1000, reason: 'tpsReasonImplausible' },
+        noTimings: { output_tokens: 500, use_time: 5000, ftut: 0, reason: 'tpsReasonNoFirstToken' },
     };
     for (const [name, timings] of Object.entries(cases)) {
-        const { badges } = renderOne(sampleLog(timings));
+        const { tree, badges } = renderOne(sampleLog(timings));
         assert.equal(badges.length, 1, `${name}: badge present`);
-        assert.equal(/\d/.test(text(badges[0])), false, `${name}: no fabricated speed`);
+        const label = text(badges[0]);
+        assert.ok(label.includes('≈'), `${name}: approximate reading carries the ≈ marker; got ${label}`);
+        const popover = findElement(tree, (node) => node.type === 'Popover' && text(node).includes('tpsHintOverall'));
+        assert.ok(text(popover).includes(timings.reason), `${name}: precise reason translated to a human label`);
     }
+    // 全程平均也退不出（use_time=5ms 兼到 10ms → 50000 > 5000）→ 中性「TPS —」，绝不填 0。
+    const dash = renderOne(sampleLog({ output_tokens: 500, use_time: 5 }));
+    assert.equal(dash.badges.length, 1, 'dash case: badge present');
+    assert.equal(/\d/.test(text(dash.badges[0])), false, 'dash case: no fabricated speed');
 });
 
 test('估算用量在详情里点明分子是估算值', () => {
@@ -220,6 +250,12 @@ test('徽标现在是原生 button：键盘/触摸可展开，且不误开整卡
     });
     assert.deepEqual(calls, { preventDefault: 0, stopPropagation: 1, click: 0 }, 'keydown only stops bubbling to the card; activation stays native');
 
-    assert.ok(String(trigger.props.title).includes('tpsUnavailableHint'), 'hover text also carries the explanation, never only a number');
+    assert.ok(String(trigger.props.title).includes('tpsHintOverall'), 'hover text also carries the explanation, never only a number');
     assert.ok(findElement(tree, (node) => node.type === 'PopoverContent'), 'popover content exists for touch/keyboard users');
+
+    // 全程平均也退不出的行（use_time=5ms 兼到 10ms → 50000 > 5000）hover 仍给不可用说明。
+    const dash = renderOne(sampleLog({ output_tokens: 500, use_time: 5 }));
+    const dashTrigger = findElement(dash.tree, (node) => node.type === 'button' && String(node.props.title ?? '').includes('tps'));
+    assert.ok(dashTrigger, 'a row with no reading at all still gets a trigger button');
+    assert.ok(String(dashTrigger.props.title).includes('tpsUnavailableHint'), 'a row with no reading at all keeps the unavailable hover text');
 });
