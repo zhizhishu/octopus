@@ -1294,7 +1294,7 @@ export function ChannelForm({
                 {isCustomOpenAIChat(formData.type) && (
                     <p className="text-xs text-muted-foreground">
                         Custom 用配置里的完整网址原样发送；选其它接口时走同源标准路径，不会改动渠道配置。
-                        {isImageTestEndpoint(testEndpoint) && !formData.openai_images_path.trim() && '图片测试需先填写完整的图片接口前缀，留空不支持。'}
+                        {isImageTestEndpoint(testEndpoint) && '图片测试使用同源 /v1/images/generations。'}
                     </p>
                 )}
                 <input type="hidden" value={formData.model} required />

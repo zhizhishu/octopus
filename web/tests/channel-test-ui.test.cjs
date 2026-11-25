@@ -196,15 +196,26 @@ test('same-mounted form retains choice on ordinary edits but resets choice/resul
     assert.ok(find(h.tree(), (node) => node.type === 'fieldset' && node.props.disabled).length);
 });
 
-test('custom image prefix field is editable and does not append generations in the frontend', () => {
+test('custom image test uses the same-origin standard path while the saved field is still transmitted', () => {
     const h = formHarness(draft({ type: 6 }));
     h.render();
+    // 默认接口（Custom）下不该出现图片接口说明。
+    assert.doesNotMatch(text(h.tree()), /图片测试使用同源/);
+
+    h.selector().props.onValueChange('openai_images_generations');
+    h.render();
+    // 图片接口走后端同源标准地址：留空也是这个走法，不再要求先填完整前缀。
+    assert.match(text(h.tree()), /图片测试使用同源 \/v1\/images\/generations。/);
+    assert.doesNotMatch(text(h.tree()), /图片测试需先填写完整的图片接口前缀/);
+    assert.doesNotMatch(text(h.tree()), /留空不支持/);
+
+    // 生产字段照旧原样传出去：地址推导在后端，前端不改写、也不追加 generations。
     const field = find(h.tree(), (node) => node.props?.id === 'channel-openai-images-path')[0];
     assert.equal(field.props.placeholder, 'https://upstream.example/v1/images');
     field.props.onChange({ target: { value: ' https://upstream.example/custom/images ' } });
     h.render();
-    h.selector().props.onValueChange('openai_images_generations');
-    h.render(); h.button().props.onClick();
+    h.button().props.onClick();
+    assert.equal(h.writes[0].request.endpoint, 'openai_images_generations');
     assert.equal(h.writes[0].request.channel.openai_images_path, 'https://upstream.example/custom/images');
 });
 

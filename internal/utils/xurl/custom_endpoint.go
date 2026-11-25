@@ -3,6 +3,7 @@ package xurl
 import (
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +39,7 @@ var (
 	errCustomChannelURLInvalid = errors.New("custom channel URL is not a valid absolute URL")
 	errCustomChannelURLNoHTTP  = errors.New("custom channel URL must start with http:// or https://")
 	errCustomChannelURLNoHost  = errors.New("custom channel URL must include a host")
+	errCustomChannelURLBadPort = errors.New("custom channel URL port must be a number between 1 and 65535")
 )
 
 // CustomChannelBaseURL returns the same-origin root of a custom channel URL with
@@ -100,7 +102,13 @@ func CustomChannelModelsFallbackURL(rawURL string) (string, error) {
 }
 
 // parseCustomChannelURL parses raw and requires an absolute http(s) URL with a
-// host. url.Parse's own error text echoes the input, so it is never propagated.
+// non-empty hostname and, when a port is written, a port in 1..65535.
+//
+// net/url only checks that a port is *numeric* (validOptionalPort), so it happily
+// accepts http://host:99999999/… — a value no dialer can honour. The range is
+// checked here with strconv.Atoi, which also catches digit strings too long for an
+// int. url.Parse's and Atoi's own error text echoes the input, so neither is ever
+// propagated: every error below is a fixed message.
 func parseCustomChannelURL(rawURL string) (*url.URL, error) {
 	trimmed := strings.TrimSpace(rawURL)
 	if trimmed == "" {
@@ -115,8 +123,15 @@ func parseCustomChannelURL(rawURL string) (*url.URL, error) {
 	default:
 		return nil, errCustomChannelURLNoHTTP
 	}
-	if parsed.Host == "" {
+	// Host can be ":80" (empty hostname, valid port); that is not an origin.
+	if parsed.Host == "" || parsed.Hostname() == "" {
 		return nil, errCustomChannelURLNoHost
+	}
+	if port := parsed.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			return nil, errCustomChannelURLBadPort
+		}
 	}
 	return parsed, nil
 }

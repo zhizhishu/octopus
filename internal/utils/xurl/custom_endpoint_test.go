@@ -69,6 +69,65 @@ func TestCustomChannelBaseURLPreservesQueryButNotUserinfoOrPath(t *testing.T) {
 	}
 }
 
+// net/url 只校验端口是“数字”（validOptionalPort），不校验范围，所以
+// http://host:99999999/… 会被 url.Parse 接受。这里钉死：显式端口必须落在
+// 1..65535（strconv.Atoi，顺带搞定位数过长的串），主机名必须非空；默认端口与
+// 合法显式端口照常工作，且派生结果保留 authority。
+func TestCustomChannelURLPortAndHostnameValidation(t *testing.T) {
+	valid := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"default port", "http://upstream.example/v1/chat/completions", "http://upstream.example/v1/models"},
+		{"explicit 80", "http://upstream.example:80/v1/chat/completions", "http://upstream.example:80/v1/models"},
+		{"explicit 443", "https://upstream.example:443/v1/chat/completions", "https://upstream.example:443/v1/models"},
+		{"explicit 8080", "https://upstream.example:8080/v1/chat/completions", "https://upstream.example:8080/v1/models"},
+		{"upper bound 65535", "http://upstream.example:65535/v1/chat/completions", "http://upstream.example:65535/v1/models"},
+		{"ipv6 with port", "http://[::1]:8080/v1/chat/completions", "http://[::1]:8080/v1/models"},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := CustomChannelModelsURL(tc.in)
+			if err != nil {
+				t.Fatalf("CustomChannelModelsURL(%q) error: %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Fatalf("CustomChannelModelsURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name string
+		in   string
+	}{
+		{"zero port", "http://upstream.example:0/v1/chat/completions"},
+		{"out of range port", "http://upstream.example:65536/v1/chat/completions"},
+		{"numeric but absurd port", "https://user:secret@upstream.example:99999999/v1/chat/completions"},
+		{"port too long for an int", "http://upstream.example:123456789012345678901234567890/v1/chat/completions"},
+		{"empty hostname with port", "http://:80/v1/chat/completions"},
+		{"empty hostname with userinfo", "http://user:secret@:8080/v1/chat/completions"},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := CustomChannelModelsURL(tc.in)
+			if err == nil {
+				t.Fatalf("CustomChannelModelsURL(%q) = %q, want an error", tc.in, got)
+			}
+			if got != "" {
+				t.Fatalf("returned %q alongside an error", got)
+			}
+			msg := err.Error()
+			for _, forbidden := range []string{"secret", "upstream.example", "99999999", "65536", "8080", "1234567890"} {
+				if strings.Contains(msg, forbidden) {
+					t.Fatalf("error %q echoes the input (%q)", msg, forbidden)
+				}
+			}
+		})
+	}
+}
+
 func TestCustomChannelURLErrorsNeverEchoTheInput(t *testing.T) {
 	for _, in := range []string{
 		"",
@@ -78,6 +137,12 @@ func TestCustomChannelURLErrorsNeverEchoTheInput(t *testing.T) {
 		"ftp://upstream.example/v1/chat/completions",
 		"https:///v1/chat/completions",
 		"https://user:secret@upstream.example:99999999/v1/chat/completions",
+		"https://user:secret@upstream.example:0/v1/chat/completions",
+		"https://user:secret@upstream.example:65536/v1/chat/completions",
+		"https://user:secret@upstream.example:123456789012345678901234567890/v1/chat/completions",
+		"https://upstream.example:70000/v1/chat/completions",
+		"http://:80/v1/chat/completions",
+		"http://user:secret@:8080/v1/chat/completions",
 	} {
 		for name, call := range map[string]func(string) (string, error){
 			"models":   CustomChannelModelsURL,
