@@ -224,7 +224,7 @@ function translate(key, vars) {
 }
 
 function loadQueue({ jobs = [], detail = null } = {}) {
-    const state = { jobs, detail, cancelled: [], enqueued: [] };
+    const state = { jobs, detail, cancelled: [], enqueued: [], deleted: [] };
     const rt = createRuntime();
 
     const mod = load('src/components/modules/model-audit/Queue.tsx', {
@@ -247,6 +247,10 @@ function loadQueue({ jobs = [], detail = null } = {}) {
                 variables: undefined,
                 mutate: (id) => state.cancelled.push(id),
             }),
+            // 删除三件套：记录页可删已停下的记录，这里只记调用、不真删。
+            useDeleteAuditJob: () => ({ isPending: false, mutate: (id) => state.deleted.push(['one', id]) }),
+            useDeleteAuditJobs: () => ({ isPending: false, mutate: (ids) => state.deleted.push(['batch', ids]) }),
+            useClearFinishedAuditJobs: () => ({ isPending: false, mutate: () => state.deleted.push(['clear']) }),
             useEnqueueAudit: () => ({
                 isPending: false,
                 mutate: (vars) => state.enqueued.push(vars),
@@ -364,4 +368,54 @@ test('a pending result never reads as finished', () => {
     assert.equal(body.includes('queue.resultDone'), false, 'a retrying row must never read as done');
     assert.equal(body.includes('queue.resultFailed'), false, 'a retrying row is not labelled failed');
     assert.ok(body.includes('"attempt"'), 'the retry label carries the attempt count');
+});
+
+// ---------------------------------------------------------------------------
+// v6：记录可以清理（单条删 / 勾选批量删 / 清空已完成），都要二次确认，在跑的不碰
+// ---------------------------------------------------------------------------
+
+const deleteBtn = (tree, id) => findElement(tree, (n) => n.type === 'button' && n.props?.['aria-label'] === `删除 测试渠道 #${id}`);
+
+test('single delete asks first and then targets the job id', () => {
+    const q = loadQueue({ jobs: [makeJob({ id: 7, status: 'done' })] });
+    let tree = q.render();
+    deleteBtn(tree, 7).props.onClick();
+    assert.equal(q.state.deleted.length, 0, 'the first click only asks');
+    tree = q.render();
+    assert.ok(text(tree).includes('删掉这条记录？'), 'a confirmation is shown');
+    findElement(tree, (n) => n.props?.onClick && text(n).trim() === '删除').props.onClick();
+    assert.deepEqual(q.state.deleted, [['one', 7]]);
+});
+
+test('running jobs cannot be ticked or deleted, and hideActive leaves them out', () => {
+    const q = loadQueue({ jobs: [makeJob({ id: 8, status: 'running' }), makeJob({ id: 9, status: 'done' })] });
+    const tree = q.render();
+    assert.equal(deleteBtn(tree, 8), undefined, 'no delete button on a running job');
+    const box = findElement(tree, (n) => n.type === 'input' && n.props?.['aria-label'] === '选中 测试渠道 #8');
+    assert.equal(box.props.disabled, true, 'a running job cannot be ticked');
+});
+
+test('batch delete sends only the ticked finished jobs after confirming', () => {
+    const q = loadQueue({ jobs: [makeJob({ id: 1, status: 'done' }), makeJob({ id: 2, status: 'canceled' }), makeJob({ id: 3, status: 'running' })] });
+    let tree = q.render();
+    findElement(tree, (n) => n.type === 'input' && n.props?.['aria-label'] === '全选这一页能删的记录').props.onChange({ target: { checked: true } });
+    tree = q.render();
+    const batch = findElement(tree, (n) => n.props?.onClick && /删除选中的\s*2\s*条/.test(text(n)));
+    assert.ok(batch, 'select-all ticks only the two finished jobs');
+    batch.props.onClick();
+    assert.equal(q.state.deleted.length, 0, 'asks before deleting');
+    tree = q.render();
+    findElement(tree, (n) => n.props?.onClick && text(n).trim() === '确定删除').props.onClick();
+    assert.deepEqual(q.state.deleted, [['batch', [1, 2]]]);
+});
+
+test('clear finished asks first and says running ones are kept', () => {
+    const q = loadQueue({ jobs: [makeJob({ id: 1, status: 'done' })] });
+    let tree = q.render();
+    findElement(tree, (n) => n.props?.onClick && text(n).includes('清空已完成记录')).props.onClick();
+    tree = q.render();
+    assert.ok(text(tree).includes('进行中、排队中的不受影响'));
+    assert.equal(q.state.deleted.length, 0);
+    findElement(tree, (n) => n.props?.onClick && text(n).trim() === '确定清空').props.onClick();
+    assert.deepEqual(q.state.deleted, [['clear']]);
 });

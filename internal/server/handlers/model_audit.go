@@ -260,17 +260,9 @@ func getModelAuditPlan(c *gin.Context) {
 	})
 }
 
+// probeProtocolName 与任务页进度用的是同一张表（op.AuditProbeProtocol），两边不各写一份。
 func probeProtocolName(t outbound.OutboundType) string {
-	switch t {
-	case outbound.OutboundTypeAnthropic:
-		return "anthropic-messages"
-	case outbound.OutboundTypeOpenAIResponse:
-		return "openai-responses"
-	case outbound.OutboundTypeGemini:
-		return "gemini-generate-content"
-	default:
-		return "openai-chat"
-	}
+	return op.AuditProbeProtocol(t)
 }
 
 func getChannelLatestAudits(c *gin.Context) {

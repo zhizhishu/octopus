@@ -68,7 +68,7 @@ function mount(jobs, detail = { results: [] }) {
         react: runtime.react,
         'next-intl': { useTranslations: () => translate },
         'lucide-react': widgets(
-            'CheckCircle2 ChevronDown ChevronRight CircleDashed HelpCircle Hash Loader2 Square XCircle'
+            'CheckCircle2 ChevronDown ChevronRight CircleDashed HelpCircle Hash Loader2 Square Trash2 XCircle'
         ),
         '@/components/ui/button': widgets('Button'),
         '@/lib/utils': { cn: (...args) => args.filter(Boolean).join(' ') },
@@ -81,7 +81,11 @@ function mount(jobs, detail = { results: [] }) {
             useAuditJobs: () => ({ data: jobs, isLoading: false }),
             useAuditJobDetail: () => ({ data: { job: jobs[0], ...detail }, isLoading: false }),
             useCancelAuditJob: () => ({ mutate: () => {}, isPending: false, variables: undefined }),
+            useDeleteAuditJob: () => ({ mutate: () => {}, isPending: false }),
+            useDeleteAuditJobs: () => ({ mutate: () => {}, isPending: false }),
+            useClearFinishedAuditJobs: () => ({ mutate: () => {}, isPending: false }),
         },
+        '@/components/common/Toast': { toast: { success() {}, error() {}, warning() {}, info() {} } },
     };
     const { ModelAuditQueue } = load('src/components/modules/model-audit/Queue.tsx', mocks);
     const props = { onOpenReport: (result) => opened.push(result.id) };
@@ -93,11 +97,12 @@ function openRow(tree, channelName) {
     findElement(tree, (node) => node.type === 'button' && text(node).includes(channelName)).props.onClick();
 }
 
-test('a finished comparison is neither 可疑 nor 没测成', () => {
+test('a finished comparison is not counted as 有问题', () => {
     const { render } = mount([hlwyJob(), probeJob()]);
     const body = squash(render());
-    assert.match(body, /可疑 0/, 'a comparison makes no verdict, so it cannot be suspect');
-    assert.match(body, /没测成 1/, 'only the genuinely failed multi-probe run counts');
+    // 「有问题」= 可疑或没测成。对照不出风险档位，跑完的对照两样都不是；
+    // 只有那条真没测成的多探针任务算进来。
+    assert.match(body, /有问题 1/, 'only the genuinely failed multi-probe run counts');
 });
 
 test('a canceled or timed-out comparison is not counted as failed either', () => {
@@ -107,7 +112,7 @@ test('a canceled or timed-out comparison is not counted as failed either', () =>
         hlwyJob({ id: 3, hlwy_summary: { execution: 'failed', sufficiency: 'insufficient', comparability: 'unknown' } }),
     ]);
     const body = squash(render());
-    assert.match(body, /没测成 1/, 'only execution=failed is 没测成');
+    assert.match(body, /有问题 1/, 'only execution=failed counts as a problem');
 });
 
 test('the row is labelled as a comparison, with the sample ledger instead of a verdict', () => {

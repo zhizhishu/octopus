@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '../client';
 import { logger } from '@/lib/logger';
 
@@ -341,6 +341,23 @@ export type AuditJob = {
     kind?: AuditJobKind | string;
     /** hlwy 对照任务的采样摘要；其它种类为空。 */
     hlwy_summary?: HlwyJobSummary;
+    /** 多探针任务按真实计划算的总请求数（跳过的不算）。 */
+    planned_requests?: number;
+    /** 大约已经发出的请求数：跑完的按计划记，正在跑的按实际发出记。 */
+    sent_requests?: number;
+    /** 正在跑的那个模型每一项的进度（后端只在内存里记，重启就没了）。 */
+    live?: AuditLiveProgress;
+};
+
+export type AuditLiveProbeStatus = 'waiting' | 'running' | 'done' | 'failed';
+
+export type AuditLiveProgress = {
+    result_id: number;
+    model: string;
+    sent: number;
+    planned: number;
+    probes: { id: string; status: AuditLiveProbeStatus; sent: number; planned: number }[];
+    started_at: string;
 };
 
 export type AuditResult = {
@@ -486,6 +503,180 @@ export function useAuditPlan(channelId: number, model: string, enabled = true) {
             ),
         enabled: enabled && channelId > 0,
         staleTime: 30_000,
+    });
+}
+
+/**
+ * 一次读几个模型的计划（每个模型一份，零上游请求）。多选模型时「约 N 次」要按
+ * 每个模型各自的计划加起来：Claude 才有签名那 2 次，不能拿第一个模型乘以个数。
+ */
+export function useAuditPlans(channelId: number, models: string[], enabled = true) {
+    return useQueries({
+        queries: models.map((model) => ({
+            queryKey: ['model-audit', 'plan', channelId, model],
+            queryFn: async () =>
+                apiClient.get<AuditPlanResponse>(
+                    `/api/v1/model-audit/plan?channel_id=${channelId}&model=${encodeURIComponent(model)}`,
+                ),
+            enabled: enabled && channelId > 0 && model !== '',
+            staleTime: 30_000,
+        })),
+    });
+}
+
+/** 今日检测额度（定时体检和鹈鹕测试从这里扣）。 */
+export type AuditBudget = { used: number; limit: number; remaining: number };
+
+export function useAuditBudget(enabled = true) {
+    return useQuery({
+        queryKey: ['model-audit', 'budget'],
+        queryFn: async () => apiClient.get<AuditBudget>('/api/v1/model-audit/budget'),
+        enabled,
+        staleTime: 10_000,
+        refetchInterval: 30_000,
+        retry: false,
+    });
+}
+
+/* ------------------------------------------------------------------ *
+ * 检测记录的手动清理：单条删、勾选批量删、清空已完成。
+ * 还在排队/在跑的任务后端一律不删，并在 skipped_busy 里告诉我们是哪几条。
+ * ------------------------------------------------------------------ */
+
+export type AuditDeleteResult = { deleted: number; skipped_busy: number[] };
+
+function invalidateAuditRecords(queryClient: ReturnType<typeof useQueryClient>) {
+    void queryClient.invalidateQueries({ queryKey: ['model-audit', 'jobs'] });
+}
+
+export function useDeleteAuditJob() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (jobId: number) => apiClient.delete<{ deleted: number }>(`/api/v1/model-audit/jobs/${jobId}`),
+        onSuccess: () => invalidateAuditRecords(queryClient),
+    });
+}
+
+export function useDeleteAuditJobs() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (ids: number[]) => apiClient.post<AuditDeleteResult>('/api/v1/model-audit/jobs/delete', { ids }),
+        onSuccess: () => invalidateAuditRecords(queryClient),
+    });
+}
+
+export function useClearFinishedAuditJobs() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async () => apiClient.post<AuditDeleteResult>('/api/v1/model-audit/jobs/clear-finished', {}),
+        onSuccess: () => invalidateAuditRecords(queryClient),
+    });
+}
+
+/* ------------------------------------------------------------------ *
+ * 鹈鹕测试：同一道创作题发给几个模型，各交一份 SVG/HTML 并排看。
+ * 每个模型 1 次请求，计入每日检测额度；7 天后自动删，收藏的保留。
+ * ------------------------------------------------------------------ */
+
+export type CreativeKind = 'pelican' | 'html' | 'custom';
+export type CreativeStatus = 'pending' | 'running' | 'done' | 'invalid' | 'failed' | 'timeout';
+
+export type CreativeItem = {
+    id: number;
+    round_id: string;
+    channel_id: number;
+    channel_name: string;
+    model: string;
+    kind: CreativeKind | string;
+    prompt: string;
+    format: 'svg' | 'html' | '';
+    content: string;
+    raw: string;
+    status: CreativeStatus;
+    error: string;
+    duration_ms: number;
+    input_tokens: number;
+    output_tokens: number;
+    pinned: boolean;
+    created_at: string;
+    finished_at?: string;
+};
+
+export type CreativeRound = {
+    round_id: string;
+    kind: CreativeKind | string;
+    prompt: string;
+    created_at: string;
+    total: number;
+    active: number;
+    pinned: number;
+};
+
+export type CreativeTarget = { channel_id: number; model: string };
+
+export function useCreativeRounds(limit = 30) {
+    return useQuery({
+        queryKey: ['model-audit', 'creative', 'rounds', limit],
+        queryFn: async () => apiClient.get<CreativeRound[]>(`/api/v1/model-audit/creative/rounds?limit=${limit}`),
+        staleTime: 5_000,
+        retry: false,
+        refetchInterval: (query) => {
+            const data = query.state.data as CreativeRound[] | undefined;
+            return data?.some((round) => round.active > 0) ? 4_000 : false;
+        },
+    });
+}
+
+export function useCreativeRound(roundId: string) {
+    return useQuery({
+        queryKey: ['model-audit', 'creative', 'round', roundId],
+        queryFn: async () => apiClient.get<CreativeItem[]>(`/api/v1/model-audit/creative/rounds/${encodeURIComponent(roundId)}`),
+        enabled: roundId !== '',
+        staleTime: 2_000,
+        retry: false,
+        refetchInterval: (query) => {
+            const data = query.state.data as CreativeItem[] | undefined;
+            return data?.some((item) => item.status === 'pending' || item.status === 'running') ? 3_000 : false;
+        },
+    });
+}
+
+function invalidateCreative(queryClient: ReturnType<typeof useQueryClient>) {
+    void queryClient.invalidateQueries({ queryKey: ['model-audit', 'creative'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-audit', 'budget'] });
+}
+
+export function useCreateCreativeRound() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (payload: { kind: CreativeKind; prompt?: string; targets: CreativeTarget[] }) =>
+            apiClient.post<{ round_id: string; ids: number[] }>('/api/v1/model-audit/creative/rounds', payload),
+        onSuccess: () => invalidateCreative(queryClient),
+    });
+}
+
+export function usePinCreative() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (input: { id: number; pinned: boolean }) =>
+            apiClient.post<{ id: number; pinned: boolean }>(`/api/v1/model-audit/creative/items/${input.id}/pin`, { pinned: input.pinned }),
+        onSuccess: () => invalidateCreative(queryClient),
+    });
+}
+
+export function useDeleteCreative() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (id: number) => apiClient.delete<{ deleted: number }>(`/api/v1/model-audit/creative/items/${id}`),
+        onSuccess: () => invalidateCreative(queryClient),
+    });
+}
+
+export function useClearUnpinnedCreatives() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async () => apiClient.post<{ deleted: number }>('/api/v1/model-audit/creative/clear-unpinned', {}),
+        onSuccess: () => invalidateCreative(queryClient),
     });
 }
 

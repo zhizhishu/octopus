@@ -536,6 +536,70 @@ type ModelAuditJobSummary struct {
 	// HlwySummary 仅 hlwy 对照任务且报告可解析时有值：采样账目与可比性，
 	// 全部来自那份唯一的报告，列表不重算。
 	HlwySummary *HlwyJobSummary `json:"hlwy_summary,omitempty"`
+	// PlannedRequests 多探针任务按真实计划（behavior.PlanFor）算出的总请求数，
+	// 跳过的模型不算。hlwy 对照看 HlwySummary 的采样账目，这里为 0。
+	PlannedRequests int `json:"planned_requests,omitempty"`
+	// SentRequests 已经发出的请求数（约数）：跑完/失败的模型按计划数记，正在跑的
+	// 那个按实际发出数记。只给任务页的进度条用，不是账单。
+	SentRequests int `json:"sent_requests,omitempty"`
+	// Live 正在跑的那个模型每一项的进度（只在内存里，见 model_audit_live.go）。
+	Live *AuditLiveProgress `json:"live,omitempty"`
+}
+
+// auditProbeIDsOf 把任务行上逗号分隔的探针串还原成 ID 列表；空/全无效用默认集合。
+// 与 worker 的 parseAuditProbesOrEmpty 同一口径。
+func auditProbeIDsOf(csv string) []behavior.ProbeID {
+	out := make([]behavior.ProbeID, 0, 8)
+	for _, p := range strings.Split(csv, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if id := behavior.ProbeID(p); behavior.IsKnownProbe(id) {
+			out = append(out, id)
+		}
+	}
+	if len(out) == 0 {
+		return behavior.DefaultProbes()
+	}
+	return out
+}
+
+// auditJobRequestLedger 给任务页算「计划多少次、大约已发多少次」。
+func auditJobRequestLedger(ctx context.Context, job model.ModelAuditJob, results []model.ModelAuditResult, live *AuditLiveProgress) (planned, sent int) {
+	protocol := "openai-chat"
+	if ch, err := ChannelGet(job.ChannelID, ctx); err == nil && ch != nil {
+		protocol = AuditProbeProtocol(ch.Type)
+	}
+	ids := auditProbeIDsOf(job.Probes)
+	for _, r := range results {
+		name := r.UpstreamModel
+		if name == "" {
+			name = r.Model
+		}
+		n := AuditPlannedRequestsFor(protocol, name, ids)
+		switch r.Status {
+		case model.AuditResultSkipped:
+			if r.Attempt == 0 {
+				continue // 没开始就被取消：一次都没发，也不该算进计划
+			}
+			planned += n
+			sent += n
+		case model.AuditResultDone, model.AuditResultFailed:
+			planned += n
+			sent += n
+		case model.AuditResultRunning:
+			if live != nil && live.ResultID == r.ID {
+				planned += live.Planned
+				sent += live.Sent
+				continue
+			}
+			planned += n
+		default:
+			planned += n
+		}
+	}
+	return planned, sent
 }
 
 // ModelAuditJobListSummaries 返回带汇总的任务列表。
@@ -583,6 +647,12 @@ func ModelAuditJobListSummaries(ctx context.Context, limit int) ([]ModelAuditJob
 		}
 		sum.VerdictCounts = counts
 		sum.ReportAt = latest
+		if !isHlwy {
+			if job.Status == model.AuditJobRunning || job.Status == model.AuditJobQueued || job.Status == model.AuditJobCanceled {
+				sum.Live = AuditLiveSnapshot(job.ID)
+			}
+			sum.PlannedRequests, sum.SentRequests = auditJobRequestLedger(ctx, job, results, sum.Live)
+		}
 		if len(results) == 1 {
 			r := results[0]
 			sum.SingleModel = r.Model

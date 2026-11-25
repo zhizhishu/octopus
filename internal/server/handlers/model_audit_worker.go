@@ -281,6 +281,12 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	defer cancel()
 	runCtx = withAuditFingerprintPromptMode(runCtx)
 
+	// 任务页的小方块：只读地记下每一项走到哪、发了几次（见 op/model_audit_live.go）。
+	// 观察者不改请求也不改结论；跑完立刻丢掉。
+	live := op.AuditLiveStart(res.JobID, res.ID, upstreamModel, probeProtocolName(channel.Type), ids)
+	defer op.AuditLiveEnd(live)
+	runCtx = behavior.WithProgress(runCtx, live)
+
 	results := behavior.Run(runCtx, ids, sender, upstreamModel)
 
 	// 关键判断：**一个探针都没成功，就不算"检测完成"**。

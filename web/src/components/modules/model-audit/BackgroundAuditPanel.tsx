@@ -91,7 +91,7 @@ export function BackgroundAuditPanel() {
                 <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground">后台检测</p>
 
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    被动检测（不花钱）的开关在下面「日志查账」卡里。
+                    被动检测（不花钱）的开关在「日常监测」卡里。
                 </p>
 
                 {/* 少量 token 抽检：真的花钱 */}

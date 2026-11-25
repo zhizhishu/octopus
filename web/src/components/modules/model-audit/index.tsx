@@ -7,7 +7,6 @@ import {
     CircleHelp,
     Check,
     Binary,
-    ChevronDown,
     ChevronRight,
     Database,
     Dices,
@@ -42,7 +41,8 @@ import {
     type AuditViewReport,
     type ModelAuditResponse,
     useEnqueueAudit,
-    useAuditPlan,
+    useAuditPlans,
+    useAuditBudget,
     useAuditJobs,
     type AuditJob,
     useEnqueueHlwyCompare,
@@ -67,11 +67,23 @@ import { cn } from '@/lib/utils';
 import { highlightRows, provenanceView, TONE_DOT_CLASS } from '@/lib/audit-highlights';
 import { getSelectedChannelModels } from '@/components/modules/channel/channel-utils';
 import { sanitizeChannelTestError } from '@/lib/channel-test';
-import { ModelAuditQueue } from './Queue';
 import { HlwyModePanel } from './HlwyModePanel';
+import { MultiPicker } from './MultiPicker';
+import { TasksView } from './TasksView';
+import { PelicanTest } from './PelicanTest';
+import {
+    IDENTITY_GROUP,
+    autoBaselineFor,
+    groupModelsByProbes,
+    isActiveJob,
+    requestsFor,
+    totalRequests,
+    type AuditPreset,
+} from './v6';
 import { BaselineComparisonCard } from './BaselineComparisonCard';
 import {
     downloadJson,
+    hlwyBaselineOptionLabel,
     hlwyComparabilityLabel,
     hlwyExecutionLabel,
     hlwyExportFull,
@@ -85,10 +97,6 @@ import { settingBool } from '@/lib/audit-budget';
 import { Switch } from '@/components/ui/switch';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 
-// 'hlwy' 不是「更多探针」的一种：它换的是问题本身（同一个数字题问 100/200 次、
-// 只看数字分布）。放在同一个 PlanId 里是为了「只有一个提交按钮」——切换模式就
-// 切换按钮的意义，而不是页面上多出一个没人管的旧按钮。
-type PlanId = 'quick' | 'standard' | 'hlwy';
 type RowTone = 'pass' | 'warn' | 'info' | 'fail' | 'skip';
 type PageState = 'idle' | 'running' | 'report' | 'error' | 'cancelling' | 'cancelled';
 
@@ -192,11 +200,6 @@ function isClaudeModelFamily(model: string): boolean {
 function isApplicable(channel: Channel | undefined, id: AuditProbeId, model = ''): boolean {
     if (id !== 'signature') return true;
     return channel?.type === ChannelType.Anthropic && isClaudeModelFamily(model);
-}
-
-function planIds(plan: PlanId, channel: Channel | undefined, model = ''): AuditProbeId[] {
-    const base = plan === 'quick' ? QUICK_IDS : [...AUDIT_STANDARD_PROBE_IDS];
-    return base.filter((id) => isApplicable(channel, id, model));
 }
 
 /** 主动检测来源 → 人话（三语键）；未知来源如实标注。 */
@@ -507,7 +510,7 @@ function PassiveProbeCard({ onOpenFindings }: { onOpenFindings?: () => void } = 
         setSetting.mutate(
             { key: SettingKey.LogPassiveProbeEnabled, value: next ? 'true' : 'false' },
             {
-                onSuccess: () => toast.success(next ? '日志查账已开启' : '日志查账已关闭'),
+                onSuccess: () => toast.success(next ? '日常监测已开启' : '日常监测已关闭'),
                 onError: (e) =>
                     toast.error('保存失败', {
                         description: e instanceof Error ? e.message : String(e),
@@ -516,12 +519,12 @@ function PassiveProbeCard({ onOpenFindings }: { onOpenFindings?: () => void } = 
         );
 
     return (
-        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+        <div className="rounded-3xl border border-border bg-card p-5">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                    <p className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-                        日志查账
-                        <span className="rounded-full bg-primary/12 px-1.5 py-px text-[10px] font-medium text-primary">免费</span>
+                    <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                        日常监测
+                        <span className="rounded-full bg-primary/12 px-1.5 py-px text-[10px] font-medium text-primary">免费 · {enabled ? '开着' : '关着'}</span>
                         <span
                             className="cursor-help text-muted-foreground/80"
                             title={disclaimer}
@@ -531,7 +534,7 @@ function PassiveProbeCard({ onOpenFindings }: { onOpenFindings?: () => void } = 
                         </span>
                     </p>
                     <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                        从日常调用里找对不上账的地方，不额外发请求。
+                        不额外花请求，只看平时转发留下的线索（用量对不上、上游自报的模型名）。
                     </p>
                 </div>
                 <Switch checked={enabled} onCheckedChange={toggle} disabled={setSetting.isPending} />
@@ -597,7 +600,7 @@ function recentJobLabel(job: AuditJob): { title: string; sub: string; status: st
     };
 }
 
-function RecentAudits({ onOpenAll }: { onOpenAll: () => void }) {
+function RecentAudits({ onOpenAll, onOpenJob }: { onOpenAll: () => void; onOpenJob?: (jobId: number) => void }) {
     const { data: jobs } = useAuditJobs(8);
     const items = (jobs ?? []).slice(0, 4);
     if (items.length === 0) return null;
@@ -651,6 +654,16 @@ function RecentAudits({ onOpenAll }: { onOpenAll: () => void }) {
                             )}>
                                 {row.status}
                             </span>
+                            {onOpenJob && row.tone !== 'run' && (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenJob(job.id)}
+                                    className="flex shrink-0 items-center text-xs font-medium text-primary hover:underline"
+                                >
+                                    报告
+                                    <ChevronRight className="size-3" />
+                                </button>
+                            )}
                         </li>
                     );
                 })}
@@ -662,21 +675,16 @@ function RecentAudits({ onOpenAll }: { onOpenAll: () => void }) {
 export function ModelAudit() {
     const t = useTranslations('modelAudit');
     const { data: channelsData, isLoading } = useChannelList();
-    const { data: logAnomalies } = useLogAnomalies();
-    // 后台队列入口：提交后立刻返回 job_id，进度与结果由队列页轮询呈现。
-    // 这是「立即检测」现在的真实实现——不守着页面等。
+    // 后台队列入口：提交后立刻返回 job_id，进度与结果在「任务」里看。
     const enqueueAudit = useEnqueueAudit();
+    // 顶部三栏的「任务」徽标：有几个在跑/在排队。
+    const { data: allJobs } = useAuditJobs(50);
+    const activeJobCount = (allJobs ?? []).filter(isActiveJob).length;
+    const { data: budget } = useAuditBudget();
     // 渠道筛选：默认全部。未启用渠道要能被选到（先测后启用是常见流程），
     // 但默认不抢启用渠道的位置。
     const [channelFilter, setChannelFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
-    // 渠道来源：**启用与否都收**，但启用的一律排在前面。
-    //
-    // 原实现是 .filter((item) => item.enabled)，把未启用渠道整个藏掉。问题是
-    // "未启用"只是不参与转发，不代表不能测——用户常常是先测通了再启用，藏起来
-    // 等于逼人先去启用（那就真会被转发流量打到）。所以这里放开，靠排序和标签
-    // 表达轻重：启用在前，未启用垫底并明确标注。
-    //
-    // 排序稳定：同组内保持接口原序，避免每次渲染顺序抖动。
+    // 渠道来源：**启用与否都收**，但启用的一律排在前面（未启用只是不参与转发，不代表不能测）。
     const channels = useMemo(() => {
         const all = (channelsData ?? []).map((item) => item.raw);
         const enabled = all.filter((item) => item.enabled);
@@ -690,53 +698,55 @@ export function ModelAudit() {
         return channels;
     }, [channels, enabledChannels, channelFilter]);
 
-    // 视图模式：single = 守着页面跑一次；queue = 批量入队后台跑、随时回看。
-    // 后者是给"一次点一堆模型、不想守着"的场景准备的，检测结论独立落库。
-    const [mode, setMode] = useState<'single' | 'queue'>('single');
+    // 顶部三栏：检测（左参数右结果）/ 任务（进度 + 记录）/ 鹈鹕测试。
+    const [tab, setTab] = useState<'test' | 'tasks' | 'pelican'>('test');
     const [channelId, setChannelId] = useState<number>(0);
-    const [modelName, setModelName] = useState('');
-    const [plan, setPlan] = useState<PlanId>('standard');
+    // 模型可以多选；空数组 = 默认用这个渠道的第一个模型。
+    const [modelNames, setModelNames] = useState<string[]>([]);
+    const [preset, setPreset] = useState<AuditPreset>('full');
+    // 自定义里勾的检查项（连通会自动带上，不用勾）。
     const [selected, setSelected] = useState<AuditProbeId[]>([...AUDIT_STANDARD_PROBE_IDS]);
-    const [customOpen, setCustomOpen] = useState(false);
     const [pageState, setPageState] = useState<PageState>('idle');
     const [report, setReport] = useState<ModelAuditResponse | null>(null);
-    const [errorText, setErrorText] = useState('');
+    const [errorText] = useState('');
     const [openRow, setOpenRow] = useState<DisplayRow | null>(null);
-    // hlwy 基准对照的选择状态。
-    //
-    // 特意不放进 `selected`（探针列表）：探针是「查几项」，这里是「和谁比」。
-    // 混在一起，切回探针模式时就会莫名地带上一轮对照的残留。
+    // 数字习惯（hlwy 对照）：只在「自定义」里能勾。它换的是问题本身（同一题问 100/200 次），
+    // 所以和探针分开记：提交时是另一种任务，一个模型一单。
+    const [hlwyChecked, setHlwyChecked] = useState(false);
+    // 手动选的对比基准；空 = 自动（同模型优先自录，没有用 hlwy 内置）。
     const [hlwyBaselineId, setHlwyBaselineId] = useState('');
     const [hlwySamples, setHlwySamples] = useState<HlwySampleCount>(100);
-    // 「再跑一轮」填回去的那个渠道 id。它只是「上次用的是谁」的记录，不是当前选择；
-    // 渠道被删掉以后，靠它把「现在选的已经不是那个渠道」说出口。
+    const [hlwyPanelOpen, setHlwyPanelOpen] = useState(false);
+    // 「再跑一轮」填回去的那个渠道 id：渠道被删以后，靠它把「现在选的已经不是那个渠道」说出口。
     const [rerunChannelId, setRerunChannelId] = useState<number | null>(null);
     // 换基准重算的结果：只在内存里预览，不覆盖存下来的原报告。
     const [recompare, setRecompare] = useState<{ baselineId: string; report: Record<string, unknown> } | null>(null);
+    // 放到后台跑：检测本来就在服务器队列里跑，关页面不会停。不勾 = 提交后直接跳到「任务」看着它跑。
+    const [background, setBackground] = useState(true);
+    // 从「最近检测」点「报告」：跳到任务页并展开那一条。
+    const [focusJobId, setFocusJobId] = useState<number | null>(null);
+    const [submitting, setSubmitting] = useState(false);
     // 当前正在看的结果 id。用来丢掉「换了报告以后才回来」的重算响应。
     const reportResultIdRef = useRef<number | null>(null);
-    // 前端不再持有"队列"状态。
-    //
-    // 这里原本有一整套内存队列（queue / reports / runningModel / inFlight /
-    // controllerRef / queueAlive），在浏览器里用 for 循环逐个发同步请求。它有三个
-    // 治不好的毛病：页面一关就全丢、进度是前端自己编的不落库、没法回看历史。
-    // 而后端队列（model_audit_jobs / model_audit_results）本来就落库、能回看、
-    // 能取消、还有失败重试。所以整套删掉，只留"提交"这一个动作。
 
     const channel = channels.find((item) => item.id === channelId) ?? channels[0];
     const models = useMemo(
         () => (channel ? getSelectedChannelModels(channel) : []),
         [channel],
     );
-    const activeModel = models.includes(modelName) ? modelName : (models[0] ?? '');
+    // 真正要测的模型：选了的里面还在这个渠道上的；一个没选就测第一个。
+    const targetModels = useMemo(() => {
+        const picked = modelNames.filter((name) => models.includes(name));
+        if (picked.length > 0) return picked;
+        return models[0] ? [models[0]] : [];
+    }, [modelNames, models]);
+    const activeModel = targetModels[0] ?? '';
 
     useEffect(() => {
         if (!channel) return;
         if (channelId !== channel.id) setChannelId(channel.id);
-        const nextModel = models[0] ?? '';
-        if (!models.includes(modelName) && modelName !== nextModel) setModelName(nextModel);
-    }, [channel, channelId, modelName, models]);
-    // 从渠道页芯片点过来：自动打开对应任务。
+    }, [channel, channelId]);
+    // 从渠道页芯片点过来：自动打开任务页。
     useEffect(() => {
         try {
             const store = typeof window !== 'undefined' ? window.sessionStorage : null;
@@ -744,55 +754,58 @@ export function ModelAudit() {
             if (!job) return;
             store?.removeItem('octopus.audit.openJob');
             store?.removeItem('octopus.audit.openResult');
-            setMode('queue');
+            const id = Number(job);
+            if (Number.isInteger(id) && id > 0) setFocusJobId(id);
+            setTab('tasks');
             setPageState('idle');
         } catch {
             // 测试环境可能没有 sessionStorage。
         }
     }, []);
 
-    // 卸载时不再需要 abort：请求已经交给后端队列，关页面不会让后台停下
-    // （这正是"点了就走"的意义）。要停就去队列页取消任务。
-    const applicableSelected = selected.filter((id) => isApplicable(channel, id, activeModel));
-    const runCount = plan === 'quick' ? planIds('quick', channel, activeModel).length : applicableSelected.length;
-    const { data: auditPlan } = useAuditPlan(channel?.id ?? 0, activeModel, !!channel && !!activeModel);
-    const quickReq = auditPlan?.quick?.requests ?? planIds('quick', channel, activeModel).length;
-    const fullReq = auditPlan?.full?.requests ?? planIds('standard', channel, activeModel).length;
-    const quickCount = (auditPlan?.quick?.ids ?? QUICK_IDS).filter((id) => isApplicable(channel, id, activeModel)).length;
-    const fullCount = (auditPlan?.full?.ids ?? AUDIT_STANDARD_PROBE_IDS).filter((id) => isApplicable(channel, id, activeModel)).length;
-    const customReq = useMemo(() => {
-        if (!auditPlan?.probes) {
-            return applicableSelected.length;
-        }
-        const byId = new Map(auditPlan.probes.map((p) => [p.id, p]));
-        return selected.reduce((sum, id) => {
-            if (!isApplicable(channel, id, activeModel)) return sum;
-            const row = byId.get(id);
-            return sum + (row?.applicable === false ? 0 : (row?.requests ?? 1));
-        }, 0);
-    }, [auditPlan, selected, channel, activeModel]);
+    // 每个模型各自的计划（零请求）：多选时「约 N 次」按各自的计划加起来。
+    const planQueries = useAuditPlans(channel?.id ?? 0, targetModels, !!channel);
+    const planOf = (name: string) => planQueries[targetModels.indexOf(name)]?.data;
 
-    /* ---------------- hlwy 基准对照 ---------------- */
-    // 同一个页面上的第二种检测：不发探针，只问同一题 N 次看数字分布。
-    const hlwyMode = plan === 'hlwy';
+    /** 某一档对某个模型要跑的检查项（不适用的已经去掉）。 */
+    const idsFor = (which: AuditPreset, name: string): AuditProbeId[] => {
+        if (which === 'quick') return QUICK_IDS.filter((id) => isApplicable(channel, id, name));
+        if (which === 'full') return AUDIT_STANDARD_PROBE_IDS.filter((id) => isApplicable(channel, id, name));
+        const picked = AUDIT_PROBE_IDS.filter((id) => selected.includes(id) && id !== 'liveness' && isApplicable(channel, id, name));
+        // 连通每次都带上：先确认通了，后面「没跑成」才说得清是谁的问题。
+        return picked.length > 0 ? ['liveness', ...picked] : [];
+    };
+    const quickReq = totalRequests(targetModels, planOf, (name) => idsFor('quick', name));
+    const fullReq = totalRequests(targetModels, planOf, (name) => idsFor('full', name));
+    const probeReq = totalRequests(targetModels, planOf, (name) => idsFor('custom', name));
+    const quickCount = idsFor('quick', activeModel).length;
+    const fullCount = idsFor('full', activeModel).length;
+    const isClaudeTarget = targetModels.some((name) => isApplicable(channel, 'signature', name));
+    /** 自定义列表里每一行的请求数（按第一个模型的计划）。 */
+    const rowReq = (ids: readonly AuditProbeId[]) => requestsFor(planOf(activeModel), ids.filter((id) => isApplicable(channel, id, activeModel)));
+
+    /* ---------------- 数字习惯（hlwy 基准对照） ---------------- */
+    const hlwyOn = preset === 'custom' && hlwyChecked;
     const { data: hlwyCatalog } = useHlwyBaselines();
     const enqueueHlwy = useEnqueueHlwyCompare();
     const recompareHlwy = useRecompareHlwy();
     const saveHlwyBaseline = useSaveHlwyBaselineFromResult();
     const { data: hlwySettings } = useSettingList();
-    // 开关写字面量、与 BackgroundAuditPanel 同一套做法：键由后端同期实现，
-    // 本次不动 setting.ts 的 SettingKey 表。默认关。
     const hlwyFlagEnabled = settingBool(
         hlwySettings?.find((item) => item.key === 'model_audit_hlwy_enabled')?.value,
         false,
     );
+    const catalogEntries = hlwyCatalog?.baselines ?? [];
+    const autoBaseline = autoBaselineFor(activeModel, catalogEntries);
+    // 计划和按钮看的是「第一个模型这一单」用哪份基准；多选时每个模型各自自动挑。
+    const effectiveBaselineId = hlwyBaselineId || autoBaseline?.id || '';
     const hlwyPlanQuery = useHlwyPlan({
         channelId: channel?.id ?? 0,
         model: activeModel,
         samples: hlwySamples,
-        baselineId: hlwyBaselineId,
-        // 不在本模式就不发这个请求：读一份不用的计划也是白白多一次往返。
-        enabled: hlwyMode,
+        baselineId: effectiveBaselineId,
+        // 没勾数字习惯就不读：读一份不用的计划也是白多一次往返。
+        enabled: hlwyOn,
     });
     const hlwyPlan = hlwyPlanQuery.data ?? null;
     const hlwyPlanError = hlwyPlanQuery.error
@@ -800,23 +813,17 @@ export function ModelAudit() {
             ? hlwyPlanQuery.error.message
             : String(hlwyPlanQuery.error)
         : '';
-    // 选中的那份基准现在还在不在目录里、是不是被标成不可用。
-    // 目录刷新后 baselineId 可能指向一份校验没过的件，这时照样不能提交。
-    const hlwySelectedEntry = hlwyCatalog?.baselines.find((entry) => entry.id === hlwyBaselineId) ?? null;
-    // 「再跑一轮」把上一轮的渠道填回来，但那个渠道可能已经被删掉/停用了。
-    // 渠道选择器会退到第一个渠道（看起来像没事），提交就会真的花在另一个渠道上。
-    // 所以这里记住「上一轮用的是哪个渠道」，不见了就抦住按钮并说清楚。
+    const hlwySelectedEntry = catalogEntries.find((entry) => entry.id === effectiveBaselineId) ?? null;
+    // 「再跑一轮」把上一轮的渠道填回来，但那个渠道可能已经被删掉了：不悄悄换一个渠道花钱。
     const rerunChannelMissing =
         rerunChannelId !== null && channels.length > 0 && !channels.some((item) => item.id === rerunChannelId);
     const rerunChannelMissingReason = rerunChannelMissing
         ? `上一轮用的渠道（#${rerunChannelId}）已经不在渠道列表里了，请重新选一个渠道再提交`
         : '';
-    // 按钮能不能按、为什么不能按，全部由一个函数回答：页面上只有一个提交动作，
-    // 说明也就只能有一处。
     const hlwyStart = hlwyStartState({
         hasTarget: !!channel && !!activeModel,
         channelMissing: rerunChannelMissingReason,
-        baselineId: hlwyBaselineId,
+        baselineId: effectiveBaselineId,
         baselineUnavailable: hlwySelectedEntry?.unavailable === true,
         flagEnabled: hlwyFlagEnabled,
         plan: hlwyPlan,
@@ -824,7 +831,23 @@ export function ModelAudit() {
         planLoading: hlwyPlanQuery.isLoading === true,
         pending: enqueueHlwy.isPending,
     });
-
+    // 数字习惯每个模型一单，最多 hlwyPlan.max_calls 次（没读到计划就按采样次数估）。
+    const hlwyReq = hlwyOn ? (hlwyPlan?.max_calls ?? hlwySamples) * targetModels.length : 0;
+    const customReq = probeReq + hlwyReq;
+    const totalReq = preset === 'quick' ? quickReq : preset === 'full' ? fullReq : customReq;
+    const probeGroups = groupModelsByProbes(targetModels, (name) => idsFor(preset, name));
+    const nothingToRun = probeGroups.length === 0 && !hlwyOn;
+    const startDisabled =
+        submitting || enqueueAudit.isPending || !channel || targetModels.length === 0 || nothingToRun || (hlwyOn && hlwyStart.disabled) || !!rerunChannelMissingReason;
+    const startReason = !channel
+        ? '先选渠道'
+        : rerunChannelMissingReason
+          ? rerunChannelMissingReason
+          : nothingToRun
+            ? '至少勾一项检查'
+            : hlwyOn && hlwyStart.disabled
+              ? hlwyStart.reason
+              : '';
 
     const rows = useMemo(() => {
         if (!report) return [];
@@ -848,8 +871,7 @@ export function ModelAudit() {
     const failCount = rows.filter((row) => row.tone === 'fail').length;
     const insufficientCount = rows.filter((row) => row.insufficient).length;
     const hlwyView = useMemo(() => readHlwyComparison(report?.report), [report]);
-    // 换基准重算的视图优先展示，但它只活在内存里：
-    // 顶部的「本地重算，原报告未变」提示条就是这个事实的可见形态。
+    // 换基准重算的视图优先展示，但它只活在内存里。
     const recompareView = useMemo(() => readHlwyComparison(recompare?.report), [recompare]);
     const activeView = recompareView ?? hlwyView;
     const copy = activeView
@@ -867,143 +889,124 @@ export function ModelAudit() {
         setChannelId(id);
         // 用户自己重新选了渠道：上一条「原来的渠道不见了」的提醒就失效了。
         setRerunChannelId(null);
-        const next = channels.find((item) => item.id === id);
-        const nextModels = next ? getSelectedChannelModels(next) : [];
-        setModelName(nextModels[0] ?? '');
-        if (plan === 'standard') {
-            setSelected(AUDIT_STANDARD_PROBE_IDS.filter((probeId) => isApplicable(next, probeId, nextModels[0] ?? '')));
-        }
+        setModelNames([]);
     };
 
-    const choosePlan = (next: PlanId) => {
-        setPlan(next);
-        setCustomOpen(false);
-        if (next === 'quick') setSelected(planIds('quick', channel, activeModel));
-        // 切到 hlwy 时不动探针选择：切回来时用户刚刚勾的还在，而这一轮也不会
-        // 因为“选择还在”就偷偷跑探针——提交走的是另一条路。
-        else if (next === 'standard') setSelected(AUDIT_STANDARD_PROBE_IDS.filter((id) => isApplicable(channel, id, activeModel)));
+    const choosePreset = (next: AuditPreset) => {
+        setPreset(next);
     };
 
-    const toggleProbe = (id: AuditProbeId, checked: boolean) => {
-        setPlan('standard');
-        setCustomOpen(true);
-        // 手动项勾上时把代价说清楚：录制基线 74 次请求（整单超时已按请求数放大，见 op.AuditTimeoutFor），最好单独跑。
-        if (checked && AUDIT_OPT_IN_PROBE_IDS.includes(id)) {
+    const toggleProbes = (ids: readonly AuditProbeId[], checked: boolean) => {
+        setPreset('custom');
+        // 手动项勾上时把代价说清楚。
+        if (checked && ids.some((id) => AUDIT_OPT_IN_PROBE_IDS.includes(id))) {
             toast.warning(
-                id === 'tokenizer_baseline'
+                ids.includes('tokenizer_baseline')
                     ? '录基线要发 74 次请求，建议单独跑，只用确定是正品的渠道'
                     : '分词器识别约 12 次请求（最多 22 次）',
             );
         }
         setSelected((current) => {
-            if (checked) return AUDIT_PROBE_IDS.filter((item) => item === id || current.includes(item));
-            return current.filter((item) => item !== id);
+            if (checked) return AUDIT_PROBE_IDS.filter((item) => ids.includes(item) || current.includes(item));
+            return current.filter((item) => !ids.includes(item));
         });
     };
 
-    // submitToQueue 把当前选中的模型提交到**后端真队列**，然后立刻返回。
+    // 唯一的提交入口：把选中的模型交给**后端真队列**，然后立刻返回。
     //
-    // 这是「立即检测」与「批量检测」合并后的唯一入口：不管点一个还是一批，
-    // 都是往队列里塞，然后用户可以关页面、切标签、隔天回来看。
-    //
-    // 为什么废弃前端那套内存队列：它只是"在浏览器里一个个发同步请求"，
-    // 页面一关就全丢，进度也看不到历史——既不能回看，也不比守着页面强。
-    // 后端队列本来就写库、能回看、能取消、还有重试，没有理由在前端再造一遍。
-    const submitToQueue = async (targets: string[]) => {
+    // 多探针检测：同一套检查的模型合成一单（Claude 和非 Claude 的签名项不同，分开交）。
+    // 数字习惯：一个模型一单（后端要求），基准按「自动」或手动选的那份。
+    // 不管点一个还是一批，都可以关页面、隔天回来在「任务」里看。
+    const submitAll = async () => {
         if (!channel) return;
-        const names = targets.filter((name) => name.trim() !== '');
+        const names = targetModels;
         if (names.length === 0) {
             toast.warning('先选要检测的模型');
             return;
         }
-        const probes = selected.filter((id) => isApplicable(channel, id, names[0] ?? ''));
-        if (probes.length === 0) {
+        if (nothingToRun) {
             toast.warning('这个模型没有可用的检查项');
             return;
         }
+        if (hlwyOn && hlwyStart.disabled) {
+            toast.warning(hlwyStart.reason || '数字习惯现在还不能提交');
+            return;
+        }
+        const hlwyRuns = hlwyOn
+            ? names.map((name) => ({ name, baselineId: hlwyBaselineId || autoBaselineFor(name, catalogEntries)?.id || '' }))
+            : [];
+        if (hlwyRuns.some((run) => !run.baselineId)) {
+            toast.warning('没有能用的对比基准：先导入一份，或在正品渠道上录一份');
+            return;
+        }
+        setSubmitting(true);
+        const jobIds: number[] = [];
+        const errors: string[] = [];
         try {
-            const res = await enqueueAudit.mutateAsync({
-                channel_id: channel.id,
-                models: names,
-                probes,
-            });
-            // 提交成功就丢掉上一轮的报告。
-            // 不清的话，用户切回详情看到的还是上一轮结论，还可能把它导出成
-            // "这次的报告"——那是最糟的一种误导：数据没错，但归属错了。
-            setReport(null);
-            setPageState('idle');
-            toast.success(`已提交 ${names.length} 个模型，后台开始检测（任务 #${res.job_id}）`);
-            // 切到队列视图：让用户立刻看到它确实在跑，而不是"点了没反应"。
-            setMode('queue');
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : '提交失败');
+            for (const group of probeGroups) {
+                try {
+                    const res = await enqueueAudit.mutateAsync({ channel_id: channel.id, models: group.models, probes: group.probes });
+                    jobIds.push(res.job_id);
+                } catch (error) {
+                    errors.push(error instanceof Error ? error.message : '提交失败');
+                }
+            }
+            for (const run of hlwyRuns) {
+                try {
+                    const res = await enqueueHlwy.mutateAsync({
+                        channel_id: channel.id,
+                        models: [run.name] as [string],
+                        kind: 'hlwy_compare',
+                        hlwy: {
+                            samples: hlwySamples,
+                            baseline_id: run.baselineId,
+                            protocol_id: hlwyPlan?.protocol_id ?? '',
+                        },
+                    });
+                    jobIds.push(res.job_id);
+                } catch (error) {
+                    errors.push(`数字习惯 · ${run.name}：${error instanceof Error ? error.message : '提交失败'}`);
+                }
+            }
+        } finally {
+            setSubmitting(false);
         }
-    };
-
-    /* ---------------- hlwy 基准对照的四个动作 ---------------- */
-
-    // 提交一轮对照。请求体里只有 samples / baseline_id / protocol_id：
-    // 带 probes 就是另一回事，带 log_id 就成了日志回填，两者都不是这个模式。
-    const submitHlwy = async () => {
-        if (!channel || !activeModel) {
-            toast.warning('先选渠道和模型');
-            return;
-        }
-        if (!hlwyPlan) {
-            // 没计划就不发：计划里写着这一单最多几次调用、超时多少，
-            // 没有它就没有价格承诺，提交等于让人裸点一次。
-            toast.error('还没读到这一单的计划，先别提交');
-            return;
-        }
-        if (!hlwyBaselineId) {
-            toast.warning('先选一份基准');
-            return;
-        }
-        try {
-            const res = await enqueueHlwy.mutateAsync({
-                channel_id: channel.id,
-                models: [activeModel] as [string],
-                kind: 'hlwy_compare',
-                hlwy: {
-                    samples: hlwySamples,
-                    baseline_id: hlwyBaselineId,
-                    protocol_id: hlwyPlan.protocol_id,
-                },
-            });
-            // 与探针提交同一口径：提交成功就丢掉上一轮报告，免得导错文件。
+        if (jobIds.length > 0) {
+            // 提交成功就丢掉上一轮的报告：不清的话，用户可能把上一轮结论当成「这次的报告」导出。
             setReport(null);
             setRecompare(null);
             setPageState('idle');
-            toast.success(`已提交数字习惯对照（任务 #${res.job_id}），可在「记录」里查看结果`);
-            setMode('queue');
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : '提交失败');
+            toast.success(
+                `已提交 ${names.length} 个模型，后台开始检测（任务 ${jobIds.map((id) => `#${id}`).join('、')}）`,
+            );
+            if (!background) setTab('tasks');
         }
+        if (errors.length > 0) toast.error(errors.join('；'));
     };
 
-    // 再跑一轮：把上一轮的渠道、型号、基准、样本量全部填回去，然后**回到提交页**。
+    // 再跑一轮数字习惯：把上一轮的渠道、型号、基准、样本量全部填回去，然后**回到提交页**。
     // 不直接入队：再跑一轮会真的再花一次钱，必须让用户自己按下那个按钮。
     const rerunHlwy = () => {
         if (!activeView) return;
-        // 渠道/型号也要跟着回来：报告可能是从记录里打开的、跟当前选择不是同一个渠道，
-        // 只填基准就等于让下一轮跑在错的渠道上。
-        // 记下这个 id：它如果已经不在列表里，提交会被抦住并说明原因，而不是
-        // 静静地退到列表第一个渠道上花掉一次钱。
         if (report?.channel_id) {
             setChannelId(report.channel_id);
             setRerunChannelId(report.channel_id);
         }
         const rerunModel = report?.model || report?.upstream_model || '';
-        if (rerunModel) setModelName(rerunModel);
+        if (rerunModel) setModelNames([rerunModel]);
         if (activeView.chosenBaselineId) setHlwyBaselineId(activeView.chosenBaselineId);
         const planned = activeView.counts?.planned_calls;
         if (planned === 100 || planned === 200) setHlwySamples(planned);
-        setPlan('hlwy');
-        setMode('single');
+        // 只重跑数字习惯：其他检查项先都不勾，免得顺手多花一单。
+        setPreset('custom');
+        setSelected([]);
+        setHlwyChecked(true);
+        setHlwyPanelOpen(true);
+        setTab('test');
         setPageState('idle');
         setReport(null);
         setRecompare(null);
-        toast.success('参数已按上一轮填好，再点一次「开始采样」才会真的发请求');
+        toast.success('参数已按上一轮填好，再点一次「开始检测」才会真的发请求');
     };
 
     // 把这次结果存成基准。前端只做一次粗筛，服务端还会独立再校验一遍。
@@ -1013,12 +1016,9 @@ export function ModelAudit() {
             toast.warning(hlwySaveCheck.reason);
             return;
         }
-        // 资格判断只能担保「保存这件事本身合理」，担保不了这个 id 一定存在：
-        // 拿到一个真正的正整数结果编号才发请求。不拿非空断言坑自己，也不
-        // 用 0 充数——那会把请求发到一条不存在的记录上。
         const resultId = report.result_id;
         if (typeof resultId !== 'number' || !Number.isInteger(resultId) || resultId <= 0) {
-            toast.warning('这条结果没有可用的编号，存不成基准（请从「检测记录」里重新打开它）');
+            toast.warning('这条结果没有可用的编号，存不成基准（请从「任务」的记录里重新打开它）');
             return;
         }
         const label = `${report.model || report.upstream_model || '模型'} · 自采`;
@@ -1039,14 +1039,12 @@ export function ModelAudit() {
 
     // 换一份基准重算：离线，不发请求、不写库、不改原报告。
     const recompareWith = (baselineId: string) => {
-        // 同上：重算要拿着一个真实的结果编号去问服务端，没有就不发。
         const resultId = report?.result_id;
         if (typeof resultId !== 'number' || !Number.isInteger(resultId) || resultId <= 0) {
-            toast.warning('要从「检测记录」打开这条结果才能重算');
+            toast.warning('要从「任务」的记录里打开这条结果才能重算');
             return;
         }
-        // 重算是异步的：等回来时用户可能已经打开另一份报告了。旧请求的响应
-        // 千万不能盖到新报告上——那会把 A 的数字当成 B 的预览。
+        // 旧请求的响应不能盖到新报告上。
         const stillCurrent = () => reportResultIdRef.current === resultId;
         recompareHlwy.mutate(
             { result_id: resultId, baseline_id: baselineId },
@@ -1065,7 +1063,6 @@ export function ModelAudit() {
         );
     };
 
-    // 当前报告的 id 跟着 report 走：重算响应用它判断自己是不是过期了。
     useEffect(() => {
         reportResultIdRef.current = report?.result_id ?? null;
     }, [report]);
@@ -1093,14 +1090,12 @@ export function ModelAudit() {
         downloadJson(`hlwy-${report.result_id ?? 'report'}-legacy.json`, payload);
     };
 
-    // 「能不能存成基准」只看两个事实：这条结果真的跑完了，报告里的计数也齐。
     const hlwySaveCheck = hlwySaveEligibility(activeView, {
         resultId: report?.result_id,
         resultStatus: report?.result_status,
     });
 
     // 再测一轮：只重跑指纹这一项，同一渠道、同一型号；题目由后端重新随机生成。
-    // 由用户点按钮触发，不在后台自动重测——每一轮都要真实发请求、花 token。
     const retestFingerprint = async () => {
         if (!report) return;
         const model = report.model || report.upstream_model;
@@ -1111,32 +1106,18 @@ export function ModelAudit() {
                 models: [model],
                 probes: ['fingerprint'],
             });
-            toast.success(`已提交再测一轮（任务 #${res.job_id}），结果在「记录」里看`);
+            toast.success(`已提交再测一轮（任务 #${res.job_id}），结果在「任务」里看`);
             setReport(null);
             setPageState('idle');
-            setMode('queue');
+            setTab('tasks');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : '提交失败');
         }
     };
 
-    // 原来的 enqueue / runQueue / removeFromQueue / clearQueue / cancel 已整块删除。
-    //
-    // 它们把"检测"实现成浏览器里的 for 循环 + 同步请求，是本次合并掉的另一半。
-    // 取消现在走队列的 POST /jobs/:id/cancel —— 那才是真的让后台停下，
-    // 而不是只 abort 掉当前这一个 HTTP 连接。
-
-    // openStoredReport 把队列里存好的报告重新摊到详情面板上。
-    //
-    // 后台检测跑完不会自动弹结果——用户可能隔天才回来看。所以报告以
-    // 「结果行的 report 字段（后端存的 AuditViewReport JSON）」为准，
-    // 点开时现解析，而不是靠前端内存里留一份（那份早随页面关了没了）。
-    //
-    // 解析失败要明确报错，不能静默显示空报告：空报告会被读成"查过没问题"。
+    // 把记录里存好的报告重新摊到「检测」页右边。报告以结果行的 report 字段为准，点开时现解析；
+    // 解析失败要明确报错，不能静默显示空报告（空报告会被读成「查过没问题」）。
     const openStoredReport = (result: AuditResult) => {
-        // 报告能不能打开，看它能不能**读**，不看它有没有 results 数组。
-        // hlwy 对照本来就没有多探针结论：旧门槛会让一份完整报告显示成
-        // 「这份报告不完整」——报告其实好着，是门槛错了。
         const read = readStoredReport(result.report || '');
         if (!read.ok) {
             toast.error(read.error);
@@ -1153,13 +1134,11 @@ export function ModelAudit() {
             report: view,
             finished_at: result.finished_at,
             model: result.model,
-            // 「能不能存成基准」得看这条结果是不是真的跑完了，不是看报告长得像不像。
             result_status: result.status,
         });
-        // 换一个结果就是换一份报告，上一轮的重算预览不能跟过来。
         setRecompare(null);
-        // 「完整报告」必须切回报告页，不能停在记录列表。
-        setMode('single');
+        // 「完整报告」切回检测页右边。
+        setTab('test');
         setPageState('report');
     };
 
@@ -1174,40 +1153,65 @@ export function ModelAudit() {
         URL.revokeObjectURL(url);
     };
 
-    const renderProbeRow = (probe: ProbeMeta) => {
-        const disabled = !isApplicable(channel, probe.id, activeModel);
-        const checked = selected.includes(probe.id) && !disabled;
-        if (probe.id === 'fingerprint' && checked) {
-            return (
-                <div key={probe.id}>
-                    {renderProbeLabel(probe, disabled, checked)}
-                    <FingerprintPromptToggle />
-                </div>
-            );
-        }
-        return renderProbeLabel(probe, disabled, checked);
+    const openRecentReport = (jobId: number) => {
+        setFocusJobId(jobId);
+        setTab('tasks');
     };
 
-    const renderProbeLabel = (probe: ProbeMeta, disabled: boolean, checked: boolean) => {
+    /** 自定义里的一行勾选。ids 是这一行代表的检查（「自报身份/系统提示/怪词」是三项合一）。 */
+    const renderCheckRow = (key: string, label: string, ids: readonly AuditProbeId[], options: { disabled?: boolean; reqText?: string; title?: string } = {}) => {
+        const disabled = options.disabled === true;
+        const checked = !disabled && ids.every((id) => selected.includes(id));
         return (
-            <label key={probe.id} title={probe.desc} className={cn('flex items-center gap-2 rounded-xl px-1 py-1.5 text-sm', disabled && 'opacity-40')}>
+            <label key={key} title={options.title} className={cn('flex items-center gap-2 rounded-xl px-1 py-1.5 text-sm', disabled && 'opacity-40')}>
                 <input
                     type="checkbox"
                     checked={checked}
-                    disabled={disabled || pageState === 'running'}
-                    onChange={(event) => toggleProbe(probe.id, event.target.checked)}
+                    disabled={disabled}
+                    onChange={(event) => toggleProbes(ids, event.target.checked)}
                 />
-                <span className="min-w-0 flex-1 truncate">{probe.name}</span>
-                <span className="text-[11px] text-muted-foreground">{probe.hint}</span>
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                <span className="text-[11px] tabular-nums text-muted-foreground">{options.reqText ?? (disabled ? '—' : rowReq(ids))}</span>
             </label>
         );
     };
+
+    const groupTitle = (index: string, title: string, tag: string) => (
+        <p className="flex items-center gap-1.5 px-1 pt-1 text-xs font-semibold">
+            {index} {title}
+            <span className="rounded-full bg-sky-500/10 px-1.5 py-px text-[10px] font-medium text-sky-700 dark:text-sky-300">{tag}</span>
+        </p>
+    );
+
+    const presetCard = (id: AuditPreset, title: string, meta: string, desc: string, badge?: string) => (
+        <button
+            type="button"
+            onClick={() => choosePreset(id)}
+            aria-pressed={preset === id}
+            className={cn(
+                'rounded-2xl border px-4 py-3.5 text-left transition-colors',
+                preset === id ? 'border-2 border-primary bg-primary/5 -m-px' : 'border-border',
+            )}
+        >
+            <div className="flex items-center gap-2">
+                <span className={cn('flex size-4 shrink-0 items-center justify-center rounded-full', preset === id ? 'bg-primary' : 'border-2 border-border')}>
+                    {preset === id && <span className="size-1.5 rounded-full bg-white" />}
+                </span>
+                <span className="text-sm font-semibold">{title}</span>
+                {badge && <span className="rounded-full bg-primary/15 px-1.5 py-px text-[10px] font-medium text-primary">{badge}</span>}
+                <span className="ml-auto text-right text-xs text-muted-foreground">{meta}</span>
+            </div>
+            <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">{desc}</p>
+        </button>
+    );
+
+    const modelsSuffix = targetModels.length > 1 ? `（${targetModels.length} 个模型合计）` : '';
 
     const renderParams = () => (
         <aside className="flex min-h-0 w-full flex-col gap-5 rounded-3xl border border-border bg-card p-5">
             <section>
                 <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
-                    <div>
+                    <div className="min-w-0">
                         <label className="mb-1 block text-xs text-muted-foreground">渠道</label>
                         <SearchableSelect
                             value={channel ? String(channel.id) : ''}
@@ -1224,17 +1228,29 @@ export function ModelAudit() {
                             disabled={visibleChannels.length === 0}
                         />
                     </div>
-                    <div>
-                        <label className="mb-1 block text-xs text-muted-foreground">模型</label>
-                        <SearchableSelect
-                            value={activeModel}
-                            onValueChange={setModelName}
+                    <div className="min-w-0">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                            <label className="block text-xs text-muted-foreground">模型（可多选）</label>
+                            {models.length > 1 && (
+                                <button
+                                    type="button"
+                                    className="text-[11px] text-primary hover:underline"
+                                    onClick={() => setModelNames(targetModels.length === models.length ? [] : [...models])}
+                                >
+                                    {targetModels.length === models.length ? '只测第一个' : `全选 ${models.length} 个`}
+                                </button>
+                            )}
+                        </div>
+                        <MultiPicker
+                            value={targetModels}
+                            onChange={setModelNames}
                             options={models.map((item) => ({ value: item, label: item }))}
                             placeholder={models.length === 0 ? '该渠道没有可选模型' : '选择模型'}
                             searchPlaceholder="搜模型名…"
                             emptyText="没有匹配的模型"
-                            className="h-10 w-full"
+                            className="w-full"
                             disabled={models.length === 0}
+                            ariaLabel="选择要检测的模型"
                         />
                     </div>
                 </div>
@@ -1262,116 +1278,107 @@ export function ModelAudit() {
             <section>
                 <p className="mb-3 text-xs font-medium text-muted-foreground">查多细</p>
                 <div className="grid gap-3">
-                    <button
-                        type="button"
-                        onClick={() => choosePlan('quick')}
-                        className={cn(
-                            'rounded-2xl border px-4 py-3.5 text-left transition-colors',
-                            plan === 'quick' ? 'border-2 border-primary bg-primary/5 -m-px' : 'border-border',
-                        )}
-                    >
-                        <div className="flex items-center gap-2">
-                            <span className={cn(
-                                'flex size-4 items-center justify-center rounded-full',
-                                plan === 'quick' ? 'bg-primary' : 'border-2 border-border',
-                            )}>
-                                {plan === 'quick' && <span className="size-1.5 rounded-full bg-white" />}
-                            </span>
-                            <span className="text-sm font-semibold">快速</span>
-                            <span className="ml-auto text-xs text-muted-foreground">{quickCount} 项 · 约 {quickReq} 次请求</span>
-                        </div>
-                        <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">
-                            通不通、回复有没有被改、长内容有没有被截断。
-                        </p>
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => choosePlan('standard')}
-                        className={cn(
-                            'rounded-2xl border px-4 py-3.5 text-left transition-colors',
-                            plan === 'standard' && !customOpen ? 'border-2 border-primary bg-primary/5 -m-px' : 'border-border',
-                        )}
-                    >
-                        <div className="flex items-center gap-2">
-                            <span className={cn(
-                                'flex size-4 items-center justify-center rounded-full',
-                                plan === 'standard' && !customOpen ? 'bg-primary' : 'border-2 border-border',
-                            )}>
-                                {plan === 'standard' && !customOpen && <span className="size-1.5 rounded-full bg-white" />}
-                            </span>
-                            <span className="text-sm font-semibold">全面</span>
-                            <span className="rounded-full bg-primary/15 px-1.5 py-px text-[10px] font-medium text-primary">推荐</span>
-                            <span className="ml-auto text-xs text-muted-foreground">{fullCount} 项 · 约 {fullReq} 次请求</span>
-                        </div>
-                        <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">
-                            再加上：认出背后是哪个模型、查用量有没有虚报。
-                        </p>
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => choosePlan('hlwy')}
-                        className={cn(
-                            'rounded-2xl border px-4 py-3.5 text-left transition-colors',
-                            plan === 'hlwy' ? 'border-2 border-primary bg-primary/5 -m-px' : 'border-border',
-                        )}
-                    >
-                        <div className="flex items-center gap-2">
-                            <span className={cn(
-                                'flex size-4 items-center justify-center rounded-full',
-                                plan === 'hlwy' ? 'bg-primary' : 'border-2 border-border',
-                            )}>
-                                {plan === 'hlwy' && <span className="size-1.5 rounded-full bg-white" />}
-                            </span>
-                            <span className="text-sm font-semibold">数字习惯对照</span>
-                            <span className="ml-auto text-xs text-muted-foreground">{hlwySamples} 次采样</span>
-                        </div>
-                        <p className="mt-1.5 pl-6 text-xs leading-5 text-muted-foreground">
-                            多次选数字，对照回答习惯。
-                        </p>
-                    </button>
+                    {presetCard('quick', '快速', `${quickCount} 项 · 约 ${quickReq} 次${modelsSuffix}`, '通不通、回复有没有被改、长内容有没有被截断。')}
+                    {presetCard(
+                        'full',
+                        '全面',
+                        `${fullCount} 项 · 约 ${fullReq} 次${modelsSuffix}`,
+                        `再加身份指纹、自报身份、token 对比${isClaudeTarget ? '、Claude 签名' : ''}。不含分词器和数字习惯。`,
+                        '推荐',
+                    )}
+                    {presetCard('custom', '自定义', `约 ${customReq} 次${modelsSuffix}`, '自己勾：分词器、数字习惯这些慢的、贵的在这里加。')}
                 </div>
 
-                {hlwyMode && (
-                    <div className="mt-3">
-                        <HlwyModePanel
-                            baselineId={hlwyBaselineId}
-                            onBaselineChange={setHlwyBaselineId}
-                            samples={hlwySamples}
-                            onSamplesChange={setHlwySamples}
-                            plan={hlwyPlan}
-                            planLoading={hlwyPlanQuery.isLoading === true}
-                            planError={hlwyPlanError}
-                        />
-                    </div>
-                )}
-
-                {/* 探针自选只属于探针模式：切到基准对照后把它整块拿掉，
-                    否则屏幕上会同时存在两套「要测什么」。 */}
-                {!hlwyMode && (
-                <>
-                <button
-                    type="button"
-                    className="mt-3 flex w-full items-center gap-1.5 px-1 text-xs text-muted-foreground"
-                    onClick={() => setCustomOpen((v) => !v)}
-                >
-                    {customOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                    自定义：自己挑检查项
-                    <span className="ml-1 text-muted-foreground/70">
-                        {customOpen
-                            ? ''
-                            : `（共 ${PROBES.length} 项，现在选了 ${applicableSelected.length} 项）`}
-                    </span>
-                    {customOpen && (
-                        <span className="ml-auto">已选 {applicableSelected.length} 项 · 约 {customReq} 次请求</span>
-                    )}
-                </button>
-                {customOpen && (
-                    <div className="mt-2 rounded-2xl border border-border bg-muted/20 px-2 py-2">
-                        <div className="grid gap-1">
-                            {PROBES.filter((probe) => !ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
+                {preset === 'custom' && (
+                    <div className="mt-3 space-y-2 rounded-2xl border border-border bg-muted/20 px-2 py-2">
+                        {groupTitle('①', '身份', '主动')}
+                        <div className="grid gap-0.5">
+                            {renderCheckRow('fingerprint', '取数指纹', ['fingerprint'])}
+                            {selected.includes('fingerprint') && <FingerprintPromptToggle />}
+                            {renderCheckRow('identity', '自报身份 / 系统提示 / 怪词', IDENTITY_GROUP)}
+                            {renderCheckRow('tokenizer_id', '分词器（准，慢）', ['tokenizer_id'], {
+                                reqText: `约 ${rowReq(['tokenizer_id'])}`,
+                                title: '对照内置分词器库看上游用哪套；只作参考，不计分',
+                            })}
+                            {renderCheckRow('signature', isClaudeTarget ? 'Claude 签名' : 'Claude 签名（不是 Claude，跳过）', ['signature'], {
+                                disabled: !isClaudeTarget,
+                                title: '检查思考块是否附带可验证签名，只有 Anthropic 渠道上的 Claude 能查',
+                            })}
                         </div>
+                        <div className="border-t border-border/60" />
+                        {groupTitle('②', '降级 / 量化', '主动')}
+                        <div className="grid gap-0.5">
+                            {renderCheckRow('context_canary', '长内容不被截断', ['context_canary'])}
+                            {renderCheckRow('echo_rewrite', '回复不被改写', ['echo_rewrite'])}
+                            <label className="flex items-center gap-2 rounded-xl px-1 py-1.5 text-sm">
+                                <input
+                                    type="checkbox"
+                                    checked={hlwyChecked}
+                                    onChange={(event) => setHlwyChecked(event.target.checked)}
+                                    aria-label="数字习惯"
+                                />
+                                <span className="min-w-0 flex-1 truncate">数字习惯</span>
+                                <span className="inline-flex rounded-lg border border-border bg-background p-0.5" role="group" aria-label="数字习惯采样次数">
+                                    {([100, 200] as const).map((n) => (
+                                        <button
+                                            key={n}
+                                            type="button"
+                                            aria-pressed={hlwySamples === n}
+                                            onClick={(event) => { event.preventDefault(); setHlwySamples(n); }}
+                                            className={cn('rounded-md px-1.5 py-px text-[11px] tabular-nums', hlwySamples === n ? 'bg-primary text-primary-foreground' : 'text-muted-foreground')}
+                                        >
+                                            {n} 次
+                                        </button>
+                                    ))}
+                                </span>
+                            </label>
+                            {hlwyChecked && (
+                                <div className="ml-6 space-y-2 rounded-xl bg-muted/50 px-3 py-2 text-xs leading-5">
+                                    <p>
+                                        对比基准：
+                                        {hlwyBaselineId ? (
+                                            <span className="font-medium">{hlwySelectedEntry ? hlwyBaselineOptionLabel(hlwySelectedEntry) : hlwyBaselineId}</span>
+                                        ) : (
+                                            <>
+                                                <span className="font-medium">自动</span>
+                                                <span className="text-muted-foreground">（同模型优先自己录的，没有用 hlwy 内置）</span>
+                                                {autoBaseline && <span className="block text-muted-foreground">这次会用：{hlwyBaselineOptionLabel(autoBaseline)}</span>}
+                                                {!autoBaseline && catalogEntries.length > 0 && <span className="block text-amber-700">没有能用的基准，点「换」导入一份</span>}
+                                            </>
+                                        )}
+                                    </p>
+                                    <div className="flex flex-wrap gap-3">
+                                        <button type="button" className="font-medium text-primary hover:underline" onClick={() => setHlwyPanelOpen((v) => !v)}>
+                                            {hlwyPanelOpen ? '收起' : '换 ▾'}
+                                        </button>
+                                        {hlwyBaselineId && (
+                                            <button type="button" className="text-primary hover:underline" onClick={() => setHlwyBaselineId('')}>
+                                                改回自动
+                                            </button>
+                                        )}
+                                    </div>
+                                    {hlwyPanelOpen && (
+                                        <HlwyModePanel
+                                            baselineId={effectiveBaselineId}
+                                            onBaselineChange={setHlwyBaselineId}
+                                            samples={hlwySamples}
+                                            onSamplesChange={setHlwySamples}
+                                            plan={hlwyPlan}
+                                            planLoading={hlwyPlanQuery.isLoading === true}
+                                            planError={hlwyPlanError}
+                                        />
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                        <div className="border-t border-border/60" />
+                        {groupTitle('③', 'Token', '主动')}
+                        <div className="grid gap-0.5">
+                            {renderCheckRow('token_delta', '一短一长两条对比', ['token_delta'])}
+                        </div>
+                        <p className="px-1 text-[11px] leading-5 text-muted-foreground">连通检查会自动带上（1 次），先确认渠道通了再查别的。</p>
                         <details
-                            className="mt-2 rounded-xl bg-muted/30 px-2 py-1.5"
+                            className="rounded-xl bg-muted/30 px-2 py-1.5"
                             open={advancedOpen || advancedSelected}
                             onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
                         >
@@ -1379,108 +1386,117 @@ export function ModelAudit() {
                                 {ADVANCED_SUMMARY}
                             </summary>
                             <div className="mt-1 grid gap-1">
-                                {PROBES.filter((probe) => ADVANCED_PROBE_IDS.includes(probe.id)).map(renderProbeRow)}
+                                {renderCheckRow('tokenizer_baseline', '录一份正品基线', ['tokenizer_baseline'], { reqText: `约 ${rowReq(['tokenizer_baseline'])}` })}
                             </div>
                         </details>
                     </div>
                 )}
-                </>
-                )}
-            </section>
-
-            {/* 后台检测的长期策略（被动开关 / 抽检额度）：摆进检测表单这一列，
-                不放进单次报告结果区——这些设置跟「这一次测什么」无关，
-                换渠道、看报告时也要能改。 */}
-            <section className="border-t border-border pt-4">
-                <BackgroundAuditPanel />
             </section>
 
             <section className="border-t border-border pt-4">
-                {/* 全页只有一个提交动作：模式决定它的含义，旧按钮不会在切模式后
-                    还亮着、点下去却按老规矩跑一轮探针。 */}
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+                    <label className="flex items-center gap-2" title="检测本来就在服务器上排队跑，关掉页面也不会停。不勾的话，提交后直接跳到「任务」看着它跑。">
+                        <input type="checkbox" checked={background} onChange={(event) => setBackground(event.target.checked)} />
+                        放到后台跑，关掉页面也继续
+                    </label>
+                    <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setTab('tasks')}>
+                        去「任务」看进度
+                    </button>
+                </div>
+                {/* 全页只有一个提交动作：查多细决定它提交什么。 */}
                 <Button
                     type="button"
                     className="h-12 w-full rounded-xl text-base font-semibold"
-                    disabled={hlwyMode ? hlwyStart.disabled : (enqueueAudit.isPending || runCount === 0 || !channel)}
-                    onClick={() => void (hlwyMode ? submitHlwy() : submitToQueue([activeModel]))}
-                    title={activeModel ? (hlwyMode ? `开始采样 · ${activeModel}` : `开始检测 · ${activeModel}`) : undefined}
+                    disabled={startDisabled}
+                    onClick={() => void submitAll()}
+                    title={startReason || undefined}
                 >
-                    {(hlwyMode ? enqueueHlwy.isPending : enqueueAudit.isPending)
-                        ? <Loader2 className="size-4 animate-spin" />
-                        : hlwyMode ? <Binary className="size-4" /> : <Play className="size-4 fill-current" />}
+                    {submitting || enqueueAudit.isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4 fill-current" />}
                     <span className="min-w-0 truncate">
-                        {(hlwyMode ? enqueueHlwy.isPending : enqueueAudit.isPending)
+                        {submitting || enqueueAudit.isPending
                             ? '提交中…'
-                            : hlwyMode ? '开始采样' : '开始检测'}
+                            : `开始检测 · ${targetModels.length} 个模型 · 约 ${totalReq} 次`}
                     </span>
                 </Button>
-                {hlwyMode && hlwyStart.disabled && hlwyStart.reason && (
-                    <p className="mt-2 text-center text-xs leading-5 text-amber-700">{hlwyStart.reason}</p>
+                {startReason && !submitting && (
+                    <p className="mt-2 text-center text-xs leading-5 text-amber-700">{startReason}</p>
                 )}
-                <p className="mt-2.5 flex items-center justify-center gap-1 text-center text-xs text-muted-foreground">
-                    {hlwyMode
-                        ? `${hlwyPlan
-                              ? `最多调用${hlwyPlan.max_calls ?? '未知'}次，会消耗渠道额度。`
-                              : '计划读取后可查看调用上限，按正常价格计费。'}提交后可以离开本页。`
-                        : '会真的调用上游，按正常价格计费。提交后可以离开本页。'}
+                <p className="mt-2.5 flex flex-wrap items-center justify-center gap-1 text-center text-xs text-muted-foreground">
+                    {!hlwyOn
+                        ? '会真的调用上游，按正常价格计费。'
+                        : hlwyPlan
+                          ? `会真的调用上游，按正常价格计费；数字习惯每个模型最多调用${hlwyPlan.max_calls ?? hlwySamples}次，会消耗渠道额度。`
+                          : '会真的调用上游，按正常价格计费；数字习惯的调用上限要等计划读出来才知道。'}
                     <span className="cursor-help text-muted-foreground/80" title="次数是估算：个别检查会多轮或重试，实际以记录为准。超时跟随渠道检测设置。">ⓘ</span>
                 </p>
-                {!hlwyMode && (
-                    <button
-                        type="button"
-                        className="mt-2 w-full text-center text-xs text-primary underline-offset-2 hover:underline disabled:opacity-50"
-                        disabled={enqueueAudit.isPending || models.length === 0 || !channel}
-                        onClick={() => void submitToQueue(models)}
-                    >
-                        或者，一次测完这个渠道的全部 {models.length} 个模型
-                    </button>
+                {budget && (
+                    <p className="mt-1 text-center text-xs tabular-nums text-muted-foreground">
+                        今天检测额度还剩 {budget.remaining} / {budget.limit} 次（定时体检和鹈鹕测试从这里扣）
+                    </p>
                 )}
             </section>
         </aside>
     );
 
+    const sideCards = (
+        <>
+            <RecentAudits onOpenAll={() => setTab('tasks')} onOpenJob={openRecentReport} />
+            <PassiveProbeCard />
+            <section className="rounded-3xl border border-border bg-card p-5">
+                <h3 className="text-sm font-semibold">定时体检</h3>
+                <p className="mt-0.5 mb-3 text-xs leading-5 text-muted-foreground">后台按天抽查，花的是每日检测额度；关着时什么都不发。</p>
+                <BackgroundAuditPanel />
+            </section>
+        </>
+    );
+
+    const tabButton = (id: 'test' | 'tasks' | 'pelican', label: string, badge?: string) => (
+        <button
+            key={id}
+            type="button"
+            onClick={() => setTab(id)}
+            aria-pressed={tab === id}
+            className={cn(
+                'flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm transition-colors',
+                tab === id ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
+            )}
+        >
+            {label}
+            {badge && (
+                <span className={cn('rounded-full px-1.5 py-px text-[10px] font-medium', tab === id ? 'bg-white/20' : 'bg-primary/15 text-primary')}>
+                    {badge}
+                </span>
+            )}
+        </button>
+    );
+
     return (
         <PageWrapper className="h-full min-h-0 space-y-4 overflow-y-auto overscroll-contain rounded-t-3xl pb-24 md:pb-4">
-            {/* 顶栏已有「检测」标题，这里只留副标题 + 检测/记录切换，避免手机上标题说两遍。 */}
+            {/* 顶栏已有「检测」标题，这里只留副标题 + 三栏切换。 */}
             <div className="flex flex-wrap items-center justify-between gap-3 px-1">
                 <p className="min-w-0 flex-1 text-sm text-muted-foreground">
                     看看渠道给你的模型，是不是它说的那个。
                 </p>
                 <div className="flex shrink-0 gap-1 rounded-2xl border border-border bg-card p-1">
-                    <button
-                        type="button"
-                        onClick={() => setMode('single')}
-                        className={cn(
-                            'rounded-xl px-3 py-1.5 text-sm transition-colors',
-                            mode === 'single' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
-                        )}
-                    >
-                        检测
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setMode('queue')}
-                        className={cn(
-                            'rounded-xl px-3 py-1.5 text-sm transition-colors',
-                            mode === 'queue' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted',
-                        )}
-                    >
-                        记录
-                    </button>
+                    {tabButton('test', '检测')}
+                    {tabButton('tasks', '任务', activeJobCount > 0 ? `${activeJobCount} 个在跑` : undefined)}
+                    {tabButton('pelican', '鹈鹕测试')}
                 </div>
             </div>
 
-            {mode === 'queue' && <ModelAuditQueue onOpenReport={openStoredReport} />}
+            {tab === 'tasks' && <TasksView onOpenReport={openStoredReport} focusJobId={focusJobId} />}
 
-            {mode === 'single' && (
+            {tab === 'pelican' && <PelicanTest channels={channels} />}
+
+            {tab === 'test' && (
             <>
-            {/* 手机：单列表单（渠道/模型/快速全面/开始检测），不再用「调整参数」折叠卡。 */}
+            {/* 手机：单列（参数在上，最近检测/日常监测/定时体检在下）。 */}
             <div className="md:hidden">{renderParams()}</div>
 
             <div className="flex min-h-0 flex-col gap-4 md:flex-row">
-                <div className="hidden md:block md:w-[min(100%,420px)] md:shrink-0">{renderParams()}</div>
+                <div className="hidden md:block md:w-[min(100%,440px)] md:shrink-0">{renderParams()}</div>
 
-                {/* 有结果才展示结果面板；空闲时桌面右侧放最近检测 + 日志查账。 */}
+                {/* 有报告才展示结果面板；空闲时桌面右侧放最近检测 + 日常监测 + 定时体检。 */}
                 {pageState !== 'idle' ? (
                 <section className="min-w-0 flex-1 rounded-3xl border border-border bg-card p-5">
                     {pageState === 'running' && (
@@ -1656,16 +1672,13 @@ export function ModelAudit() {
                 </section>
                 ) : (
                 <div className="hidden min-w-0 flex-1 flex-col gap-4 md:flex">
-                    <RecentAudits onOpenAll={() => setMode('queue')} />
-                    <PassiveProbeCard />
+                    {sideCards}
                 </div>
                 )}
             </div>
 
-            {/* 手机：表单下方接日志查账 + 最近检测（对齐 mobile 稿）。 */}
             <div className="grid gap-4 md:hidden">
-                <PassiveProbeCard />
-                <RecentAudits onOpenAll={() => setMode('queue')} />
+                {sideCards}
             </div>
 
             {isLoading && (

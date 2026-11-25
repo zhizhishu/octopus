@@ -93,6 +93,16 @@ function page(options = {}) {
                     full: { ids: ['liveness', 'identity'], requests: 10 },
                 },
             }),
+            useAuditPlans: (channelId, models) => models.map((model) => ({
+                data: {
+                    protocol: 'openai-chat',
+                    model,
+                    probes: [],
+                    quick: { ids: ['liveness'], requests: 3 },
+                    full: { ids: ['liveness', 'identity'], requests: 10 },
+                },
+            })),
+            useAuditBudget: () => ({ data: { used: 37, limit: 200, remaining: 163 } }),
             useAuditJobs: () => ({ data: [] }),
             useScheduledAudit: () => ({ data: undefined }),
             // hlwy 侧：每个 hook 都给能观测的替身，不发请求。
@@ -135,12 +145,16 @@ function page(options = {}) {
         './FingerprintCard': { FingerprintCard: () => null },
         './ProvenanceCard': { ProvenanceCard: () => null },
         './BackgroundAuditPanel': { BackgroundAuditPanel: () => null },
-        './Queue': {
-            ModelAuditQueue: (props) => {
+        // 「任务」页自己的渲染由 model-audit-queue.test.cjs / v6 测试覆盖；这里只要拿到
+        // 它收到的 onOpenReport，好走「从记录打开报告」这条路。
+        './TasksView': {
+            TasksView: (props) => {
                 state.queueProps.push(props);
-                return 'ModelAuditQueue';
+                return 'TasksView';
             },
         },
+        './PelicanTest': { PelicanTest: () => 'PelicanTest' },
+        './MultiPicker': widgets('MultiPicker'),
         './BaselineComparisonCard': {
             BaselineComparisonCard: (props) => {
                 state.cardProps.push(props);
@@ -162,9 +176,24 @@ function page(options = {}) {
         render() {
             return runtime.render(ModelAudit, {});
         },
-        /** 点「基准对照」这张方案卡。页面上有手机/桌面两份，点任意一份即可。 */
+        /**
+         * 打开数字习惯：「查多细」选自定义 → 勾「数字习惯」→ 点「换」展开基准面板。
+         * 每一步都只改本地状态，所以每步之后重新 render 拿新树。页面上有手机/桌面两份，点任意一份即可。
+         */
         chooseHlwy(tree) {
-            findElement(tree, (node) => node.type === 'button' && text(node).includes('数字习惯对照')).props.onClick();
+            findElement(tree, (node) => node.type === 'button' && text(node).includes('自定义') && node.props['aria-pressed'] !== undefined).props.onClick();
+            tree = this.render();
+            findElement(tree, (node) => node.type === 'input' && node.props['aria-label'] === '数字习惯').props.onChange({ target: { checked: true } });
+            tree = this.render();
+            findElement(tree, (node) => node.type === 'button' && squash(node) === '换 ▾').props.onClick();
+            return this.render();
+        },
+        /** 自定义里除「数字习惯」以外的勾全部取消：只交数字习惯这一种任务。 */
+        onlyHlwy(tree) {
+            for (const node of findAll(tree, (n) => n.type === 'input' && n.props.type === 'checkbox' && n.props['aria-label'] !== '数字习惯')) {
+                node.props.onChange({ target: { checked: false } });
+            }
+            return this.render();
         },
         panel() {
             return state.panelProps[state.panelProps.length - 1];
@@ -178,11 +207,12 @@ function page(options = {}) {
     };
 }
 
-const submitButton = (tree, label) =>
-    findElement(tree, (node) => node.type === 'Button' && squash(node) === label);
+// 页面上唯一的提交按钮：「开始检测 · N 个模型 · 约 X 次」。
+const submitButton = (tree) =>
+    findElement(tree, (node) => node.type === 'Button' && squash(node).startsWith('开始检测'));
 
-function submitButtons(tree, label) {
-    return findAll(tree, (node) => node.type === 'Button' && squash(node) === label);
+function submitButtons(tree) {
+    return findAll(tree, (node) => node.type === 'Button' && squash(node).startsWith('开始检测'));
 }
 
 test('mounting the page never submits and never reads a comparison plan', () => {
@@ -194,38 +224,33 @@ test('mounting the page never submits and never reads a comparison plan', () => 
     assert.equal(p.state.planCalls.at(-1).enabled, false, 'no plan request while not in comparison mode');
 });
 
-test('switching to comparison mode swaps the one submit button instead of adding a second', () => {
+test('turning on 数字习惯 keeps the one submit button and only then reads a plan', () => {
     const p = page();
     let tree = p.render();
-    assert.ok(submitButton(tree, '开始检测'), 'probe mode has its own submit action');
-    assert.equal(submitButtons(tree, '开始采样').length, 0);
+    const before = submitButtons(tree).length;
+    assert.ok(before >= 1, 'there is a submit action');
+    assert.equal(p.state.planCalls.at(-1).enabled, false, 'no plan request before the box is ticked');
 
-    p.chooseHlwy(tree);
-    tree = p.render();
-    assert.equal(submitButtons(tree, '开始检测').length, 0, 'the probe button is gone, not left inert');
-    assert.ok(submitButtons(tree, '开始采样').length >= 1);
-    assert.equal(p.state.planCalls.at(-1).enabled, true, 'the plan is read only after entering the mode');
-    assert.equal(
-        findElement(tree, (node) => node.type === 'button' && text(node).includes('一次测完这个渠道')),
-        undefined,
-        'the batch-probe shortcut is not offered inside comparison mode'
-    );
-    assert.equal(p.state.enqueued.length, 0, 'switching modes submits nothing');
+    tree = p.chooseHlwy(tree);
+    assert.equal(submitButtons(tree).length, before, 'no second submit button appears');
+    assert.equal(findAll(tree, (node) => squash(node) === '开始采样').length, 0, 'the old separate sampling button is gone');
+    assert.equal(p.state.planCalls.at(-1).enabled, true, 'the plan is read only after ticking 数字习惯');
+    assert.equal(p.state.enqueued.length, 0, 'ticking submits nothing');
+    assert.equal(p.state.auditEnqueued.length, 0);
 });
 
 test('without a readable plan the button stays off and says why', () => {
     const p = page({ plan: { data: undefined, error: new Error('boom'), isLoading: false } });
     let tree = p.render();
-    p.chooseHlwy(tree);
-    tree = p.render();
+    tree = p.chooseHlwy(tree);
 
-    const button = submitButton(tree, '开始采样');
+    const button = submitButton(tree);
     assert.equal(button.props.disabled, true, 'no plan, no promise, no submit');
     const body = squash(tree);
     assert.match(body, /计划没读出来：boom/);
-    // 没读到计划就没有调用上限可写：不拿旧数字、也不写「约 N 次」。
-    assert.match(body, /计划读取后可查看调用上限，按正常价格计费/);
-    assert.equal(/最多调用\d+次/.test(body), false, 'no invented call count is shown');
+    // 没读到计划就没有调用上限可写：不拿旧数字冒充「最多调用 N 次」。
+    assert.match(body, /数字习惯的调用上限要等计划读出来才知道/);
+    assert.equal(/最多调用\d+次/.test(body), false, 'no invented call cap is shown');
 });
 
 test('a loaded plan shows its call cap and enables the button', () => {
@@ -234,12 +259,11 @@ test('a loaded plan shows its call cap and enables the button', () => {
         settings: [{ key: 'model_audit_hlwy_enabled', value: 'true' }],
     });
     let tree = p.render();
-    p.chooseHlwy(tree);
-    tree = p.render();
+    tree = p.chooseHlwy(tree);
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     tree = p.render();
 
-    const button = submitButton(tree, '开始采样');
+    const button = submitButton(tree);
     assert.equal(button.props.disabled, false);
     assert.match(squash(tree), /最多调用100次，会消耗渠道额度/);
 });
@@ -250,24 +274,23 @@ test('the comparison submission carries only the comparison fields', async () =>
         settings: [{ key: 'model_audit_hlwy_enabled', value: 'true' }],
     });
     let tree = p.render();
-    p.chooseHlwy(tree);
-    tree = p.render();
+    tree = p.chooseHlwy(tree);
+    tree = p.onlyHlwy(tree);
 
-    // 没选基准之前不能提交：这不是能靠默认值猜的东西。
-    assert.equal(submitButton(tree, '开始采样').props.disabled, true);
+    // 没有能用的基准（目录是空的、也没手动选）就不能提交：这不是能靠默认值猜的东西。
+    assert.equal(submitButton(tree).props.disabled, true);
     assert.match(squash(tree), /先选一份基准/);
 
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     tree = p.render();
-    // 用户把样本量改成 200 也要跟着走。
     p.panel().onSamplesChange(200);
     tree = p.render();
 
-    submitButton(tree, '开始采样').props.onClick();
+    submitButton(tree).props.onClick();
     await setImmediate();
 
     assert.equal(p.state.enqueued.length, 1, 'one click = one submission');
-    assert.equal(p.state.auditEnqueued.length, 0, 'the probe path is not used');
+    assert.equal(p.state.auditEnqueued.length, 0, 'nothing else was ticked, so no probe job');
     const payload = p.state.enqueued[0];
     assert.deepEqual(Object.keys(payload).sort(), ['channel_id', 'hlwy', 'kind', 'models']);
     assert.equal(payload.channel_id, 7);
@@ -283,15 +306,32 @@ test('the comparison submission carries only the comparison fields', async () =>
     assert.equal(p.state.toasts[0][0], 'success');
 });
 
+test('数字习惯 with other checks ticked submits two kinds of job, each with its own fields', async () => {
+    const p = page({
+        plan: { data: PLAN_OK, error: undefined, isLoading: false },
+        settings: [{ key: 'model_audit_hlwy_enabled', value: 'true' }],
+        baselines: [baselineEntryFixture({ id: 'hlwy:auto@1', source_kind: 'builtin_hlwy', declared_model: 'gpt-test' })],
+    });
+    let tree = p.render();
+    tree = p.chooseHlwy(tree);
+    // 自动挑基准：同模型的内置件，不用手动选。
+    assert.equal(p.panel().baselineId, 'hlwy:auto@1');
+    submitButton(tree).props.onClick();
+    await setImmediate();
+    assert.equal(p.state.auditEnqueued.length, 1, 'the ticked probes go in as one probe job');
+    assert.equal('hlwy' in p.state.auditEnqueued[0], false);
+    assert.equal(p.state.enqueued.length, 1, 'and 数字习惯 as its own comparison job');
+    assert.equal(p.state.enqueued[0].hlwy.baseline_id, 'hlwy:auto@1');
+});
+
 test('the feature flag off blocks only new submissions, and says so', () => {
     const p = page({ plan: { data: PLAN_OK, error: undefined, isLoading: false } });
     let tree = p.render();
-    p.chooseHlwy(tree);
-    tree = p.render();
+    tree = p.chooseHlwy(tree);
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     tree = p.render();
 
-    const button = submitButton(tree, '开始采样');
+    const button = submitButton(tree);
     assert.equal(button.props.disabled, true);
     assert.match(squash(tree), /基准对照已在设置里关闭/);
     assert.equal(p.state.enqueued.length, 0);
@@ -299,9 +339,7 @@ test('the feature flag off blocks only new submissions, and says so', () => {
 
 test('the plan request follows the chosen baseline and sample count', () => {
     const p = page({ plan: { data: PLAN_OK, error: undefined, isLoading: false } });
-    let tree = p.render();
-    p.chooseHlwy(tree);
-    tree = p.render();
+    p.chooseHlwy(p.render());
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     p.render();
     p.panel().onSamplesChange(200);
@@ -330,12 +368,11 @@ test('a picked baseline that the server now rejects blocks submission', () => {
         ],
     });
     let tree = p.render();
-    p.chooseHlwy(tree);
-    tree = p.render();
+    tree = p.chooseHlwy(tree);
     p.panel().onBaselineChange('hlwy:base@abc123456789');
     tree = p.render();
 
-    assert.equal(submitButton(tree, '开始采样').props.disabled, true);
+    assert.equal(submitButton(tree).props.disabled, true);
     assert.match(squash(tree), /选中的基准现在不能用/);
     assert.equal(p.state.enqueued.length, 0);
 });
@@ -359,7 +396,7 @@ test('rerunning refills the form from the stored report and enqueues nothing', (
     });
     let tree = p.render();
     // 报告从「记录」里打开：队列只交出一份 JSON 字符串，页面现解析。
-    findElement(tree, (node) => node.type === 'button' && text(node).trim() === '记录').props.onClick();
+    findElement(tree, (node) => node.type === 'button' && text(node).trim() === '任务').props.onClick();
     tree = p.render();
     p.queue().onOpenReport({
         id: 41,
@@ -385,7 +422,8 @@ test('rerunning refills the form from the stored report and enqueues nothing', (
     // 渠道、型号、基准、样本量都跟着回来：只填基准会让下一轮跑在错的渠道上。
     const selectValues = findAll(tree, (node) => node.type === 'SearchableSelect').map((node) => node.props.value);
     assert.ok(selectValues.includes('9'), 'the channel from the report is restored');
-    assert.ok(selectValues.includes('stored-model'), 'so is the model');
+    const pickedModels = findAll(tree, (node) => node.type === 'MultiPicker').map((node) => node.props.value);
+    assert.ok(pickedModels.some((value) => value.length === 1 && value[0] === 'stored-model'), 'so is the model, and only that one');
     assert.equal(p.panel().baselineId, 'hlwy:base@aaa111');
     assert.equal(p.panel().samples, 200);
     // 回到提交页，但一轮都没发：再跑一轮要花真钱，得用户自己按。
@@ -414,7 +452,7 @@ test('a rerun whose original channel is gone is blocked, not quietly moved elsew
         channels: [{ raw: { id: 7, name: 'ch-7', enabled: true, type: 2, selected_models: ['gpt-test'] } }],
     });
     let tree = p.render();
-    findElement(tree, (node) => node.type === 'button' && text(node).trim() === '记录').props.onClick();
+    findElement(tree, (node) => node.type === 'button' && text(node).trim() === '任务').props.onClick();
     tree = p.render();
     p.queue().onOpenReport({
         id: 42,
@@ -433,7 +471,7 @@ test('a rerun whose original channel is gone is blocked, not quietly moved elsew
 
     // 渠道选择器只能落到现存渠道上，所以光看选择器「有值」发现不了这件事。
     assert.equal(p.panel().baselineId, 'hlwy:base@aaa111', 'the rest of the form is still refilled');
-    assert.equal(submitButton(tree, '开始采样').props.disabled, true, 'do not spend money on a channel nobody chose');
+    assert.equal(submitButton(tree).props.disabled, true, 'do not spend money on a channel nobody chose');
     assert.match(squash(tree), /上一轮用的渠道（#9）已经不在渠道列表里了，请重新选一个渠道再提交/);
     assert.equal(p.state.enqueued.length, 0);
 
@@ -441,6 +479,6 @@ test('a rerun whose original channel is gone is blocked, not quietly moved elsew
     findAll(tree, (node) => node.type === 'SearchableSelect').find((node) => node.props.value === '7')
         .props.onValueChange('7');
     tree = p.render();
-    assert.equal(submitButton(tree, '开始采样').props.disabled, false, 'an explicitly chosen channel unblocks it');
+    assert.equal(submitButton(tree).props.disabled, false, 'an explicitly chosen channel unblocks it');
     assert.equal(squash(tree).includes('已经不在渠道列表里了'), false);
 });

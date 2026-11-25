@@ -121,6 +121,12 @@ func Init() {
 		balancer.SweepExpired(24 * time.Hour)
 		relay.PruneResponsesSessionsExpired()
 		op.RelayLogStreamTokenSweep(time.Hour)
+		// 鹈鹕测试的图：7 天前、没收藏、已出完的删掉（收藏的一直留着）。
+		if n, err := op.ModelAuditCreativePurge(ctx, time.Now()); err != nil {
+			log.Warnf("model audit creative purge failed: %v", err)
+		} else if n > 0 {
+			log.Infof("model audit creative purge removed %d item(s)", n)
+		}
 	})
 
 	// SQLite WAL 检查点: 让被撑大过的 data.db-wal 自己缩回去(生产上停在 9.48GB 不动)。

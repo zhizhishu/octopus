@@ -11,15 +11,19 @@ import {
     Hash,
     Loader2,
     Square,
+    Trash2,
     XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/components/common/Toast';
 import { cn } from '@/lib/utils';
-import { historyBucket, verdictHeadline, formatReportTime } from '@/lib/model-audit-verdict';
 import {
     useAuditJobs,
     useAuditJobDetail,
     useCancelAuditJob,
+    useClearFinishedAuditJobs,
+    useDeleteAuditJob,
+    useDeleteAuditJobs,
     type AuditJob,
     type AuditResult,
     type AuditVerdict,
@@ -123,37 +127,133 @@ function jobProgressText(job: AuditJob, t: (k: string, v?: Record<string, string
     }
 }
 
-export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: AuditResult) => void } = {}) {
+/** 任务是否还在花钱：排队中、进行中。这样的任务不能勾选删除。 */
+function jobIsActive(job: AuditJob): boolean {
+    return job.status === 'queued' || job.status === 'running';
+}
+
+/** 「有问题」= 可疑或没测成（对照任务只有真失败才算）。 */
+function jobHasProblem(job: AuditJob): boolean {
+    return jobIsSuspect(job) || jobIsFailed(job);
+}
+
+function triggerText(trigger: string): string {
+    if (trigger === 'schedule') return '定时';
+    if (trigger === 'manual' || trigger === '') return '手动';
+    if (trigger === 'echo_mismatch') return '日志跟查';
+    return trigger;
+}
+
+function spentText(job: AuditJob): string {
+    if (isHlwyJob(job)) {
+        const started = job.hlwy_summary?.counts?.started_slots;
+        return typeof started === 'number' ? `${started} 次` : '';
+    }
+    return typeof job.sent_requests === 'number' && job.sent_requests > 0 ? `约 ${job.sent_requests} 次` : '';
+}
+
+function errorText(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+export function ModelAuditQueue({
+    onOpenReport,
+    hideActive = false,
+    focusJobId = null,
+}: {
+    onOpenReport?: (result: AuditResult) => void;
+    /** 任务页上方已经有「进行中」卡片时，记录表只列已经停下的。 */
+    hideActive?: boolean;
+    /** 从「最近检测」点进来时自动展开那一条（换一条时调用方用 key 让它重新挂载）。 */
+    focusJobId?: number | null;
+} = {}) {
     const t = useTranslations('modelAudit');
     const { data: jobs } = useAuditJobs(50);
     const cancelJob = useCancelAuditJob();
+    const deleteJob = useDeleteAuditJob();
+    const deleteJobs = useDeleteAuditJobs();
+    const clearFinished = useClearFinishedAuditJobs();
 
-    const [openJobID, setOpenJobID] = useState<number | null>(null);
-    const [filter, setFilter] = useState<'all' | 'suspect' | 'failed'>('all');
+    const [openJobID, setOpenJobID] = useState<number | null>(focusJobId);
+    const [filter, setFilter] = useState<'all' | 'problem' | 'schedule'>('all');
     const [query, setQuery] = useState('');
+    const [checked, setChecked] = useState<number[]>([]);
+    // 二次确认：批量删 / 清空 / 单条删 都先停一下，删了就找不回来。
+    const [confirm, setConfirm] = useState<null | 'batch' | 'clear' | number>(null);
 
-    const suspectN = (jobs ?? []).filter((j) => jobIsSuspect(j)).length;
-    const failedN = (jobs ?? []).filter((j) => jobIsFailed(j)).length;
+    const all = (jobs ?? []).filter((job) => !hideActive || !jobIsActive(job));
+    const problemN = all.filter((j) => jobHasProblem(j)).length;
+    const scheduleN = all.filter((j) => j.trigger === 'schedule').length;
 
-    const filtered = (jobs ?? []).filter((job) => {
+    const filtered = all.filter((job) => {
         const q = query.trim().toLowerCase();
         if (q) {
             const hay = `${job.channel_name} ${job.single_model ?? ''}`.toLowerCase();
             if (!hay.includes(q)) return false;
         }
         if (filter === 'all') return true;
-        if (filter === 'suspect') return jobIsSuspect(job);
-        return jobIsFailed(job);
+        if (filter === 'problem') return jobHasProblem(job);
+        return job.trigger === 'schedule';
     });
+    const deletable = filtered.filter((job) => !jobIsActive(job));
+    const checkedVisible = checked.filter((id) => deletable.some((job) => job.id === id));
+    const allChecked = deletable.length > 0 && checkedVisible.length === deletable.length;
+
+    const toggleChecked = (id: number, on: boolean) =>
+        setChecked((current) => (on ? [...new Set([...current, id])] : current.filter((item) => item !== id)));
+
+    const reportSkipped = (skipped: number[]) => {
+        if (skipped.length > 0) toast.warning(`${skipped.length} 条还在跑，没删；等它停下再删`);
+    };
+
+    const runBatchDelete = () => {
+        const ids = checkedVisible;
+        setConfirm(null);
+        if (ids.length === 0) return;
+        deleteJobs.mutate(ids, {
+            onSuccess: (res) => {
+                toast.success(`已删除 ${res.deleted} 条记录`);
+                reportSkipped(res.skipped_busy ?? []);
+                setChecked([]);
+            },
+            onError: (error) => toast.error('删除失败', { description: errorText(error) }),
+        });
+    };
+
+    const runClear = () => {
+        setConfirm(null);
+        clearFinished.mutate(undefined, {
+            onSuccess: (res) => {
+                toast.success(res.deleted > 0 ? `已清空 ${res.deleted} 条已完成的记录` : '没有可以清的记录');
+                setChecked([]);
+            },
+            onError: (error) => toast.error('清空失败', { description: errorText(error) }),
+        });
+    };
+
+    const runDeleteOne = (id: number) => {
+        setConfirm(null);
+        deleteJob.mutate(id, {
+            onSuccess: () => {
+                toast.success('已删除这条记录');
+                setChecked((current) => current.filter((item) => item !== id));
+                if (openJobID === id) setOpenJobID(null);
+            },
+            onError: (error) => toast.error('删除失败', { description: errorText(error) }),
+        });
+    };
+
+    const busy = deleteJob.isPending || deleteJobs.isPending || clearFinished.isPending;
 
     return (
         <div className="min-w-0 space-y-4">
             <div className="rounded-3xl border border-border bg-card p-4 sm:p-5">
                 <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="mr-1 text-sm font-semibold">记录</h3>
                     {([
                         ['all', `全部`],
-                        ['suspect', `可疑 ${suspectN}`],
-                        ['failed', `没测成 ${failedN}`],
+                        ['problem', `有问题 ${problemN}`],
+                        ['schedule', `定时 ${scheduleN}`],
                     ] as const).map(([key, label]) => (
                         <button
                             key={key}
@@ -171,9 +271,57 @@ export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: Audi
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="搜模型或渠道"
-                        className="ml-auto h-8 min-w-[140px] rounded-lg border border-border bg-background px-2.5 text-xs"
+                        className="h-8 min-w-[140px] flex-1 rounded-lg border border-border bg-background px-2.5 text-xs sm:ml-auto sm:flex-none"
                     />
                 </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                    <label className="flex items-center gap-1.5 text-muted-foreground">
+                        <input
+                            type="checkbox"
+                            aria-label="全选这一页能删的记录"
+                            checked={allChecked}
+                            disabled={deletable.length === 0}
+                            onChange={(e) => setChecked(e.target.checked ? deletable.map((job) => job.id) : [])}
+                        />
+                        全选
+                    </label>
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 rounded-lg text-[11px]"
+                        disabled={checkedVisible.length === 0 || busy}
+                        onClick={() => setConfirm('batch')}
+                    >
+                        <Trash2 className="size-3" />
+                        删除选中的 {checkedVisible.length} 条
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto h-7 rounded-lg text-[11px] text-muted-foreground hover:text-destructive"
+                        disabled={busy || all.every((job) => jobIsActive(job))}
+                        onClick={() => setConfirm('clear')}
+                    >
+                        清空已完成记录
+                    </Button>
+                </div>
+
+                {(confirm === 'batch' || confirm === 'clear') && (
+                    <div role="alertdialog" className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                        <span className="min-w-0 flex-1">
+                            {confirm === 'batch'
+                                ? `确定删掉选中的 ${checkedVisible.length} 条记录？报告会一起删掉，找不回来。`
+                                : '确定清空所有已完成的检测记录？报告会一起删掉，找不回来；进行中、排队中的不受影响。'}
+                        </span>
+                        <Button size="sm" variant="destructive" className="h-7 rounded-lg text-[11px]" onClick={confirm === 'batch' ? runBatchDelete : runClear}>
+                            {confirm === 'batch' ? '确定删除' : '确定清空'}
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 rounded-lg text-[11px]" onClick={() => setConfirm(null)}>
+                            算了
+                        </Button>
+                    </div>
+                )}
 
                 {filtered.length === 0 ? (
                     <div className="mt-3 rounded-2xl border border-dashed border-border/70 bg-muted/20 p-6 text-center text-sm text-muted-foreground">
@@ -190,6 +338,13 @@ export function ModelAuditQueue({ onOpenReport }: { onOpenReport?: (result: Audi
                                 onCancel={() => cancelJob.mutate(job.id)}
                                 canceling={cancelJob.isPending && cancelJob.variables === job.id}
                                 onOpenReport={onOpenReport}
+                                checked={checked.includes(job.id)}
+                                onCheck={(on) => toggleChecked(job.id, on)}
+                                confirmingDelete={confirm === job.id}
+                                onAskDelete={() => setConfirm(job.id)}
+                                onConfirmDelete={() => runDeleteOne(job.id)}
+                                onCancelDelete={() => setConfirm(null)}
+                                deleting={busy}
                             />
                         ))}
                     </div>
@@ -221,6 +376,13 @@ function JobRow({
     onCancel,
     canceling,
     onOpenReport,
+    checked = false,
+    onCheck,
+    confirmingDelete = false,
+    onAskDelete,
+    onConfirmDelete,
+    onCancelDelete,
+    deleting = false,
 }: {
     job: AuditJob;
     open: boolean;
@@ -228,6 +390,13 @@ function JobRow({
     onCancel: () => void;
     canceling: boolean;
     onOpenReport?: (result: AuditResult) => void;
+    checked?: boolean;
+    onCheck?: (on: boolean) => void;
+    confirmingDelete?: boolean;
+    onAskDelete?: () => void;
+    onConfirmDelete?: () => void;
+    onCancelDelete?: () => void;
+    deleting?: boolean;
 }) {
     const t = useTranslations('modelAudit');
     const active = job.status === 'queued' || job.status === 'running';
@@ -248,6 +417,18 @@ function JobRow({
 
     return (
         <div className="rounded-2xl border border-border/70 bg-muted/20">
+            <div className="flex min-w-0 items-center">
+            {onCheck && (
+                <input
+                    type="checkbox"
+                    className="ml-3 shrink-0"
+                    aria-label={`选中 ${job.channel_name} #${job.id}`}
+                    checked={checked}
+                    // 还在跑的不能删：勾不上，免得「删选中的」悄悄跳过它。
+                    disabled={active}
+                    onChange={(e) => onCheck(e.target.checked)}
+                />
+            )}
             <button
                 type="button"
                 onClick={onToggle}
@@ -266,6 +447,11 @@ function JobRow({
                             </span>
                         )}
                         {active && <Loader2 className="size-3 animate-spin text-primary" />}
+                        {!hlwy && job.preset && (
+                            <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">{job.preset}</span>
+                        )}
+                        <span className="text-[10px] text-muted-foreground">{triggerText(job.trigger ?? '')}</span>
+                        {spentText(job) && <span className="text-[10px] text-muted-foreground">· 花了{spentText(job)}</span>}
                     </div>
                     <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
                         {hlwy
@@ -303,6 +489,31 @@ function JobRow({
                     </div>
                 )}
             </button>
+            {onAskDelete && !active && (
+                <button
+                    type="button"
+                    onClick={onAskDelete}
+                    disabled={deleting}
+                    aria-label={`删除 ${job.channel_name} #${job.id}`}
+                    title="删除这条记录"
+                    className="mr-2 shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                >
+                    <Trash2 className="size-3.5" />
+                </button>
+            )}
+            </div>
+
+            {confirmingDelete && (
+                <div role="alertdialog" className="mx-3 mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    <span className="min-w-0 flex-1">删掉这条记录？报告会一起删掉，找不回来。</span>
+                    <Button size="sm" variant="destructive" className="h-7 rounded-lg text-[11px]" onClick={onConfirmDelete}>
+                        删除
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7 rounded-lg text-[11px]" onClick={onCancelDelete}>
+                        算了
+                    </Button>
+                </div>
+            )}
 
             {active && (
                 <div className="flex justify-end px-3 pb-2">

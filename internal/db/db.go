@@ -122,6 +122,8 @@ func InitDB(dbType, dsn string, debug bool) error {
 		// 生产上真栽过这一次（2026-10-27）。放在这里，每次启动都会对齐结构。
 		&model.ModelAuditJob{},
 		&model.ModelAuditResult{},
+		// 鹈鹕测试（创作题并排看）：独立一张表，7 天自动清理、收藏保留。
+		&model.ModelAuditCreative{},
 		// hlwy 基准表：同样只走这份名单，不另写一次性迁移。
 		// 它和检测表是两条独立的生命周期（基准比结果活得久），但「表在不在」
 		// 这个坑一样，所以一并放在这里每次启动对齐结构。

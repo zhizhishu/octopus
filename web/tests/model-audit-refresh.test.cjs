@@ -398,7 +398,7 @@ function auditPage() {
     let channelData = [];
     let mutateImpl = () => new Promise(() => {});
     const mutation = { mutateAsync(vars) { calls.push(vars); return mutateImpl(vars); } };
-    const toast = { warning() {}, info() {}, error(...a) { toast.errors.push(a); }, errors: [] };
+    const toast = { warning() {}, info() {}, success() {}, error(...a) { toast.errors.push(a); }, errors: [] };
     const { ModelAudit } = load('src/components/modules/model-audit/index.tsx', {
         react: hooksState.react,
         'lucide-react': new Proxy({}, { get: (_, key) => key }),
@@ -427,6 +427,17 @@ function auditPage() {
                     full: { ids: ['liveness', 'identity', 'glitch', 'token_delta', 'echo_rewrite', 'context_canary', 'fingerprint'], requests: 10 },
                 },
             }),
+            // 多选模型时每个模型一份计划；这里每个模型都给同一份（够页面挂载与估数）。
+            useAuditPlans: (channelId, models) => models.map(() => ({
+                data: {
+                    protocol: 'openai-chat',
+                    model: 'grok-4.7',
+                    probes: [],
+                    quick: { ids: ['liveness', 'echo_rewrite', 'context_canary'], requests: 3 },
+                    full: { ids: ['liveness', 'identity', 'glitch', 'token_delta', 'echo_rewrite', 'context_canary', 'fingerprint'], requests: 10 },
+                },
+            })),
+            useAuditBudget: () => ({ data: undefined }),
             useAuditJobs: () => ({ data: [] }),
             useScheduledAudit: () => ({ data: undefined }),
             // hlwy 基准对照的入口。这个文件测的是"页面会不会多打上游"，
@@ -486,12 +497,17 @@ function auditPage() {
         // 后台检测面板（第三期）自身读设置项、自己保存：渲染与键名由
         // tests/audit-budget.test.cjs 锁，这里只要页面能挂载（照 ProvenanceCard 的补法）。
         './BackgroundAuditPanel': { BackgroundAuditPanel: () => null },
-        './Queue': {
-            ModelAuditQueue: ({ onOpenReport } = {}) => {
+        // 「任务」页（进行中卡片 + 记录）自己的渲染由 model-audit-queue.test.cjs 覆盖；
+        // 它现在是报告的唯一来源：用户在记录里点开某条结果，报告才回到「检测」页，
+        // 所以给一个能触发回调的存根，测试才能走完整的「回看」路径。
+        './TasksView': {
+            TasksView: ({ onOpenReport } = {}) => {
                 queueView.onOpenReport = onOpenReport;
                 return null;
             },
         },
+        './PelicanTest': { PelicanTest: () => null },
+        './MultiPicker': { MultiPicker: () => null },
     });
     return {
         calls,
@@ -612,8 +628,8 @@ test('unmounting the page leaves the background job alone', () => {
 // 这个测试框架刻意不展开函数组件（只做元素树比对），所以队列存根不会自己执行。
 // 想验证"从队列点开历史报告"这条路径，就得手动把它跑一次，拿它注册的回调。
 function mountQueueStub(tree, page) {
-    const node = findElement(tree, (n) => typeof n.type === 'function' && n.type.name === 'ModelAuditQueue');
-    assert.ok(node, 'queue stub is present in the tree');
+    const node = findElement(tree, (n) => typeof n.type === 'function' && n.type.name === 'TasksView');
+    assert.ok(node, 'tasks stub is present in the tree');
     node.type(node.props);
     assert.equal(typeof page.queueView.onOpenReport, 'function', 'queue page exposes the report callback');
 }
@@ -645,7 +661,7 @@ test('insufficient-evidence rows show their reason and headline no longer claims
     const cleanup = page.mount();
 
     // 切到「检测记录」，让队列页渲染出来并拿到 onOpenReport 回调。
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('记录')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && /^\s*任务/.test(text(n))).props.onClick();
     tree = page.render();
     mountQueueStub(tree, page);
 
@@ -678,7 +694,7 @@ test('starting a new run clears the previous report so it cannot be exported as 
     const cleanup = page.mount();
 
     // 先从队列回看一份历史报告：此时详情面板是「有报告」状态。
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('记录')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && /^\s*任务/.test(text(n))).props.onClick();
     tree = page.render();
     mountQueueStub(tree, page);
     page.queueView.onOpenReport({
@@ -776,7 +792,7 @@ test('tokenizer mismatch is shown as reference info and never counted as a revie
     page.setChannels(grokChannel);
     let tree = page.render();
     const cleanup = page.mount();
-    findElement(tree, (n) => n.type === 'button' && text(n).includes('记录')).props.onClick();
+    findElement(tree, (n) => n.type === 'button' && /^\s*任务/.test(text(n))).props.onClick();
     tree = page.render();
     mountQueueStub(tree, page);
     const data = {
