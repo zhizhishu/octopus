@@ -139,18 +139,30 @@ func Run(ctx context.Context, ids []ProbeID, s modelverify.Sender, upstreamModel
 	// s 为空时保持原有行为（每个探针自报「没有可用的发送器」），不要造一个包着
 	// nil 的包装器——那会让探针跑到 Ask 里才 panic。
 	sender := s
+	// 进度观察者（任务页的小方块）只读事件，不改请求、不改结果；没有就是 nil。
+	progress := progressFrom(ctx)
 	var recorder *recordingSender
 	if s != nil {
-		recorder = &recordingSender{inner: s, requestModel: targetModel}
+		recorder = &recordingSender{inner: s, requestModel: targetModel, progress: progress}
 		sender = recorder
 	}
 	results := make([]Result, 0, len(ids))
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			results = append(results, Result{ProbeID: id, Err: err})
+			if progress != nil {
+				progress.ProbeFinished(id, false)
+			}
 			continue
 		}
-		results = append(results, runProbe(ctx, id, sender, targetModel))
+		if progress != nil {
+			progress.ProbeStarted(id)
+		}
+		res := runProbe(ctx, id, sender, targetModel)
+		results = append(results, res)
+		if progress != nil {
+			progress.ProbeFinished(id, res.Err == nil && res.OK)
+		}
 	}
 	if recorder != nil {
 		attachProvenance(results, recorder.summary())
@@ -216,12 +228,17 @@ func takeProvenance(results []Result) (ProvenanceSummary, []Result) {
 type recordingSender struct {
 	inner        modelverify.Sender
 	requestModel string
+	// progress 只用来报「又发了一次请求」，可为 nil。
+	progress ProgressObserver
 
 	mu        sync.Mutex
 	envelopes []ProvenanceInput
 }
 
 func (s *recordingSender) Ask(ctx context.Context, ask modelverify.Ask) (modelverify.Response, error) {
+	if s.progress != nil {
+		s.progress.RequestSent()
+	}
 	resp, err := s.inner.Ask(ctx, ask)
 	if err != nil {
 		// 失败的请求没有信封：错误响应的头和正文来自网关 / 前置层，不是模型后端。
