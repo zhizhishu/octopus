@@ -268,6 +268,31 @@ func TestMCPIntegration(t *testing.T) {
 			}
 			t.Logf("ISOLATION U%d user_id=%d api_key_id=%d relay_logs=%d request_source=mcp calls=1+20 balance=100->%.2f balance_delta=%.2f key_spent_delta=%.2f stats_cost=%.2f", i+1, user.ID, e.keys[i].ID, counts[e.keys[i].ID], user.Balance, 100-user.Balance, stats.InputCost+stats.OutputCost, usage.Totals.Cost)
 		}
+		admin := model.User{ID: e.users[0].ID, Role: model.UserRoleAdmin}
+		all, err := op.MCPStatsGet(e.ctx, admin, 7)
+		if err != nil || all.Totals.Calls != 42 || len(all.TopUsers) != 2 || len(all.TopChannels) == 0 {
+			t.Fatalf("admin breakdown = %+v, %v", all, err)
+		}
+		var channelCalls int64
+		for _, row := range all.TopChannels {
+			channelCalls += row.Calls
+			if row.ChannelID == 0 || row.Name == "" {
+				t.Fatalf("channel row missing identity: %+v", row)
+			}
+		}
+		for _, row := range all.TopUsers {
+			if row.Calls != 21 || row.Cost != 5.25 || row.Name == "" {
+				t.Fatalf("user row = %+v", row)
+			}
+		}
+		if channelCalls != 42 {
+			t.Fatalf("channel calls = %d, want 42", channelCalls)
+		}
+		own, err := op.MCPStatsGet(e.ctx, e.users[0], 7)
+		if err != nil || len(own.TopUsers) != 0 || len(own.TopChannels) != 0 {
+			t.Fatalf("non-admin saw breakdown: %+v %v", own, err)
+		}
+		t.Logf("BREAKDOWN admin users=%d channels=%d channel_calls=%d non_admin_breakdown=0", len(all.TopUsers), len(all.TopChannels), channelCalls)
 	})
 	t.Run("session-hijack", func(t *testing.T) {
 		if a.ID() == "" {

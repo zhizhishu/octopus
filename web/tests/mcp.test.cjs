@@ -18,7 +18,7 @@ test('MCP navigation is available to admin and normal users', () => {
     }
 });
 
-test('MCP usage query is identity-scoped and uses the real endpoint', async () => {
+test('MCP usage query is identity-scoped, ranged, and uses the real endpoint', async () => {
     let options;
     const calls = [];
     const hooks = load('src/api/endpoints/mcp.ts', {
@@ -29,24 +29,42 @@ test('MCP usage query is identity-scoped and uses the real endpoint', async () =
     assert.deepEqual(options.queryKey, ['mcp', 'stats', 12, 7]);
     assert.equal(options.enabled, true);
     await options.queryFn();
-    assert.deepEqual(calls, ['/api/v1/mcp/stats?days=7']);
+    hooks.useMCPStats(12, 30);
+    assert.deepEqual(options.queryKey, ['mcp', 'stats', 12, 30]);
+    await options.queryFn();
+    assert.deepEqual(calls, ['/api/v1/mcp/stats?days=7', '/api/v1/mcp/stats?days=30']);
+    assert.deepEqual([...hooks.MCP_RANGES], [1, 7, 30]);
     hooks.useMCPStats(undefined);
     assert.equal(options.enabled, false);
 });
 
-test('MCP controls and admin-only queries are confined to AdminTools', () => {
+test('MCP settings hooks stay in admin-only components', () => {
     const source = read('src/components/modules/mcp/index.tsx');
-    const [admin, user] = source.split('export function MCP()');
-    assert.match(admin, /useSettingList\(\)/);
-    assert.match(admin, /useModelList\(\)/);
-    assert.doesNotMatch(user, /useSettingList\(|useModelList\(|useSetSetting\(|<Switch/);
-    assert.match(user, /user\?\.role === 'admin' && <AdminTools/);
+    const [admin, rest] = source.split('/** 选当前账号自己的 Key');
+    const user = rest.split('export function MCP()')[1];
+    assert.match(admin, /function AdminSwitch\(\)[\s\S]*useSettingList\(\)/);
+    assert.match(admin, /function AdminAdvanced\(\)[\s\S]*useModelList\(\)/);
+    assert.doesNotMatch(rest, /useSettingList\(|useModelList\(|useSetSetting\(|<Switch/);
+    assert.match(user, /isAdmin && <AdminSwitch \/>/);
+    assert.match(user, /isAdmin && <AdminAdvanced \/>/);
+    assert.match(user, /isAdmin && stats\.data && <div/);
     assert.match(source, /window.location.origin/);
-    assert.match(user, /Bearer sk-octopus-xxxxxxxx/);
     assert.match(user, /stats\.isLoading/);
     assert.match(user, /stats\.isError/);
-    assert.match(user, /stats\.data\.top_keys\.length === 0/);
     assert.doesNotMatch(source, /demo-key|oct\.example\.com/);
+});
+
+test('MCP config auto-fills the caller key but only shows it masked', () => {
+    const source = read('src/components/modules/mcp/index.tsx');
+    const user = source.split('export function MCP()')[1];
+    assert.match(source, /const PLACEHOLDER_KEY = 'sk-octopus-xxxxxxxx'/);
+    // API Key 登录直接用当前 token；网页账号登录才挂 KeyPicker（不对 API Key 会话调用列表接口）。
+    assert.match(user, /\(isAPIKeyAuth \? token : picked\) \|\| PLACEHOLDER_KEY/);
+    assert.match(user, /!isAPIKeyAuth && user && <KeyPicker/);
+    assert.match(source, /function KeyPicker[\s\S]*useAPIKeyList\(\)[\s\S]*key\.enabled/);
+    // 复制的是完整 Key，页面展示的是掩码。
+    assert.match(user, /config\(apiKey\)/);
+    assert.match(user, /maskKey\(apiKey\)/);
 });
 
 test('MCP locale keys are complete in all three languages', () => {
@@ -58,7 +76,10 @@ test('MCP locale keys are complete in all three languages', () => {
         assert.ok(Object.values(locale.mcp).every((value) => value.length > 0));
     }
     const source = read('src/components/modules/mcp/index.tsx');
-    for (const match of source.matchAll(/\bt\('([a-zA-Z]+)'\)/g)) {
+    for (const match of source.matchAll(/\bt\('([a-zA-Z0-9]+)'\)/g)) {
         assert.ok(keys.includes(match[1]), `missing MCP translation: ${match[1]}`);
+    }
+    for (const key of ['globalOnHint', 'globalOffHint', 'keyFilledHint', 'keyMissingHint', 'usage', 'ownUsage', 'copyUrl', 'copyConfig', 'generateDescription', 'editDescription']) {
+        assert.ok(keys.includes(key), `missing dynamic MCP translation: ${key}`);
     }
 });
