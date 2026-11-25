@@ -60,8 +60,8 @@ export const CHANNEL_ENDPOINT_FAMILIES: ChannelEndpointFamily[] = [
     },
     {
         id: 'custom_openai_chat',
-        label: 'Custom OpenAI Chat',
-        shortLabel: 'Custom Chat',
+        label: 'Custom',
+        shortLabel: 'Custom',
         lane: 'CUS',
         description: '填完整请求地址，原样发送',
         tone: 'from-amber-500/10 via-transparent to-transparent',
@@ -82,8 +82,8 @@ export const CHANNEL_ENDPOINT_FAMILIES: ChannelEndpointFamily[] = [
     },
     {
         id: 'embedding',
-        label: 'OpenAI Embedding',
-        shortLabel: 'Embedding',
+        label: 'Embeddings',
+        shortLabel: 'Embeddings',
         lane: 'EMB',
         description: '/v1/embeddings · 向量端点',
         tone: 'from-teal-500/10 via-transparent to-transparent',
@@ -93,8 +93,8 @@ export const CHANNEL_ENDPOINT_FAMILIES: ChannelEndpointFamily[] = [
     },
     {
         id: 'systemone',
-        label: '决策模型（SystemOne / Jev）',
-        shortLabel: '决策',
+        label: 'Decision (SystemOne / Jev)',
+        shortLabel: 'Decision',
         lane: 'DEC',
         description: '填根地址即可，自动拼 /v1/systemone',
         tone: 'from-orange-500/10 via-transparent to-transparent',

@@ -1,27 +1,49 @@
 import { ChannelType } from '@/api/endpoints/channel';
 import { isStreamRequiredModel } from './model-aliases';
 
+/**
+ * 渠道测试可选的上游接口。
+ *
+ * 🔴 label 一律英文：这些是**选项文本**，不随语言翻译（中文只留在选项之外的说明里）。
+ *
+ * 'custom' = 渠道自己配置的完整网址，原样发送。只有自定义渠道(type 6)有这条语义，
+ * 其它渠道不渲染它（见 modelTestEndpointsForChannel），否则选出来就是一个后端不认的端点。
+ */
 export const MODEL_TEST_ENDPOINTS = [
+    { value: 'custom', label: 'Custom (full URL)' },
     { value: 'openai_chat', label: 'Chat' },
     { value: 'openai_responses', label: 'Responses' },
     { value: 'anthropic_messages', label: 'Claude Messages' },
     { value: 'gemini_generate_content', label: 'Gemini' },
-    { value: 'openai_embeddings', label: '文本向量' },
-    { value: 'openai_images_generations', label: '图片生成' },
-    { value: 'systemone', label: '决策' },
+    { value: 'openai_embeddings', label: 'Embeddings' },
+    { value: 'openai_images_generations', label: 'Image Generation' },
+    { value: 'systemone', label: 'Decision' },
 ] as const;
 
 export type ModelTestEndpoint = (typeof MODEL_TEST_ENDPOINTS)[number]['value'];
 
 export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
+    custom: 'Custom (full URL)',
     openai_chat: 'Chat',
     openai_responses: 'Responses',
     anthropic_messages: 'Claude Messages',
     gemini_generate_content: 'Gemini',
-    openai_embeddings: '文本向量',
-    openai_images_generations: '图片生成',
-    systemone: '决策',
+    openai_embeddings: 'Embeddings',
+    openai_images_generations: 'Image Generation',
+    systemone: 'Decision',
 };
+
+/**
+ * 该渠道类型能选的接口选项。
+ *
+ * 'custom'（完整网址）只属于自定义渠道(type 6)：别的渠道拿它去测，后端只认
+ * 各自协议的地址，选出来必然报错。这里直接不渲染，而不是让人选了再撞墙。
+ */
+export function modelTestEndpointsForChannel(type: ChannelType) {
+    return MODEL_TEST_ENDPOINTS.filter(
+        (endpoint) => endpoint.value !== 'custom' || type === ChannelType.CustomOpenAIChat,
+    );
+}
 
 /**
  * 图片端点名（含后端 normalizeEndpoint 接受的别名）。
@@ -123,6 +145,24 @@ export function channelTestUpstreamPath(value?: string): string {
 }
 
 export function channelTypeForTestEndpoint(type: ChannelType, endpoint: ModelTestEndpoint): ChannelType {
+    // 自定义渠道(type 6)只有 'custom' 是原样发送；选其它接口时一律走同源标准路径
+    // （后端已支持 endpoint='custom'，并把其余接口按各自协议拼标准地址）。所以除
+    // 'custom' 外，身份/流式都要按那条接口对应的协议类型显示。
+    if (type === ChannelType.CustomOpenAIChat) {
+        switch (endpoint) {
+            case 'openai_chat': return ChannelType.OpenAIChat;
+            case 'openai_responses': return ChannelType.OpenAIResponse;
+            case 'anthropic_messages': return ChannelType.Anthropic;
+            case 'gemini_generate_content': return ChannelType.Gemini;
+            case 'openai_embeddings': return ChannelType.OpenAIEmbedding;
+            case 'systemone': return ChannelType.SystemOne;
+            // 图片走 relay 的同源标准路径（不经渠道自定义地址），按 chat 形状算。
+            // 图片端点本身固定非流式 + 通用 UA，两个判据都不看渠道类型，这里只是让
+            // 「同源标准路径」这个口径在身份/流式判据里保持一致。
+            case 'openai_images_generations': return ChannelType.OpenAIChat;
+            default: return type;
+        }
+    }
     if (![ChannelType.OpenAIChat, ChannelType.OpenAIResponse, ChannelType.Anthropic, ChannelType.Gemini].includes(type)) return type;
     switch (endpoint) {
         case 'openai_chat': return ChannelType.OpenAIChat;
@@ -148,8 +188,12 @@ export function defaultModelTestEndpointForChannel(type: ChannelType): ModelTest
         case ChannelType.SystemOne:
             // 决策渠道发的是 {model, state, questions}，不能拿聊天报文去测。
             return 'systemone';
+        case ChannelType.CustomOpenAIChat:
+            // 自定义渠道发的是配置里的完整网址：只有 'custom' 这一项如实描述它，
+            // 选 'openai_chat' 等于宣称要走一条它并不具备的标准聊天地址。
+            return 'custom';
         default:
-            // OpenAI Chat 与 Custom OpenAI Chat 都是 chat 形状。
+            // OpenAI Chat 是标准 chat 形状。
             return 'openai_chat';
     }
 }

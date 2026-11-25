@@ -40,7 +40,7 @@ test('各渠道类型对上的端点与实际出站一致', () => {
         [ChannelType.Anthropic, 'anthropic_messages'],
         [ChannelType.Gemini, 'gemini_generate_content'],
         [ChannelType.OpenAIEmbedding, 'openai_embeddings'],
-        [ChannelType.CustomOpenAIChat, 'openai_chat'],
+        [ChannelType.CustomOpenAIChat, 'custom'],
         [ChannelType.SystemOne, 'systemone'],
     ];
     for (const [type, want] of cases) {
@@ -213,9 +213,28 @@ test('explicit upstream tests remap only ordinary chat protocol types', () => {
         for (const [endpoint, target] of Object.entries(targets)) assert.equal(channelTypeForTestEndpoint(source, endpoint), target);
         for (const endpoint of ['openai_embeddings', 'openai_images_generations', 'systemone']) assert.equal(channelTypeForTestEndpoint(source, endpoint), source);
     }
-    for (const source of [5, 6, 7]) {
+    // 嵌入(5) / 决策(7) 渠道换接口不改协议：它们只有那一条路。
+    for (const source of [5, 7]) {
         for (const endpoint of Object.keys(targets)) assert.equal(channelTypeForTestEndpoint(source, endpoint), source);
     }
+});
+
+/**
+ * 自定义渠道(type 6)：只有 'custom' 保留原始类型（配置的完整地址原样发送）；
+ * 选其它接口时走同源标准路径，所以按那条协议的类型算，身份/流式才跟着端点走。
+ *
+ * 图片端点按 chat 形状算：它走 relay 的同源标准路径，不经渠道自定义地址；而图片
+ * 本身固定非流式 + 通用 UA，两个判据都不看渠道类型，这里只为口径一致。
+ */
+test('custom channel keeps its own type for custom, maps protocol endpoints', () => {
+    assert.equal(channelTypeForTestEndpoint(6, 'custom'), 6);
+    assert.equal(channelTypeForTestEndpoint(6, 'openai_chat'), 0);
+    assert.equal(channelTypeForTestEndpoint(6, 'openai_responses'), 1);
+    assert.equal(channelTypeForTestEndpoint(6, 'anthropic_messages'), 2);
+    assert.equal(channelTypeForTestEndpoint(6, 'gemini_generate_content'), 3);
+    assert.equal(channelTypeForTestEndpoint(6, 'openai_embeddings'), 5);
+    assert.equal(channelTypeForTestEndpoint(6, 'systemone'), 7);
+    assert.equal(channelTypeForTestEndpoint(6, 'openai_images_generations'), 0);
 });
 
 test('actual upstream path excludes hosts, credentials, query strings and fragments', () => {

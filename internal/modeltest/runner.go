@@ -388,6 +388,20 @@ func runOne(parent context.Context, req dbmodel.ModelTestRequest, modelName stri
 			Error:           err.Error(),
 		}
 	}
+	// "custom" is the verbatim endpoint of a custom channel. It is meaningful only
+	// when this run is allowed to test the upstream endpoint at all (the operator
+	// clicked test); a draft/route check has no channel-own URL to send to and must
+	// not be turned into one, so it is refused here instead of silently behaving
+	// like the chat test. Every protocol selection goes through the same gate.
+	if endpoint.name == customTestEndpointName && !req.TestUpstreamEndpoint {
+		return dbmodel.ModelTestResult{
+			Model:           modelName,
+			RequestModel:    modelName,
+			RequestEndpoint: endpoint.name,
+			Success:         false,
+			Error:           "endpoint \"custom\" is only available in an explicit channel test; enable the upstream endpoint test or pick a protocol endpoint",
+		}
+	}
 	if identity.apiKey != nil && !op.IsModelSupported(identity.apiKey.SupportedModels, modelName) {
 		return dbmodel.ModelTestResult{
 			Model:           modelName,
@@ -567,6 +581,16 @@ func normalizeEndpoint(value string) (testEndpoint, error) {
 			// 的 ImagesHandler 负责）。填 OpenAI 家族里的 chat 值只是为了不留零值陷阱。
 			inbound: inbound.InboundTypeOpenAIChat,
 			path:    func(string) string { return "/v1/images/generations" },
+		}, nil
+	case customTestEndpointName:
+		// The verbatim custom-channel endpoint. It names no path of its own: the
+		// request goes to the channel's stored full URL, so the path the operator
+		// sees comes from the built request (result.UpstreamPath), not from here.
+		return testEndpoint{
+			name:      customTestEndpointName,
+			apiFormat: transformermodel.APIFormatOpenAIChatCompletion,
+			inbound:   inbound.InboundTypeOpenAIChat,
+			path:      func(string) string { return "" },
 		}, nil
 	case "systemone":
 		return testEndpoint{

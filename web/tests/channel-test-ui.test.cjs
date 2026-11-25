@@ -155,7 +155,7 @@ test('draft form exposes image choice, transmits selected endpoint/prompt/config
     const h = formHarness(draft({ capabilities: ['embeddings'], openai_embeddings_path: '/custom/embeddings', openai_images_path: 'https://upstream.example/custom/images' }));
     h.render();
     assert.equal(h.selector().props.value, 'openai_chat');
-    assert.ok(find(h.selector(), (node) => node.type === 'SelectItem' && text(node) === '图片生成').length);
+    assert.ok(find(h.selector(), (node) => node.type === 'SelectItem' && text(node) === 'Image Generation').length);
     h.selector().props.onValueChange('openai_images_generations');
     h.render();
     assert.equal(h.selector().props.value, 'openai_images_generations');
@@ -211,7 +211,7 @@ test('custom image prefix field is editable and does not append generations in t
 test('dialog mixed tests send per-endpoint prompts and show sanitized image evidence', async () => {
     const h = dialogHarness(savedChannel({ type: 1 }));
     h.respond(async () => ({ results: [{ success: true, duration_ms: 20, upstream_path: 'https://upstream.example/v1/images/generations?token=private', response_preview: 'IMAGE_OK https://upstream.example/result.png token=private' }] }));
-    h.render(); h.choice('图片生成').props.onClick(); h.render();
+    h.render(); h.choice('Image Generation').props.onClick(); h.render();
     assert.equal(h.writes.length, 0);
     await h.run().props.onClick();
     h.render();
@@ -229,14 +229,14 @@ test('dialog mixed tests send per-endpoint prompts and show sanitized image evid
 
 test('same-mounted dialog keeps reopen choice but resets on type and id changes; selections lock during run', async () => {
     const h = dialogHarness(savedChannel({ type: 1 }));
-    h.render(); h.choice('Responses').props.onClick(); h.choice('图片生成').props.onClick(); h.render();
+    h.render(); h.choice('Responses').props.onClick(); h.choice('Image Generation').props.onClick(); h.render();
     await h.run().props.onClick(); h.render();
     assert.ok(find(h.tree(), (node) => node.type === 'TableRow').length > 0);
     h.props.open = false; h.render(); h.props.open = true; h.render();
-    assert.equal(h.choice('图片生成').props['aria-pressed'], true);
+    assert.equal(h.choice('Image Generation').props['aria-pressed'], true);
     h.props.channel = { ...h.props.channel, type: 2 }; h.render();
     assert.equal(h.choice('Claude Messages').props['aria-pressed'], true);
-    assert.equal(h.choice('图片生成').props['aria-pressed'], false);
+    assert.equal(h.choice('Image Generation').props['aria-pressed'], false);
     assert.equal(find(h.tree(), (node) => node.type === 'TableRow').length, 0);
     const running = h.run().props.onClick(); h.render();
     assert.equal(h.choice('Chat').props.disabled, true);

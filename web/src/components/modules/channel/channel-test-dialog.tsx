@@ -31,6 +31,7 @@ import {
     defaultModelTestEndpointForChannel,
     isImageTestEndpoint,
     makeModelTestPrompt,
+    modelTestEndpointsForChannel,
     sanitizeChannelTestError,
     shouldForceChannelTestStream,
     type ModelTestEndpoint,
@@ -401,9 +402,9 @@ function AdvancedChannelTestDialog({
                     <div className="space-y-1.5">
                         <div className="text-xs font-bold tracking-[0.14em] text-muted-foreground">测试接口（多选）</div>
                         <p className="text-xs text-muted-foreground">选择这次要访问的上游接口，不会修改渠道配置。</p>
-                        <p className="text-xs text-muted-foreground">当前渠道类型：{channel.type === ChannelType.CustomOpenAIChat ? '自定义 Chat' : MODEL_TEST_ENDPOINT_LABELS[defaultEndpoint]}</p>
+                        <p className="text-xs text-muted-foreground">当前渠道类型：{MODEL_TEST_ENDPOINT_LABELS[defaultEndpoint]}</p>
                         <div className="flex flex-wrap gap-2">
-                            {MODEL_TEST_ENDPOINTS.map((e) => (
+                            {modelTestEndpointsForChannel(channel.type).map((e) => (
                                 <button key={e.value} type="button" className={pillClass(endpoints.has(e.value))} aria-pressed={endpoints.has(e.value)} disabled={testing} onClick={() => toggleEndpoint(e.value)}>
                                     {e.label}
                                 </button>
@@ -414,7 +415,7 @@ function AdvancedChannelTestDialog({
                         )}
                         {channel.type === ChannelType.CustomOpenAIChat && (
                             <p className="text-xs text-muted-foreground">
-                                自定义渠道使用配置的完整网址，不会自动切换聊天协议。
+                                Custom 用配置里的完整网址原样发送；选其它接口时走同源标准路径，不会改动渠道配置。
                                 {streamLock.includesImage && !channel.openai_images_path?.trim() && '图片测试需先填写完整的图片接口前缀，留空不支持。'}
                             </p>
                         )}

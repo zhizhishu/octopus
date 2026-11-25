@@ -37,11 +37,11 @@ import type { ChipFilter } from './audit/types';
 import { cleanOneMillionModelName, expandOneMillionModelAliases } from '@/lib/model-aliases';
 import {
     DEFAULT_MODEL_TEST_TIMEOUT_SECONDS,
-    MODEL_TEST_ENDPOINTS,
     channelTestUpstreamPath,
     defaultModelTestEndpointForChannel,
     isImageTestEndpoint,
     makeModelTestPrompt,
+    modelTestEndpointsForChannel,
     sanitizeChannelTestError,
     type ModelTestEndpoint,
 } from '@/lib/channel-test';
@@ -210,6 +210,14 @@ function isSystemOneChannel(type: ChannelType) {
 // 决策渠道只打 /v1/systemone。
 function modelListSyncDisabled(type: ChannelType) {
     return isCustomOpenAIChat(type) || isSystemOneChannel(type);
+}
+
+// 手动刷新模型列表单独一条判据：自定义渠道现在是**允许**手动刷的（后端能认
+// openai_models_path 里的完整网址，认不出就把错误原文弹出来）。自动同步仍然是
+// 关的——payload 对 type 6 写死 auto_sync=false（Create.tsx / CardContent.tsx），
+// 让开关亮着等于骗人。
+function modelRefreshDisabled(type: ChannelType) {
+    return isSystemOneChannel(type);
 }
 
 // Chat-family channels (OpenAI Chat + Custom OpenAI Chat) are the only ones that
@@ -1225,8 +1233,8 @@ export function ChannelForm({
                             variant="ghost"
                             size="sm"
                             onClick={handleRefreshModels}
-                            disabled={modelListSyncDisabled(formData.type) || !formData.base_urls?.[0]?.url || !effectiveKey || fetchModel.isPending}
-                            title={modelListSyncDisabled(formData.type) ? t(isSystemOneChannel(formData.type) ? 'typeSystemOneHint' : 'typeCustomOpenAIChatHint') : undefined}
+                            disabled={modelRefreshDisabled(formData.type) || !formData.base_urls?.[0]?.url || !effectiveKey || fetchModel.isPending}
+                            title={modelRefreshDisabled(formData.type) ? t('typeSystemOneHint') : undefined}
                             className="h-6 px-2 text-xs text-muted-foreground/50 hover:text-muted-foreground hover:bg-transparent"
                         >
                             <RefreshCw className={`h-3 w-3 mr-1 ${fetchModel.isPending ? 'animate-spin' : ''}`} />
@@ -1240,11 +1248,11 @@ export function ChannelForm({
                         setTestEndpoint(value as ModelTestEndpoint);
                         setChannelTestResult(null);
                     }}>
-                        <SelectTrigger id={`${idPrefix}-test-endpoint`} className="h-8 w-40 rounded-xl text-xs">
+                        <SelectTrigger id={`${idPrefix}-test-endpoint`} className="h-8 w-48 rounded-xl text-xs">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                            {MODEL_TEST_ENDPOINTS.map((endpoint) => (
+                            {modelTestEndpointsForChannel(formData.type).map((endpoint) => (
                                 <SelectItem key={endpoint.value} value={endpoint.value}>{endpoint.label}</SelectItem>
                             ))}
                         </SelectContent>
@@ -1285,7 +1293,7 @@ export function ChannelForm({
                 )}
                 {isCustomOpenAIChat(formData.type) && (
                     <p className="text-xs text-muted-foreground">
-                        自定义渠道使用配置的完整网址，不会自动切换聊天协议。
+                        Custom 用配置里的完整网址原样发送；选其它接口时走同源标准路径，不会改动渠道配置。
                         {isImageTestEndpoint(testEndpoint) && !formData.openai_images_path.trim() && '图片测试需先填写完整的图片接口前缀，留空不支持。'}
                     </p>
                 )}
