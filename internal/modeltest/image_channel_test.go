@@ -2,6 +2,7 @@ package modeltest
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -130,13 +131,17 @@ func TestRunChannelImageEndpointGoesThroughRealImagesPath(t *testing.T) {
 		t.Fatalf("create decoy channel: %v", err)
 	}
 
-	// 被测渠道是**表单里的草稿**：不入库、禁用、base_url 指向另一个上游。
+	// 被测渠道按「没保存不许测」的规矩入库（禁用状态照留：测的是这条渠道的
+	// 配置本身），base_url 指向另一个上游。
 	draft := dbmodel.Channel{
 		Name:     "image-draft-channel",
 		Type:     outbound.OutboundTypeOpenAIChat,
 		Enabled:  false,
 		BaseUrls: []dbmodel.BaseUrl{{URL: target.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
+	}
+	if err := op.ChannelCreate(&draft, ctx); err != nil {
+		t.Fatalf("create draft channel: %v", err)
 	}
 
 	response, err := RunChannel(ctx, draft, dbmodel.ModelTestRequest{
@@ -165,9 +170,9 @@ func TestRunChannelImageEndpointGoesThroughRealImagesPath(t *testing.T) {
 	if result.InputTokens != 11 || result.OutputTokens != 22 {
 		t.Fatalf("token usage = %d/%d, want 11/22（上游 usage 要用上）", result.InputTokens, result.OutputTokens)
 	}
-	if result.ChannelKeyID != 0 {
-		// 草稿渠道的 key 没入库，ID 只能是 0；这条断言防的是"报告里编了个 key id"。
-		t.Fatalf("channel key id = %d, want 0 for an unsaved draft key", result.ChannelKeyID)
+	if result.ChannelKeyID == 0 {
+		// 已入库渠道的 key 有真实 ID，报告里应如实带上（0 说明 key 身份丢了）。
+		t.Fatalf("channel key id = 0, want the persisted key id")
 	}
 
 	hits := targetRequests()
@@ -227,13 +232,17 @@ func TestRunChannelImageEndpointSkipsUnsupportedChannelTypes(t *testing.T) {
 		outbound.OutboundType(4),
 		outbound.OutboundTypeOpenAIEmbedding,
 	} {
-		response, err := RunChannel(ctx, dbmodel.Channel{
-			Name:     "not-an-image-channel",
+		channel := dbmodel.Channel{
+			Name:     fmt.Sprintf("not-an-image-channel-%d", int(channelType)),
 			Type:     channelType,
 			Enabled:  false,
 			BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
 			Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "k"}},
-		}, dbmodel.ModelTestRequest{
+		}
+		if err := op.ChannelCreate(&channel, ctx); err != nil {
+			t.Fatalf("create channel: %v", err)
+		}
+		response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 			Model:    "gpt-image-1",
 			Endpoint: imageGenerationTestEndpointName,
 		})
@@ -276,13 +285,17 @@ func TestRunChannelImageEndpointReportsUpstreamFailure(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:     "image-failing-channel",
 		Type:     outbound.OutboundTypeOpenAIChat,
 		Enabled:  false,
 		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "gpt-image-1",
 		Endpoint: imageGenerationTestEndpointName,
 	})
@@ -315,13 +328,17 @@ func TestRunChannelImageEndpointForwardsExplicitPrompt(t *testing.T) {
 	ctx := setupModelTestDB(t)
 
 	upstream, hits := imageTestUpstream(t)
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:     "image-prompt-channel",
 		Type:     outbound.OutboundTypeOpenAIChat,
 		Enabled:  false,
 		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "gpt-image-1",
 		Endpoint: imageGenerationTestEndpointName,
 		Prompt:   "draw an octopus",
@@ -361,6 +378,10 @@ func TestRunChannelImageEndpointAppliesModelMappingOnce(t *testing.T) {
 			"public-image": "gpt-image-1",
 			"gpt-image-1":  "gpt-image-2",
 		},
+	}
+
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
 	}
 
 	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{

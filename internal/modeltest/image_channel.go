@@ -60,6 +60,13 @@ type imageTestOutcome struct {
 func (r *modelRunner) tryImageChannel(ctx context.Context, channel *dbmodel.Channel, upstreamModel string) bool {
 	channelName := channelDisplayName(channel)
 
+	// 与 NewRelaySender 同一口径（用户 2026-11-26 拍板）：没保存的渠道不许测。
+	if channel.ID <= 0 {
+		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptFailed, 0, 0, "渠道未保存，请先保存再测试")
+		r.result.Error = "渠道未保存，请先保存再测试"
+		return false
+	}
+
 	// 准入：只允许 relay 真的会把图片流量调度过去的渠道类型。图片没有能力位，
 	// 判据就是 ImagesHandler 调度时用的同一个函数（relay.ChannelTypeSupportsImages）。
 	// 不支持的类型明确跳过并记录原因，不硬塞一个假端点换一条看不懂的报错。

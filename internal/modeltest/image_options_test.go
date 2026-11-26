@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
@@ -34,10 +35,13 @@ func TestRunChannelImageOptionsReachGeminiUpstream(t *testing.T) {
 			}))
 			defer server.Close()
 			channel := dbmodel.Channel{
-				Name:     "image-options-fixture",
+				Name:     "image-options-fixture-" + tier,
 				Type:     outbound.OutboundTypeGemini,
 				BaseUrls: []dbmodel.BaseUrl{{URL: server.URL}},
 				Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "fixture-key"}},
+			}
+			if err := op.ChannelCreate(&channel, ctx); err != nil {
+				t.Fatalf("create channel: %v", err)
 			}
 			response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 				Model: "gemini-3-pro-image", Endpoint: imageGenerationTestEndpointName,

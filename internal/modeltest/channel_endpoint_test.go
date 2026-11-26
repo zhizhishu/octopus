@@ -114,9 +114,9 @@ func TestChannelTestSelectedUpstreamEndpoint(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-					// relay 链路不回填 result.UpstreamPath（探针自建出站的元数据）；
-					// 上游真正命中的路径由 mock 里的 r.URL.Path != wantPath 断言兜底。
-					if len(result.Results) != 1 || !result.Results[0].Success || result.Results[0].ResponsePreview != "OK" {
+						// relay 链路不回填 result.UpstreamPath（探针自建出站的元数据）；
+						// 上游真正命中的路径由 mock 里的 r.URL.Path != wantPath 断言兜底。
+						if len(result.Results) != 1 || !result.Results[0].Success || result.Results[0].ResponsePreview != "OK" {
 							t.Fatalf("draft=%t result=%#v", draft, result)
 						}
 					}
@@ -654,6 +654,9 @@ func TestChannelTestCustomChannelDerivesSameOriginStandardImagesPath(t *testing.
 		// 旧配置里可能留着别的 origin 的绝对图片路径：它不许决定本次派生测试的地址。
 		OpenAIImagesPath: "https://cdn.example/openai/images",
 		Keys:             []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
 	}
 	result, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model: "gpt-image-1", Endpoint: imageGenerationTestEndpointName, TestUpstreamEndpoint: true, Prompt: "draw an octopus",
