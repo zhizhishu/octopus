@@ -179,6 +179,9 @@ func (c CircuitProbeConfig) channelDailyCapFor(o CircuitProbeChannelOverrides) i
 	if o.DailyCap > 0 {
 		return o.DailyCap
 	}
+	if c.ChannelDailyCap < 0 {
+		return 0
+	}
 	return c.ChannelDailyCap
 }
 
