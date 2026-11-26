@@ -678,13 +678,32 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 	}
 	started := time.Now()
 	metrics.debug.target(channel, entry.channelKeyID)
-	statusCode, respBody, upstreamCT, fwdErr := midjourneyForward(ctx, c, http.MethodPost, upstreamPath, body, channel, channelKey)
+	// 钉扎的后续动作也是真发往上游的请求，与路由路径同一道闸门（balancer/channel_gate.go）：
+	// 占不到并发位/RPM 名额就是「此刻发不出去」，直接 429，不碰熔断/健康分。
+	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+	if gateReason != "" {
+		if releaseGate != nil {
+			releaseGate()
+		}
+		gateErr := fmt.Errorf("channel gate rejected: %s", gateReason)
+		metrics.Save(ctx, false, gateErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, gateReason))
+		writeMidjourneyError(c, http.StatusTooManyRequests, gateReason)
+		return
+	}
+	statusCode, respBody, upstreamCT, fwdErr := func() (int, []byte, string, error) {
+		if releaseGate != nil {
+			defer releaseGate()
+		}
+		return midjourneyForward(ctx, c, http.MethodPost, upstreamPath, body, channel, channelKey)
+	}()
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, auditErrorMessage(fwdErr)))
 		status, _, message := relayErrorResponse(fwdErr)
 		writeMidjourneyError(c, status, message)
 		return
 	}
+	// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+	balancer.RecordChannelRPMSuccess(channel.ID)
 	accepted := finishMidjourneySubmit(c, ctx, plan, channel, entry.channelKeyID, actualModel, statusCode, respBody, upstreamCT, metrics)
 	metricsErr := error(nil)
 	if !accepted {
@@ -989,13 +1008,31 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 	metrics.ActualModel = entry.model
 	started := time.Now()
 	metrics.debug.target(channel, entry.channelKeyID)
-	statusCode, body, upstreamCT, fwdErr := midjourneyForward(ctx, c, http.MethodGet, "/mj/task/"+url.PathEscape(taskID)+"/"+suffix, nil, channel, channelKey)
+	// 与路由路径同一道闸门（见 midjourneySubmitPinned 的注释）。
+	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+	if gateReason != "" {
+		if releaseGate != nil {
+			releaseGate()
+		}
+		gateErr := fmt.Errorf("channel gate rejected: %s", gateReason)
+		metrics.Save(ctx, false, gateErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, gateReason))
+		writeMidjourneyError(c, http.StatusTooManyRequests, gateReason)
+		return
+	}
+	statusCode, body, upstreamCT, fwdErr := func() (int, []byte, string, error) {
+		if releaseGate != nil {
+			defer releaseGate()
+		}
+		return midjourneyForward(ctx, c, http.MethodGet, "/mj/task/"+url.PathEscape(taskID)+"/"+suffix, nil, channel, channelKey)
+	}()
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, auditErrorMessage(fwdErr)))
 		status, _, message := relayErrorResponse(fwdErr)
 		writeMidjourneyError(c, status, message)
 		return
 	}
+	// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+	balancer.RecordChannelRPMSuccess(channel.ID)
 	metrics.ResponseContent = "midjourney task " + suffix
 	if strings.TrimSpace(upstreamCT) == "" {
 		upstreamCT = "application/json"
@@ -1058,12 +1095,29 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 		}
 		body, _ := json.Marshal(map[string]any{"ids": groups[k]})
 		metrics.debug.target(channel, k.keyID)
-		_, respBody, _, fwdErr := midjourneyForward(ctx, c, http.MethodPost, "/mj/task/list-by-condition", body, channel, key)
+		// 与路由路径同一道闸门（见 midjourneySubmitPinned 的注释）；占不到就跳过这条
+		// 渠道分组，不算失败。
+		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+		if gateReason != "" {
+			if releaseGate != nil {
+				releaseGate()
+			}
+			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, gateReason)...)
+			continue
+		}
+		_, respBody, _, fwdErr := func() (int, []byte, string, error) {
+			if releaseGate != nil {
+				defer releaseGate()
+			}
+			return midjourneyForward(ctx, c, http.MethodPost, "/mj/task/list-by-condition", body, channel, key)
+		}()
 		if fwdErr != nil {
 			log.Warnf("midjourney list-by-condition on channel %d failed: %v", channel.ID, fwdErr)
 			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, auditErrorMessage(fwdErr))...)
 			continue
 		}
+		// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+		balancer.RecordChannelRPMSuccess(channel.ID)
 		var part []json.RawMessage
 		if err := json.Unmarshal(respBody, &part); err != nil {
 			log.Warnf("midjourney list-by-condition on channel %d returned a non-array body", channel.ID)

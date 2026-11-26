@@ -662,12 +662,29 @@ func ImageTaskRunUpstream(
 	if herr != nil {
 		return 0, nil, "", herr
 	}
+	// 真正发往上游之前先过渠道闸门（并发位 + RPM 名额，balancer/channel_gate.go），
+	// 口径与同步图片/聊天路径一致。后台执行器没有别的渠道可换：占不到就把这次
+	// 执行按失败收，下一轮轮询重新走完整挑选+闸门。
+	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+	if gateReason != "" {
+		if releaseGate != nil {
+			releaseGate()
+		}
+		return 0, nil, "", fmt.Errorf("channel gate rejected: %s", gateReason)
+	}
+	defer func() {
+		if releaseGate != nil {
+			releaseGate()
+		}
+	}()
 	debugCall := taskLog.debugBegin(channel)
 	respUp, derr := httpClient.Do(req)
 	debugCall.end(req, respUp, derr)
 	if derr != nil {
 		return 0, nil, "", fmt.Errorf("failed to send upstream image request: %w", derr)
 	}
+	// 上游给了响应即计一次 RPM 成功（整分钟桶、只数成功，口径与 chat 一致）。
+	balancer.RecordChannelRPMSuccess(channel.ID)
 	defer func() {
 		if cerr := respUp.Body.Close(); cerr != nil {
 			log.Debugf("image task upstream: close response body failed: %v", cerr)

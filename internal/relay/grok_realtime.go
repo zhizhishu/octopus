@@ -274,6 +274,10 @@ runIterator:
 			}
 
 			// 上游握手成功，才接受客户端升级。
+			// RPM 成功计数就记在这一刻（口径与 chat 一致：整分钟桶、只数成功，见
+			// balancer/channel_gate.go）——websocket 会话可能拖很久，等会话结束再记
+			// 会把并发/限流口径整个推后；连上即成功。
+			balancer.RecordChannelRPMSuccess(channel.ID)
 			clientConn, upErr := grokRealtimeUpgrader(c.Request).Upgrade(c.Writer, c.Request, nil)
 			if upErr != nil {
 				// Upgrade 失败时 gorilla 已经写了 HTTP 错误。这不是上游的错，不记熔断。
@@ -295,8 +299,6 @@ runIterator:
 			// 中途已经扣掉的部分，收尾只补差（rawProtocolRelayMetrics.Save）。
 			metrics.PreCharged = biller.Charged()
 
-			// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
-			balancer.RecordChannelRPMSuccess(channel.ID)
 			costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
 			op.ChannelKeyRecordUse(usedKey, http.StatusSwitchingProtocols, usedAt, costDelta)
 			span.End(model.AttemptSuccess, http.StatusSwitchingProtocols, "")
