@@ -41,7 +41,7 @@ func TestRelayRequestAnthropicCarries32000(t *testing.T) {
 	if err := json.Unmarshal(body["max_tokens"], &maxTokens); err != nil {
 		t.Fatalf("max_tokens: %v", err)
 	}
-	if maxTokens != relayAnthropicMaxTokens || maxTokens != 32000 {
+	if maxTokens != relayAnthropicMaxTokens || relayAnthropicMaxTokens != 32000 {
 		t.Fatalf("max_tokens = %d, want 32000（不能夹到 256）", maxTokens)
 	}
 	var stream bool
