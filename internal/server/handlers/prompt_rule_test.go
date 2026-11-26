@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/server/auth"
 	"github.com/zhizhishu/octopus/internal/server/router"
 )
@@ -30,19 +32,23 @@ func promptRuleRouter() *gin.Engine {
 
 func promptRuleJWT(t *testing.T, role model.UserRole, id int) string {
 	t.Helper()
-	// VerifyJWTToken 用 op.UserGet(id) 回表验用户；幂等取或种，签名 secret
-	// （username+password）与库行保持一致，重复调用不会主键冲突。
-	var user model.User
-	if err := db.GetDB().First(&user, id).Error; err != nil {
-		user = model.User{
-			ID:       id,
-			Username: fmt.Sprintf("prompt-user-%d", id),
-			Password: fmt.Sprintf("pw-%d", id),
+	// VerifyJWTToken 用 op.UserGet(id) 从内存缓存回表验用户，签名 secret
+	// （username+password）必须与 op 层那行一致。直接写 DB 行不进 userCache、
+	// 也不哈希密码，鉴权中间件一直是 401 —— 照同目录已通过的 handler 测试
+	// （stats_breakdown_test.go 的 dashFixture、redteam_lab_v2_test.go）：
+	// InitCache 重载缓存后走 op.UserCreate 造登录态；username 带 role+id 只是
+	// 为了幂等取或种（username 有唯一索引），行 ID 归 DB 自增，不回头改库。
+	username := fmt.Sprintf("prompt-user-%d-%s", id, role)
+	user, err := op.UserGetByUsername(username)
+	if err != nil {
+		user, err = op.UserCreate(model.UserCreateRequest{
+			Username: username,
+			Password: fmt.Sprintf("pw-%s-%d", role, id),
 			Role:     role,
 			Status:   model.UserStatusActive,
-		}
-		if err := db.GetDB().Create(&user).Error; err != nil {
-			t.Fatalf("seed user %d: %v", id, err)
+		}, context.Background())
+		if err != nil {
+			t.Fatalf("seed user %s: %v", username, err)
 		}
 	}
 	token, _, err := auth.GenerateJWTToken(user, 15)
@@ -70,6 +76,12 @@ func promptRuleAdminDB(t *testing.T) {
 	t.Helper()
 	if err := db.InitDB("sqlite", filepath.Join(t.TempDir(), "octopus.db"), false); err != nil {
 		t.Fatalf("init db: %v", err)
+	}
+	// 每个测试都是全新 sqlite：必须重载 op 层缓存，否则 userCache 里还是
+	// 上一个测试的用户（或空），JWT 回表验不到（照 intervention_test.go 的
+	// setupInterventionTestDB 同款顺序：InitDB → Close 兜底 → InitCache）。
+	if err := op.InitCache(); err != nil {
+		t.Fatalf("init cache: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := db.Close(); err != nil {

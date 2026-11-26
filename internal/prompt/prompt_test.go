@@ -226,8 +226,15 @@ func TestPreviewSegmentsAndText(t *testing.T) {
 	if res.Text != "GB\nCLIENT\nCA" {
 		t.Fatalf("preview text = %q, want GB\nCLIENT\nCA", res.Text)
 	}
-	if len(res.Matches) != 3 || res.Matches[2].Matched || res.Matches[2].Reason != ReasonDisabled {
+	// Matches 按（tier, sort, id）正序回每一行：gb(tier0,id1) → off(tier0,id3)
+	// → ca(tier3,id2)。关闭的行在它的排序位上（不在输入切片尾，输入尾是 ca）；
+	// 启用的两行必须 matched。
+	if len(res.Matches) != 3 || res.Matches[1].Matched || res.Matches[1].Reason != ReasonDisabled {
 		t.Fatalf("preview matches must include non-matches with reason: %#v", res.Matches)
+	}
+	if !res.Matches[0].Matched || !res.Matches[2].Matched ||
+		res.Matches[0].Reason != ReasonMatched || res.Matches[2].Reason != ReasonMatched {
+		t.Fatalf("enabled rules must match: %#v", res.Matches)
 	}
 	// 段序 = 阅读序：before（GB）→ client → after（CA），关闭规则不进段。
 	if len(res.Segments) != 3 {
