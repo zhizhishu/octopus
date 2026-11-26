@@ -743,6 +743,9 @@ func runRaceContenders(
 			}
 
 			// Non-2xx response: read body up to limit
+			// 先解压再读：gzip/br 压缩的错误体不展开就是乱码，归类与审计都看不懂
+			// （与 error_body_read.go 同一修口径）。
+			_ = unwrapResponseEncoding(resp)
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, upstreamErrorBodyLimit))
 			_ = resp.Body.Close()
 			cleanedUp = true
