@@ -3,6 +3,7 @@ package task
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"go.uber.org/zap"
@@ -549,5 +551,82 @@ func TestImageTaskPollUsesRecordedEndpoint(t *testing.T) {
 
 	if paths := stub.pathList(); len(paths) != 1 || paths[0] != "/v1/images/edits" {
 		t.Fatalf("upstream path = %v, want /v1/images/edits", paths)
+	}
+}
+
+// 队头阻塞回归（复审）：队头 20 条全卡在同一个闸门满的渠道上时，
+// 第 21 条其他渠道的任务也必须能进批执行——busy 任务被挪到队尾
+// （next_attempt_at），而不是原地占着先进先出的队头。
+func TestImageTaskPollBusyGateDefersToBackOfQueue(t *testing.T) {
+	ctx := setupImageTaskPollTestDB(t)
+
+	busyStub := newImageTaskUpstreamStub()
+	freeStub := newImageTaskUpstreamStub()
+
+	mkChannel := func(name, baseURL string, maxConcurrent int) model.Channel {
+		t.Helper()
+		channel := model.Channel{
+			Name:          name,
+			Type:          outbound.OutboundTypeOpenAIChat,
+			Enabled:       true,
+			Model:         "image-poll-test-model",
+			MaxConcurrent: maxConcurrent,
+			BaseUrls:      []model.BaseUrl{{URL: baseURL}},
+			Keys:          []model.ChannelKey{{Enabled: true, ChannelKey: "image-poll-secret"}},
+		}
+		if err := op.ChannelCreate(&channel, ctx); err != nil {
+			t.Fatalf("create channel %s: %v", name, err)
+		}
+		return channel
+	}
+	chA := mkChannel("image-task-poll-busy-channel", busyStub.server(t).URL, 1)
+	chB := mkChannel("image-task-poll-free-channel", freeStub.server(t).URL, 0)
+
+	// 占住 A 的唯一并发位：之后这一轮里 A 的闸门必然满。
+	hold, reason := balancer.AdmitChannelGate(ctx, chA.ID, chA.MaxConcurrent, chA.RPMLimit, 0, nil)
+	if reason != "" || hold == nil {
+		t.Fatalf("pre-acquire gate on the busy channel failed: reason=%q", reason)
+	}
+	t.Cleanup(hold)
+
+	user := createImageTaskPollTestUser(t, ctx, 10)
+	// 队头 20 条全在满渠道 A 上（id 先进先出，批上限恰好 20）。
+	for i := 0; i < 20; i++ {
+		newImageTaskPollTestTask(t, ctx, chA, user, fmt.Sprintf("imgtask_headofline_a_%02d", i), 0, time.Hour)
+	}
+	// 第 21 条在正常渠道 B 上：闸门不挪队尾的话它永远进不了批。
+	taskB := newImageTaskPollTestTask(t, ctx, chB, user, "imgtask_headofline_b", 0, time.Hour)
+
+	// 第一轮：20 条 A 任务占满批、全部 busy，一条上游都不许打；
+	// 它们必须被挪到队尾（next_attempt_at 在未来），而不是留在原地。
+	runImageTaskPollOnce()
+	if hits := busyStub.hitCount(); hits != 0 {
+		t.Fatalf("busy channel upstream hits = %d, want 0（闸门满一次上游都不许发）", hits)
+	}
+	now := time.Now().Unix()
+	for i := 0; i < 20; i++ {
+		stored := reloadImageTask(t, ctx, fmt.Sprintf("imgtask_headofline_a_%02d", i))
+		if stored.Status != model.ImageTaskStatusProcessing {
+			t.Fatalf("busy task status = %q, want processing（不判终态）", stored.Status)
+		}
+		if stored.NextAttemptAt <= now {
+			t.Fatalf("busy task next_attempt_at = %d, want > %d（必须被挪到队尾）", stored.NextAttemptAt, now)
+		}
+	}
+	if hits := freeStub.hitCount(); hits != 0 {
+		t.Fatalf("round 1 free channel hits = %d, want 0（第 21 条第一批本来就进不来）", hits)
+	}
+
+	// 第二轮：20 条 A 任务因 next_attempt_at 未到而进不了批，B 任务必须被捞到执行。
+	runImageTaskPollOnce()
+	if hits := freeStub.hitCount(); hits != 1 {
+		t.Fatalf("free channel upstream hits = %d, want 1（队头阻塞：第 21 条必须能执行）", hits)
+	}
+	storedB := reloadImageTask(t, ctx, taskB.TaskID)
+	if storedB.Status != model.ImageTaskStatusCompleted {
+		t.Fatalf("free task status = %q, want completed", storedB.Status)
+	}
+	if hits := busyStub.hitCount(); hits != 0 {
+		t.Fatalf("busy channel upstream hits = %d, want still 0（没打上游就谈不上重复计费）", hits)
 	}
 }

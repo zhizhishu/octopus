@@ -199,9 +199,14 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 	taskLog.EndUpstream()
 	if runErr != nil {
 		if errors.Is(runErr, relay.ErrImageTaskChannelGateBusy) {
-			// 渠道闸门满（并发位/RPM 名额占不到）：任务留在 processing，
-			// 下一轮 ImageTaskListExecutable 会重新捞到它再走完整挑选+闸门。
-			// 不判终态、不退款——一次上游请求都没发出去，没有东西可退。
+			// 渠道闸门满（并发位/RPM 名额占不到）：不判终态、不退款——一次上游
+			// 请求都没发出去，没有东西可退。把下一次可执行时间挪过一个轮询间隔，
+			// 否则按 id 先进先出的队头 20 条全卡在同一个满渠道上时，后面其他渠道
+			// 的任务永远进不了批（队头阻塞）。到点后它仍按 processing 被重新捞到，
+			// 走完整挑选+闸门；期间一次上游都没打，谈不上重复计费。
+			if derr := op.ImageTaskDeferAttempt(ctx, task.ID, time.Now().Add(imageTaskPollInterval).Unix()); derr != nil {
+				log.Warnf("image task %d defer after busy gate failed: %v", task.ID, derr)
+			}
 			return
 		}
 		// 上游没给结论（网络/超时/读失败）。这类"问不出结果"不重试：

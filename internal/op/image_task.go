@@ -90,6 +90,9 @@ func ImageTaskListExecutable(ctx context.Context, now int64, limit int) ([]model
 	res := db.GetDB().WithContext(ctx).
 		Where("status = ?", model.ImageTaskStatusProcessing).
 		Where("expires_at > ?", now).
+		// 闸门满被挪到队尾的任务（next_attempt_at 在未来）本轮不捞，
+		// 让后面其他渠道的任务进得了批；存量行默认 0 = 立即可捞。
+		Where("next_attempt_at <= ?", now).
 		Order("id").
 		Limit(limit).
 		Find(&tasks)
@@ -97,6 +100,18 @@ func ImageTaskListExecutable(ctx context.Context, now int64, limit int) ([]model
 		return nil, res.Error
 	}
 	return tasks, nil
+}
+
+// ImageTaskDeferAttempt 把任务的下一次可执行时间挪到 until（unix 秒）。
+//
+// 只有一个调用场景：执行器发现渠道闸门满（一次上游都没发）时把任务挪到队尾，
+// 防止队头阻塞（见 model.ImageTask.NextAttemptAt 的注释）。它刻意不改 status——
+// 任务仍是 processing，只是下次到点才再被捞。
+func ImageTaskDeferAttempt(ctx context.Context, id int64, until int64) error {
+	res := db.GetDB().WithContext(ctx).Model(&model.ImageTask{}).
+		Where("id = ? AND status = ?", id, model.ImageTaskStatusProcessing).
+		Update("next_attempt_at", until)
+	return res.Error
 }
 
 // ImageTaskListExpired 取"到 expires_at 还没出结果"的任务，供过期清扫统一判失败。

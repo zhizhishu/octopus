@@ -97,6 +97,12 @@ type ImageTask struct {
 
 	// 以下三列是提交时冻结的计费口径（与 new-api 的 Task.PrivateData.BillingContext 同义）：
 	// 任务可能排队、跑很久，期间管理员改价不该改变一条已经受理的任务的价格。
+	// NextAttemptAt 是执行器下一次允许捞这条任务的时间（unix 秒，0 = 立即可捞）。
+	// 只为一个场景存在：渠道闸门满（并发位/RPM 名额占不到）时把任务挪到队尾——
+	// 不然按 id 先进先出的队头 20 条全卡在同一个满渠道上时，后面其他渠道的
+	// 任务永远进不了批（队头阻塞）。它不影响终态、不参与计费。
+	NextAttemptAt int64 `json:"-" gorm:"index;default:0"`
+
 	//   - BillingMode：per_image（按张，提交即预扣，完成不再结算）/ token（完成时按
 	//     上游用量结算）/ 空（改动前提交的存量任务：只认预扣，不结算）。
 	//   - ImageCount：请求的张数 n。
