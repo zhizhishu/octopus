@@ -87,5 +87,13 @@ func readErrorBodyFromResponse(resp *http.Response) ([]byte, error) {
 	if resp == nil {
 		return nil, nil
 	}
+	// 错误体一样可能是压缩的（claude 出站广告 gzip,deflate,br,zstd 且共享 transport
+	// DisableCompression=true，上游按错误页也不换编码）。不解压就归类，upstream_error.go
+	// 看到的是压缩字节：request-invalid 判不出来、审计日志里全是乱码——运营商完全
+	// 看不到上游真正的拒绝原因。与四条成功路径（relay.go unwrapResponseEncoding）
+	// 同一处理方式。
+	if err := unwrapResponseEncoding(resp); err != nil {
+		return nil, err
+	}
 	return readErrorBodyLimited(resp.Body, upstreamErrorBodyLimit)
 }
