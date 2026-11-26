@@ -17,6 +17,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/client"
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/modelverify"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/relay"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
@@ -120,6 +121,11 @@ type modelRunner struct {
 	// 这是合法的客户端行为，不是凭空多出来的字段。默认 false = 沿用既有的
 	// {"type":"disabled"}（普通轮的真 CLI 形态）。
 	probeThinking bool
+	// relayOutbound：本次测试的出站走 relay 正常转发链路（RelaySender：系统 Key +
+	// 钉扎渠道），不再用 testChannelKey 自建探针出站。渠道测试（RunChannel，
+	// directChannel 路径）为 true；模型测试页的路由路径（Run，按用户身份试路由）
+	// 保持探针出站不变。
+	relayOutbound bool
 	// lastHeaderFamilies 是本次出站收到 2xx 回复时抄下的响应头家族类别
 	// （只读头名，见 model.ClassifyUpstreamHeaderFamilies）。
 	//
@@ -428,6 +434,8 @@ func runOne(parent context.Context, req dbmodel.ModelTestRequest, modelName stri
 			RequestPath:     endpoint.path(modelName),
 		},
 	}
+
+	runner.relayOutbound = directChannel != nil
 
 	started := time.Now()
 	if directChannel != nil {
@@ -803,6 +811,13 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		return false
 	}
 
+	// 渠道测试（directChannel 路径）改走 relay 正常转发链路：系统 Key + 钉扎本渠道，
+	// 上游指纹/形状/cloak/闸门/日志与生产完全一致；key 的选择与 429 换 key 重试
+	// 由 relay 按生产口径完成，attempts/耗时/费用落转发日志（api_key_id=系统 Key）。
+	if r.relayOutbound {
+		return r.tryChannelViaRelay(ctx, channel, upstreamModel)
+	}
+
 	for _, key := range keys {
 		started := time.Now()
 		status, parsed, err := r.testChannelKey(ctx, adapter, channel, key, upstreamModel)
@@ -818,6 +833,39 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 			break
 		}
 	}
+	return false
+}
+
+// tryChannelViaRelay 经 relay 链路对本渠道发一次检测请求（runOne 的
+// directChannel 路径，即渠道测试）。失败的审计与错误口径与探针路径一致；
+// 成功时 result 里记一条汇总 attempt，逐 key 明细在 relay 转发日志里。
+func (r *modelRunner) tryChannelViaRelay(ctx context.Context, channel *dbmodel.Channel, upstreamModel string) bool {
+	channelName := channelDisplayName(channel)
+	sender, err := NewRelaySender(*channel, upstreamModel, r.request.Endpoint)
+	if err != nil {
+		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, err.Error())
+		r.result.Error = xredact.Secrets(err.Error())
+		return false
+	}
+	prompt := strings.TrimSpace(r.request.Prompt)
+	if prompt == "" || prompt == defaultPromptSentinel {
+		prompt = nextDefaultModelTestPrompt()
+	}
+	started := time.Now()
+	status, parsed, sendErr := sender.Send(ctx, modelverify.Ask{Prompt: prompt})
+	end := time.Now()
+	duration := int(end.Sub(started).Milliseconds())
+	if sendErr == nil {
+		r.succeed(channel, dbmodel.ChannelKey{}, upstreamModel, status, duration, parsed)
+		return true
+	}
+	var statusErr *modelverify.UpstreamStatusError
+	if errors.As(sendErr, &statusErr) {
+		status = statusErr.Status
+	}
+	r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptFailed, status, duration, sendErr.Error())
+	r.result.Error = xredact.Secrets(sendErr.Error())
+	r.result.StatusCode = status
 	return false
 }
 

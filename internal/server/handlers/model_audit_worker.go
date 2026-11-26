@@ -234,7 +234,7 @@ func runOneAuditResult(ctx context.Context, res *model.ModelAuditResult) {
 	}
 	endpoint := op.AuditEndpointForChannel(*channel)
 
-	sender, err := modeltest.NewProbeSender(*channel, upstreamModel, endpoint)
+	sender, err := modeltest.NewRelaySender(*channel, upstreamModel, endpoint)
 	if err != nil {
 		// 密钥全在冷却里不是环境配错，是**暂时状态**：等它恢复就能跑。
 		// 以前这类也直接终态 failed，结果同一个渠道在冷却期里连点几次都是

@@ -35,12 +35,18 @@ export function KeyRowActions({ apiKey, handlers, className }: { apiKey: APIKey;
                 <button type="button" className={item} onClick={run(() => handlers.onCopy(apiKey))}><Copy className="size-4" />{t('copy')}</button>
                 <button type="button" className={item} onClick={run(() => handlers.onEdit(apiKey, 'usage'))}><ChartColumn className="size-4" />{t('usage')}</button>
                 <button type="button" className={item} onClick={run(() => handlers.onViewLogs(apiKey))}><Logs className="size-4" />{t('logs')}</button>
-                <button type="button" className={item} onClick={run(() => handlers.onToggle(apiKey))}>
-                    {apiKey.enabled ? <Ban className="size-4" /> : <CircleCheck className="size-4" />}
-                    {apiKey.enabled ? t('disable') : t('enable')}
-                </button>
-                <div className="my-1 h-px bg-border" />
-                <button type="button" className={cn(item, 'text-destructive')} onClick={run(() => handlers.onDelete(apiKey))}><Trash2 className="size-4" />{t('delete')}</button>
+                {!apiKey.system && (
+                    <button type="button" className={item} onClick={run(() => handlers.onToggle(apiKey))}>
+                        {apiKey.enabled ? <Ban className="size-4" /> : <CircleCheck className="size-4" />}
+                        {apiKey.enabled ? t('disable') : t('enable')}
+                    </button>
+                )}
+                {!apiKey.system && (
+                    <>
+                        <div className="my-1 h-px bg-border" />
+                        <button type="button" className={cn(item, 'text-destructive')} onClick={run(() => handlers.onDelete(apiKey))}><Trash2 className="size-4" />{t('delete')}</button>
+                    </>
+                )}
             </PopoverContent>
         </Popover>
     );

@@ -202,7 +202,7 @@ func runOneCreative(ctx context.Context, row *model.ModelAuditCreative) {
 	if mapped, ok := channel.ModelMapping[upstreamModel]; ok && mapped != "" {
 		upstreamModel = mapped
 	}
-	sender, err := modeltest.NewProbeSender(*channel, upstreamModel, op.AuditEndpointForChannel(*channel))
+	sender, err := modeltest.NewRelaySender(*channel, upstreamModel, op.AuditEndpointForChannel(*channel))
 	if err != nil {
 		finish(op.CreativeOutcome{Status: model.CreativeFailed, Error: err.Error()})
 		return

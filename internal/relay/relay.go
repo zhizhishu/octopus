@@ -68,15 +68,40 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	clientSession := deriveManagedClientSessionInfo(c.Request.Header, internalRequest)
 	clientSessionKey := clientSession.Key
 
-	// 获取通道分组
-	routeResult, status, message, err := selectRouteGroup(c, apiKeyID, requestModel, anthropicAliases...)
-	if err != nil || status != 0 {
-		if message == "" && err != nil {
-			message = err.Error()
+	// 内部钉扎转发（渠道测试/模型检测拿系统 Key 走本链路）：候选只有钉扎的那
+	// 一个渠道，不走常规选路、无兜底。钉扎值是完整 Channel（含「测试接口」下拉
+	// 派生出的 Type 副本与草稿渠道），不能按 ID 回缓存查。标记只能由进程内代码
+	// 设置（见 internal_pin.go），外部请求无法伪造。
+	pinnedChannel := internalPinnedChannel(c)
+
+	// 获取通道分组（status/message 只在非钉扎分支里有意义，err 是 parseRequest
+	// 传下来的错误变量，这里沿用不再重新声明）
+	var routeResult routeGroupResult
+	var status int
+	var message string
+	if pinnedChannel != nil {
+		routeResult = routeGroupResult{
+			Group: dbmodel.Group{
+				Name: requestModel,
+				Items: []dbmodel.GroupItem{{
+					ChannelID:     pinnedChannel.ID,
+					ModelName:     requestModel,
+					Priority:      pinnedChannel.Priority,
+					Weight:        1,
+					RoutingWeight: 1,
+				}},
+			},
 		}
-		saveRouteSelectionFailureRelayLog(c.Request.Context(), c, inboundType, internalRequest, routeSelectionUnconfigured, status, message)
-		writeRelayErrorPreStream(c, inboundType, status, "api_error", "", message)
-		return
+	} else {
+		routeResult, status, message, err = selectRouteGroup(c, apiKeyID, requestModel, anthropicAliases...)
+		if err != nil || status != 0 {
+			if message == "" && err != nil {
+				message = err.Error()
+			}
+			saveRouteSelectionFailureRelayLog(c.Request.Context(), c, inboundType, internalRequest, routeSelectionUnconfigured, status, message)
+			writeRelayErrorPreStream(c, inboundType, status, "api_error", "", message)
+			return
+		}
 	}
 	preferStreamRouting := internalRequestPrefersStream(internalRequest)
 	group := enrichGroupForSmartRouting(c.Request.Context(), routeResult.Group, preferStreamRouting)
@@ -96,10 +121,18 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 初始化 Metrics
 	metrics := NewRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, internalRequest)
-	metrics.quota, err = admitRelayUserQuota(c, requestModel)
-	if err != nil {
-		writeRelayErrorPreStream(c, inboundType, relayUserQuotaErrorStatus(err), "api_error", "user_quota", err.Error())
-		return
+	if pinnedChannel == nil {
+		metrics.quota, err = admitRelayUserQuota(c, requestModel)
+		if err != nil {
+			writeRelayErrorPreStream(c, inboundType, relayUserQuotaErrorStatus(err), "api_error", "user_quota", err.Error())
+			return
+		}
+	} else {
+		// 内部钉扎请求不占用户额度、不受用户/分组限额：系统 Key 不是任何用户的
+		// 资产，计费闸门（quota admission + 落账扣减）整段跳过；费用照记在转发
+		// 日志里（metrics.saveLog 不受影响）。metrics.quota 保持 nil，close() 为空操作。
+		metrics.internalPin = true
+		defer stashInternalResponse(c, metrics)
 	}
 	defer metrics.quota.close()
 
@@ -112,7 +145,10 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// 回落旧四层字段（与旧 globalPromptOverride 读不到设置 = 什么都不加同语义；旧算法
 	// 只活在 prompt_override_test.go 的 oracle 里）。
 	var promptRules []dbmodel.PromptRule
-	if internalRequest.IsChatRequest() {
+	if internalRequest.IsChatRequest() && pinnedChannel == nil {
+		// 内部钉扎请求不注入提示词规则：渠道检测的题目必须原样到达上游
+		// （旧行为：modeltest 探针从不过 prompt.Apply；行为探针还专门要扣除
+		// 注入文字才能评分，见 ProbeSender.InjectedFamilies 的注释）。
 		promptRules = loadPromptRulesOrNone(c.Request.Context(), "handler")
 	}
 
@@ -142,7 +178,12 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// 用户消息是否允许跑机器救援。身份可识别时必得一个可观测的 lease；已被压制(同名消息已耗尽
 	// 且尚未恢复)或已有并发同名轮次时 Allowed=false——该请求仍会照常转发每一个正常候选，只是
 	// 不再自动救援/自动停机；只有它自己完整成功才会在下面 defer 里解除压制。
-	rescueLease := acquireRescueEpisode(apiKeyID, userID, requestEndpoint, requestModel, c.Request.Header, internalRequest)
+	var rescueLease *rescueEpisodeLease
+	if pinnedChannel == nil {
+		// 内部钉扎请求不参与救援回合：episode 允许/压制状态对一次「钉死渠道」
+		// 的检测没有意义，也不能让它触发任何换家重发。
+		rescueLease = acquireRescueEpisode(apiKeyID, userID, requestEndpoint, requestModel, c.Request.Header, internalRequest)
+	}
 
 	// 请求级上下文
 	req := &relayRequest{
@@ -362,17 +403,25 @@ attemptChannels:
 
 		item := iter.Item()
 
-		// 获取通道
-		channel, err := op.ChannelGet(item.ChannelID, c.Request.Context())
-		if err != nil {
-			log.Warnf("failed to get channel %d: %v", item.ChannelID, err)
-			iter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("channel not found: %v", err))
-			lastErr = err
-			continue
-		}
-		if !channel.Enabled {
-			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
-			continue
+		// 获取通道。内部钉扎请求直接用钉扎的渠道值——「测试接口」下拉会派生出
+		// 改了 Type 的副本、前端也可能提交未保存的草稿渠道，按 ID 回缓存会把
+		// 它们换成库里那份，测的就不是操作者选的东西了。
+		var channel *dbmodel.Channel
+		if pinnedChannel != nil {
+			channel = pinnedChannel
+		} else {
+			var getErr error
+			channel, getErr = op.ChannelGet(item.ChannelID, c.Request.Context())
+			if getErr != nil {
+				log.Warnf("failed to get channel %d: %v", item.ChannelID, getErr)
+				iter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("channel not found: %v", getErr))
+				lastErr = getErr
+				continue
+			}
+			if !channel.Enabled {
+				iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
+				continue
+			}
 		}
 		if channel.DisableCircuitBreaker {
 			sawNoBreakerChannel = true

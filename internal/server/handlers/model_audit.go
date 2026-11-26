@@ -429,7 +429,7 @@ func runModelAudit(c *gin.Context) {
 	}
 	defer release()
 
-	sender, err := modeltest.NewProbeSender(*channel, upstreamModel, endpoint)
+	sender, err := modeltest.NewRelaySender(*channel, upstreamModel, endpoint)
 	if err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return

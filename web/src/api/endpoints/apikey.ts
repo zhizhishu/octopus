@@ -34,6 +34,8 @@ export interface APIKey {
     /** 最近一次转发的时间（Unix 秒，0 = 没用过）和来源 IP。 */
     last_used_at?: number;
     last_used_ip?: string;
+    /** 内置「系统」Key（迁移 032 自动建）：进程内部检测走 relay 链路专用，列表可见但不可删/不可停用。 */
+    system?: boolean;
     access_plans?: Array<{
         id: number;
         slug: string;
