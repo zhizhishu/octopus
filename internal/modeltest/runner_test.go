@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/db/migrate"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
@@ -31,6 +32,12 @@ func setupModelTestDB(t *testing.T) context.Context {
 			t.Fatalf("close db: %v", err)
 		}
 	})
+	// 迁移注册清单每个进程只在首次 InitDB 跑一轮（跑完即清空），本包的后续测试库
+	// 不会有 032 建的系统 Key；渠道检测改走 relay 链路后没它就发不出请求，这里按
+	// 幂等导出补齐（已在的库直接返回）。
+	if err := migrate.MigrateSystemAPIKeyForTest(db.GetDB()); err != nil {
+		t.Fatalf("seed system api key: %v", err)
+	}
 	if err := op.InitCache(); err != nil {
 		t.Fatalf("init cache: %v", err)
 	}

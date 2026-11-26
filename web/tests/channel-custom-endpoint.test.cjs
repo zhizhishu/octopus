@@ -125,6 +125,8 @@ function formHarness(initial = draft()) {
             useFetchModel: () => ({ isPending: false, mutate: (payload, callbacks) => fetchCalls.push({ payload, callbacks }) }),
             useTestChannelConfig: () => ({ isPending: false, mutate: noop }),
             useTestChannelProxy: () => ({ isPending: false, mutate: noop }),
+            useChannelRPMs: () => ({ data: undefined }),
+            channelRPMOf: () => 0,
         },
         '@/api/endpoints/fingerprint-profile': { useFingerprintProfileList: () => ({ data: [{ id: 1, name: 'fixture' }] }) },
         '../navbar/nav-store': { useNavStore: (select) => select({ setActiveItem: noop }) },
