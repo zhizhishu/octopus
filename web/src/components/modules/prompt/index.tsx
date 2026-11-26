@@ -431,7 +431,7 @@ function AdminRulesView({
                     <Loader2 className="size-5 animate-spin" />
                 </section>
             ) : (
-                <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,4fr)_minmax(0,7fr)]">
+                <div className="grid min-w-0 items-start gap-3 md:grid-cols-[360px_minmax(0,1fr)]">
                     <RuleList
                         rules={rules}
                         plans={planOptions}
@@ -468,6 +468,7 @@ function AdminRulesView({
                         onSave={() => void submit()}
                         onDelete={() => void removeCurrent()}
                         onCopy={() => void copyCurrent()}
+                        onNew={startNew}
                         onJumpToPreview={onJumpToPreview}
                     />
                 </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Copy, Loader2, Save, Trash2, WandSparkles } from 'lucide-react';
+import { Copy, Loader2, Plus, Save, Trash2, WandSparkles } from 'lucide-react';
 import type {
     PromptAudience,
     PromptRule,
@@ -164,6 +164,8 @@ export type RuleEditorProps = {
     onSave: () => void;
     onDelete: () => void;
     onCopy: () => void;
+    /** 空态时提供「新建一条」按钮；不传则只显示提示文字。 */
+    onNew?: () => void;
     onJumpToPreview: () => void;
 };
 
@@ -183,6 +185,7 @@ export function RuleEditor({
     onSave,
     onDelete,
     onCopy,
+    onNew,
     onJumpToPreview,
 }: RuleEditorProps) {
     const [confirmDelete, setConfirmDelete] = useState(false);
@@ -208,8 +211,14 @@ export function RuleEditor({
 
     if (!saved && !draft) {
         return (
-            <section aria-label="规则编辑器" className="rounded-3xl border border-dashed border-border bg-card/50 px-4 py-10 text-center text-sm text-muted-foreground">
-                选一条规则，或点「新建」写第一条。
+            <section aria-label="规则编辑器" className="flex min-w-0 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+                <p className="text-sm text-muted-foreground">选一条规则，或点「新建」写第一条。</p>
+                {onNew ? (
+                    <Button type="button" variant="outline" className="min-h-11 rounded-xl px-3" onClick={onNew}>
+                        <Plus className="size-4" />
+                        新建一条
+                    </Button>
+                ) : null}
             </section>
         );
     }

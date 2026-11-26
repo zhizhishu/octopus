@@ -1,11 +1,12 @@
 'use client';
 
+import { useState } from 'react';
 import type { IdentityPresetMode } from './prompt-identity';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { ArrowDownToLine, Sparkles } from 'lucide-react';
+import { ArrowDownToLine, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
 
-/** 仅生成本地文本草稿。管理员必须选择作用层并显式保存，绝不自动修改运行策略。 */
+/** 品牌模板设置卡：默认收成一行，展开才是完整表单。仅生成本地文本草稿，管理员必须选择作用层并显式保存，绝不自动修改运行策略。 */
 export function PromptIdentityBuilder({
     mode,
     onModeChange,
@@ -26,20 +27,76 @@ export function PromptIdentityBuilder({
     /** Only fills a local draft; a separate explicit save is mandatory. */
     onApplyGlobal: () => void;
 }) {
+    // 默认折叠成一行，不把下面的规则区挤到首屏之外；展开才显示完整设置。
+    const [open, setOpen] = useState(false);
+    // 折叠行摘要：style 优先，其次 displayName，都空给缺省名。
+    const summary = style.trim() || displayName.trim() || 'Octopus 助手';
+
+    if (!open) {
+        return (
+            <section className="rounded-3xl border border-border bg-card">
+                <div className="flex items-center gap-1.5 p-3">
+                    <button
+                        type="button"
+                        onClick={() => setOpen(true)}
+                        aria-expanded={false}
+                        aria-controls="prompt-identity-body"
+                        className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-1 text-left"
+                    >
+                        <Sparkles className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 truncate text-sm font-semibold">快速模板：{summary}</span>
+                    </button>
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 rounded-xl text-muted-foreground"
+                        onClick={() => setOpen(true)}
+                        aria-expanded={false}
+                        aria-controls="prompt-identity-body"
+                    >
+                        展开
+                        <ChevronDown className="size-4" />
+                    </Button>
+                </div>
+            </section>
+        );
+    }
+
     return (
         <section className="rounded-3xl border border-border bg-card p-4 sm:p-5">
-            <div className="mb-4 flex flex-wrap items-start gap-3">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/40 text-foreground">
-                    <Sparkles className="size-4.5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold">品牌助手设置</h3>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        设置客户看到的助手名称和回答风格。可一键填入全局草稿，也能逐层应用到方案、路由或渠道。保存前绝不影响实际请求。
-                    </p>
-                </div>
+            <div className="flex items-start gap-3">
+                <button
+                    type="button"
+                    onClick={() => setOpen(false)}
+                    aria-expanded={true}
+                    aria-controls="prompt-identity-body"
+                    className="flex min-h-9 min-w-0 flex-1 items-start gap-3 rounded-xl px-0.5 py-1 text-left"
+                >
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/40 text-foreground">
+                        <Sparkles className="size-4.5" />
+                    </span>
+                    <span className="min-w-0">
+                        <span className="block text-sm font-semibold">品牌助手设置</span>
+                        <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                            设置客户看到的助手名称和回答风格。可一键填入全局草稿，也能逐层应用到方案、路由或渠道。保存前绝不影响实际请求。
+                        </span>
+                    </span>
+                </button>
+                <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 rounded-xl text-muted-foreground"
+                    onClick={() => setOpen(false)}
+                    aria-expanded={true}
+                    aria-controls="prompt-identity-body"
+                >
+                    收起
+                    <ChevronUp className="size-4" />
+                </Button>
             </div>
-            <div className="grid gap-4 lg:grid-cols-2">
+            <div id="prompt-identity-body" className="mt-4 grid gap-4 lg:grid-cols-2">
                 <div className="grid content-start gap-3">
                     <div className="flex flex-wrap gap-1 rounded-xl border border-input bg-muted/40 p-1" role="radiogroup" aria-label="助手模板类型">
                         {([
@@ -87,7 +144,7 @@ export function PromptIdentityBuilder({
                 </div>
                 <div className="min-w-0">
                     <p className="mb-2 text-xs font-medium text-muted-foreground">模板草稿预览</p>
-                    <div aria-label="助手模板预览" className="min-h-32 whitespace-pre-wrap break-words rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-sm leading-6">
+                    <div aria-label="助手模板预览" className="whitespace-pre-wrap break-words rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-sm leading-6">
                         {preview || '填写助手名称后会显示可插入的文字模板。'}
                     </div>
                     <p className="mt-2 text-xs leading-5 text-muted-foreground">

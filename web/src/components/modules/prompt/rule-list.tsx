@@ -6,6 +6,7 @@ import type { PromptRule } from '@/api/endpoints/prompt-rule';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { InfoTip } from '../dashboard/parts';
 import { cn } from '@/lib/utils';
 import type { ChannelOption } from './rule-editor';
 import {
@@ -16,7 +17,7 @@ import {
     promptRulePlanAllows,
     promptRuleScopeTags,
 } from './rule-model';
-// 规则页左栏：搜索 + 新建 + 筛选 chip + 规则卡片列表。编辑器在右栏（rule-editor.tsx）。
+// 规则页左栏三行：搜索+新建／方案分段控件／渠道+开关，下面是带 ⓘ 说明的规则卡片列表。编辑器在右栏（rule-editor.tsx）。
 
 const TAG_STYLES: Record<string, string> = {
     plan: 'bg-primary/10 text-primary',
@@ -176,9 +177,10 @@ export function RuleList({
     // 有搜索/筛选时列表不是全量，上移下移会跳过看不见的规则，所以先禁用并说明原因。
     const moveDisabled = query.trim() !== '' || planFilter !== 'all' || channelFilter !== 'all' || onlyEnabled || reorderPending;
 
-    const chip = (active: boolean) => cn(
-        'min-h-11 shrink-0 rounded-full border px-3 text-[13px] transition-colors',
-        active ? 'border-primary/50 bg-primary/10 font-semibold text-primary' : 'border-border bg-card text-muted-foreground hover:text-foreground',
+    // 紧凑分段控件的段样式：对齐 rule-editor 的 SegControl。
+    const seg = (active: boolean) => cn(
+        'min-h-9 shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[13px] transition-colors',
+        active ? 'bg-background font-semibold text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
     );
 
     return (
@@ -210,22 +212,44 @@ export function RuleList({
                 </Button>
             </div>
 
-            <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="筛选规则">
-                <button type="button" className={chip(planFilter === 'all' && channelFilter === 'all' && !onlyEnabled)} onClick={() => { setPlanFilter('all'); setChannelFilter('all'); setOnlyEnabled(false); }}>
-                    全部 {rules.length}
-                </button>
-                {plans.map((plan) => (
-                    <button key={plan.id} type="button" className={chip(planFilter === plan.id)} onClick={() => setPlanFilter((current) => (current === plan.id ? 'all' : plan.id))}>
-                        {plan.name}
+            {/* 第二行：对象/方案紧凑分段控件；段太多时整行内部横滚，不撑破页面。 */}
+            <div role="group" aria-label="按方案筛选" className="mt-2 flex max-w-full overflow-x-auto rounded-xl border border-input bg-muted/40 p-0.5">
+                <div className="flex w-max items-center gap-0.5 px-0.5 py-0.5">
+                    <button
+                        type="button"
+                        aria-pressed={planFilter === 'all'}
+                        onClick={() => setPlanFilter('all')}
+                        className={seg(planFilter === 'all')}
+                    >
+                        全部 {rules.length}
                     </button>
-                ))}
-                <label className={cn(chip(false), 'cursor-pointer gap-1 inline-flex items-center')} title="按最后真正转发到的渠道筛选">
+                    {plans.map((plan) => (
+                        <button
+                            key={plan.id}
+                            type="button"
+                            aria-pressed={planFilter === plan.id}
+                            title={plan.name}
+                            onClick={() => setPlanFilter((current) => (current === plan.id ? 'all' : plan.id))}
+                            className={seg(planFilter === plan.id)}
+                        >
+                            {plan.name}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* 第三行：渠道筛选 + 只看开着的，同一行。 */}
+            <div className="mt-2 flex items-center gap-2">
+                <label
+                    className="inline-flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-xl border border-input bg-background px-2.5"
+                    title="按最后真正转发到的渠道筛选"
+                >
                     <span className="sr-only">按渠道筛选</span>
                     <select
                         value={channelFilter === 'all' ? '' : String(channelFilter)}
                         onChange={(event) => setChannelFilter(event.target.value === '' ? 'all' : Number(event.target.value))}
                         aria-label="按渠道筛选"
-                        className="min-h-11 max-w-32 cursor-pointer bg-transparent text-[13px] outline-none"
+                        className="h-11 w-full min-w-0 max-w-40 cursor-pointer bg-transparent text-[13px] outline-none"
                     >
                         <option value="">按渠道…</option>
                         {channels.map((channel) => (
@@ -233,12 +257,25 @@ export function RuleList({
                         ))}
                     </select>
                 </label>
-                <button type="button" className={chip(onlyEnabled)} aria-pressed={onlyEnabled} onClick={() => setOnlyEnabled((v) => !v)}>
+                <label
+                    className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[13px] text-muted-foreground"
+                    title="只列出已启用的规则"
+                >
+                    <Switch checked={onlyEnabled} onCheckedChange={setOnlyEnabled} aria-label="只看开着的" />
                     只看开着的
-                </button>
+                </label>
             </div>
 
-            <div className="mt-3 grid content-start gap-2">
+            {/* 列表标题行：数量 + 叠加顺序 ⓘ（原来底部的大段说明收进悬停提示）。 */}
+            <div className="mt-3 flex min-w-0 items-center gap-1">
+                <h4 className="text-[13px] font-semibold">规则列表</h4>
+                <span className="text-xs text-muted-foreground">{visible.length}</span>
+                <InfoTip label="叠加顺序说明">
+                    列表从上到下就是加进系统提示词的先后：越靠下的规则越靠外。同一类规则之间用 ↑ ↓ 调先后；范围选「所有方案 + 所有渠道 + 所有模型」就是那条全局规则。
+                </InfoTip>
+            </div>
+
+            <div className="mt-2 grid content-start gap-2">
                 {loading ? (
                     <div className="flex justify-center py-10 text-muted-foreground">
                         <Loader2 className="size-5 animate-spin" />
@@ -267,10 +304,6 @@ export function RuleList({
                     ))
                 )}
             </div>
-            <p className="mt-2 px-1 text-xs leading-5 text-muted-foreground">
-                列表从上到下就是加进系统提示词的先后：越靠下的规则越靠外。同一类规则之间用 ↑ ↓ 调先后；
-                范围选「所有方案 + 所有渠道 + 所有模型」就是那条全局规则。
-            </p>
         </section>
     );
 }
