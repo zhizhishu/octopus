@@ -124,6 +124,8 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.ModelAuditResult{},
 		// 鹈鹕测试（创作题并排看）：独立一张表，7 天自动清理、收藏保留。
 		&model.ModelAuditCreative{},
+		// 提示词规则（feat/prompt-rules）：新表只需在这份名单里，让每次启动自动对齐结构。
+		&model.PromptRule{},
 		// hlwy 基准表：同样只走这份名单，不另写一次性迁移。
 		// 它和检测表是两条独立的生命周期（基准比结果活得久），但「表在不在」
 		// 这个坑一样，所以一并放在这里每次启动对齐结构。

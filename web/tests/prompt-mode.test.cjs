@@ -51,14 +51,23 @@ test('状态标签：已启用 · 位置 / 已关闭 / 未填写', () => {
 test('提示词只在提示词页改：方案页和渠道表单里没有提示词编辑', () => {
     const root = path.join(__dirname, '..');
     const read = (f) => readFileSync(path.join(root, f), 'utf8');
+    // 规则页（新结构：左列表 + 右编辑器）。写入面是规则表，不再是旧四层的逐层字段。
     const promptPage = read('src/components/modules/prompt/index.tsx');
-    assert.ok(promptPage.includes('<PromptLayerControls') || promptPage.includes('<PromptEditor'), '提示词页要有编辑区');
-    for (const hook of ['useUpdateAccessPlanPrompt', 'useUpdateAccessPlanRoutePrompt', 'useUpdateChannel', 'SettingKey.PromptOverrideEnabled']) {
-        assert.ok(promptPage.includes(hook), `提示词页要能改：${hook}`);
+    const ruleEditor = read('src/components/modules/prompt/rule-editor.tsx');
+    const ruleList = read('src/components/modules/prompt/rule-list.tsx');
+    assert.ok(promptPage.includes('<RuleList') && promptPage.includes('<RuleEditor'), '提示词页要有规则列表和编辑区');
+    for (const hook of ['usePromptRuleList', 'useCreatePromptRule', 'useUpdatePromptRule', 'useDeletePromptRule', 'useTogglePromptRule']) {
+        assert.ok(promptPage.includes(hook), `规则页要能改：${hook}`);
     }
-    assert.ok(!/disabled=\{!value\.enabled\}/.test(promptPage), '关闭只影响生效，仍可编辑与保存草稿');
-    assert.ok(promptPage.includes("!value.enabled && 'border-dashed bg-muted/20'"), '关闭后用浅色虚线区分草稿状态');
-    assert.ok(!/fill_missing|append_system|replace_system/.test(promptPage), '提示词页不再有旧模式');
+    for (const legacy of ['useUpdateAccessPlanPrompt', 'useUpdateAccessPlanRoutePrompt', 'useUpdateChannel', 'SettingKey.PromptOverrideEnabled']) {
+        assert.ok(!promptPage.includes(legacy), `提示词页不该再逐层写旧字段：${legacy}`);
+    }
+    // 关闭只影响生效，仍可编辑与保存草稿：编辑器不许因为规则关着就禁用输入。
+    assert.ok(!/disabled=\{!value\.enabled\}/.test(ruleEditor), '关闭只影响生效，仍可编辑与保存草稿');
+    assert.ok(!/disabled=\{!rule\.enabled\}/.test(ruleEditor), '规则关着也要能改文字');
+    // 关闭的规则在列表里用删除线标出来，而不是藏掉。
+    assert.ok(ruleList.includes('line-through decoration-muted-foreground/40'), '关闭的规则用删除线区分草稿状态');
+    assert.ok(!/fill_missing|append_system|replace_system/.test(promptPage + ruleEditor), '提示词页不再有旧模式');
 
     const planRaw = read('src/components/modules/access-plan/index.tsx');
     assert.ok(planRaw.includes('withoutPromptFields(target)'), '路由整表保存要剥掉列表回显的提示词字段');
@@ -66,7 +75,7 @@ test('提示词只在提示词页改：方案页和渠道表单里没有提示�
     const plan = planRaw
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*$/gm, '')
-        .replace(/function withoutPromptFields[\s\S]*?\n}\n/, '');
+        .replace(/function withoutPromptFields[\s\S]*?\r?\n}\r?\n/, '');
     assert.ok(!plan.includes('提示词'), '方案页不该再出现提示词文案');
     assert.ok(!/prompt/i.test(plan.replace(/withoutPromptFields/g, '')), '方案页不该再引用提示词字段或组件');
 
@@ -94,13 +103,27 @@ test('方案 API 类型：方案保存不带提示词，提示词走单独的接
 
 test('提示词页主屏只留短句，细节放进 ? 里', () => {
     const root = path.join(__dirname, '..');
-    const src = readFileSync(path.join(root, 'src/components/modules/prompt/index.tsx'), 'utf8');
+    const read = (f) => readFileSync(path.join(root, f), 'utf8');
+    const src = read('src/components/modules/prompt/index.tsx');
+    const editor = read('src/components/modules/prompt/rule-editor.tsx');
+    const list = read('src/components/modules/prompt/rule-list.tsx');
     assert.ok(!/<h2[^>]*>\s*提示词\s*<\/h2>/.test(src), '页头已经写着「提示词」，卡片里不再重复大标题');
-    assert.ok(!src.includes('ORDER_CHIPS') && !src.includes('最终顺序'), '9 个顺序小标签换成「拼接顺序」弹出图');
-    assert.ok(src.includes('拼接顺序') && src.includes('<OrderPopover'), '要有拼接顺序图示');
+    assert.ok(!src.includes('ORDER_CHIPS') && !src.includes('最终顺序'), '主屏不堆顺序小标签');
+    assert.ok(!src.includes('拼接顺序') && !src.includes('<OrderPopover'), '顺序说明搬去合并预览，规则页不再有弹层');
     assert.ok(!/`\$\{planOn\}\+\$\{routeOn\}`/.test(src), '筛选数量只显示一个数');
-    assert.ok(!src.includes('方案层 · ') && !src.includes('路由层 · '), '小标题只写「方案」「路由」，解释放进 ?');
-    assert.ok(src.includes("variant={dirty ? 'default' : 'outline'}"), '没改动时保存按钮是灰的，改了才是主按钮');
+    assert.ok(!src.includes('方案层 · ') && !src.includes('路由层 · '), '不再有「方案层 · …」「路由层 · …」这种长小标题');
+    // 新主屏：规则卡片列表 + 右侧编辑区；筛选是一排短 chip（「全部 N」+ 范围 chip + 「只看开着的」）。
+    assert.ok(src.includes('<RuleList') && src.includes('<RuleEditor'), '规则页是左列表右编辑');
+    assert.ok(/lg:grid-cols-\[minmax\(0,4fr\)_minmax\(0,7fr\)\]/.test(src), '宽屏左窄右宽，列表在左、编辑在右');
+    assert.ok(list.includes('全部 {rules.length}') && list.includes('只看开着的'), '筛选是一排短 chip');
+    // 叠加顺序只在合并预览里讲，并逐段标注「前面 / 后面 / 客户端」。
+    const preview = read('src/components/modules/prompt/merge-preview.tsx');
+    assert.ok(preview.includes('usePreviewPromptRules('), '合并预览的命中与合并文本走后端 /preview');
+    assert.ok(preview.includes('不会调用模型'), '预览页要说明只在本站算、不调模型');
+    assert.ok(!preview.includes('previewPromptRules('), '前端不再自己拼一遍');
+    assert.ok(preview.includes("'放在后面'") && preview.includes("'放在前面'"), '每段标注放在前面/放在后面');
+    assert.ok(preview.includes('客户端'), '客户端自带的系统提示词固定标注');
+    assert.ok(editor.includes("variant={dirty && !saveProblem ? 'default' : 'outline'}"), '没改动时保存按钮是灰的，改了才是主按钮');
     const form = readFileSync(path.join(root, 'src/components/modules/channel/Form.tsx'), 'utf8');
     assert.ok(form.includes("setActiveNavItem('prompt')"), '渠道表单的说明可以点过去提示词页');
 });

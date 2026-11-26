@@ -23,6 +23,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/prompt"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/intervention"
 	"github.com/zhizhishu/octopus/internal/server/resp"
@@ -101,6 +102,20 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		return
 	}
 	defer metrics.quota.close()
+
+	// 提示词规则（feat/prompt-rules）：每请求只读一次，读到的这份就是本请求的规则快照，
+	// 串行候选与竞速候选（buildGroupRaceContenders）共用它，不再逐候选回表。
+	// 只有 chat 请求会被注入提示词（prompt.Apply 用的是同一个 IsChatRequest 判据），
+	// 嵌入/图片请求旧代码从没注入过，所以这里不读规则表：省掉一次必然无用的 DB 查询。
+	// 这只影响读取时机，不参与请求分类、选路、救援或熔断判定。
+	// 读取失败只记日志并当作「没有规则」照常转发：不给客户端报错、不 500 中止，也绝不
+	// 回落旧四层字段（与旧 globalPromptOverride 读不到设置 = 什么都不加同语义；旧算法
+	// 只活在 prompt_override_test.go 的 oracle 里）。
+	var promptRules []dbmodel.PromptRule
+	if internalRequest.IsChatRequest() {
+		promptRules = loadPromptRulesOrNone(c.Request.Context(), "handler")
+	}
+
 	// 客户端识别: 原样快照调用端 User-Agent(落库时 512 截断)。纯观测字段——
 	// 出站 UA 仍由 header 默认值统一覆盖, 这里只回答"谁在调用"。
 	metrics.RequestUserAgent = c.Request.UserAgent()
@@ -471,7 +486,7 @@ attemptChannels:
 			!internalRequest.IsEmbeddingRequest() && !internalRequest.IsImageGenerationRequest() {
 			base.restore(internalRequest, item.ModelName)
 			req.internalRequest = internalRequest
-			contenders, peers := buildGroupRaceContenders(c.Request.Context(), req, item, channel, availableKeys, routeResult, requestEndpoint)
+			contenders, peers := buildGroupRaceContenders(c.Request.Context(), req, item, channel, availableKeys, routeResult, requestEndpoint, promptRules)
 			if len(contenders) == 0 {
 				goto serialChannel
 			}
@@ -567,7 +582,15 @@ attemptChannels:
 			// mapping, leave modelMapped=false, and skip the client-name restore — leaking
 			// the upstream model name to the client.
 			base.restore(internalRequest, item.ModelName)
-			promptSnapshot := applyPromptOverridesForAudience(internalRequest, routeResult.AccessPlan, routeResult.AccessRouteRule, channel, req.promptIsAdmin)
+			// 用本请求已读好的规则快照注入（每请求一次读取），每个候选都在 restore 后重算，
+			// 所以多次候选不会累积。
+			// 规则按客户端所发模型名匹配，不做别名换算（用户 11-26 定）。
+			promptSnapshot := applyPromptRulesForAudience(internalRequest, promptRules, prompt.Scope{
+				PlanID:       promptScopePlanID(routeResult.AccessPlan),
+				RequestModel: requestModel,
+				ChannelID:    channel.ID,
+				IsAdmin:      req.promptIsAdmin,
+			})
 			if len(promptSnapshot.Sources) > 0 {
 				clearResponsesRawPromptShape(internalRequest)
 			}

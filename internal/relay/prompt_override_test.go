@@ -18,6 +18,329 @@ import (
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
+// ---------- 旧四层算法 oracle（a7fd2e93 原封搬入；仅测试用，自包含） ----------
+//
+// 生产路径的四层读字段函数已由规则表（internal/model/prompt_rule.go + internal/prompt
+// 的 Evaluate/Apply）取代；本节是 golden 测试的**独立** oracle：把 legacy 三元组
+// （settings + plan/rule/channel 字段）按旧顺序逐层应用，给 wire 比对当对照基准。
+//
+// 独立性要求（不得退化）：
+//   - 本节**不** import/call internal/prompt 的新实现（Evaluate/Apply/SlotFor/ApplyText/
+//     InsertSystemMessage 等一概不用），也不复用 model 层的「开关/受众/模式归一」判定；
+//     四层遍历、enabled/非空判断、per-协议 join 与镜像 after 规则、客户端 system 保留逻辑
+//     全部是本文件内的副本，新旧任何一边改动都不会自动带到另一边。
+//   - 比对在**完整 wire bytes**（含 system 消息结构、header 级格式）上做，失败时打印首个
+//     差异位置（firstWireDiff），不是只比内部字段。
+//
+// 生产路径不得调用本节任何函数。
+
+type promptOverrideLayer struct {
+	source string
+	mode   dbmodel.PromptOverrideMode
+	text   string
+}
+
+// applyPromptOverrides applies the system prompt layers global → plan → route rule → channel.
+//
+// A layer is skipped entirely unless its 启用 switch is on and its text is non-blank
+// (oraclePromptOverrideActive). An applied layer puts its text before or after the
+// request's own system prompt, using new-api's per-protocol joining rules
+// (new-api relay/chat_completions_via_responses.go applySystemPromptIfNeeded,
+// relay/claude_handler.go, relay/gemini_handler.go, relay/channel/codex/adaptor.go) and their
+// mirror image for "after". When the request has no system prompt the text becomes it.
+// The client's own system content is never removed or reordered.
+//
+// Each layer is applied on top of the previous result, so the final order is
+//
+//	channel-before, route-before, plan-before, global-before, CLIENT, global-after, plan-after, route-after, channel-after
+//
+// i.e. the more specific a layer is, the further out it sits.
+func applyPromptOverrides(req *transformerModel.InternalLLMRequest, plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel) promptOverrideSnapshot {
+	return applyPromptOverridesForAudience(req, plan, rule, channel, false)
+}
+
+// Only the authenticated API-key principal can opt into administrator rules.
+// The legacy entry point above is deliberately non-admin for direct test callers.
+func applyPromptOverridesForAudience(req *transformerModel.InternalLLMRequest, plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel, authenticatedAdmin bool) promptOverrideSnapshot {
+	snapshot := promptOverrideSnapshot{}
+	if req == nil || !req.IsChatRequest() {
+		return snapshot
+	}
+	before, after := false, false
+	for _, layer := range promptOverrideLayersForAudience(plan, rule, channel, authenticatedAdmin) {
+		mode := oracleNormalizePromptOverrideMode(layer.mode)
+		oracleApplyPromptOverrideText(req, strings.TrimSpace(layer.text), mode)
+		snapshot.Sources = append(snapshot.Sources, layer.source)
+		if mode == dbmodel.PromptOverrideModeAfter {
+			after = true
+		} else {
+			before = true
+		}
+	}
+	switch {
+	case before && after:
+		snapshot.Mode = "before+after"
+	case after:
+		snapshot.Mode = dbmodel.PromptOverrideModeAfter
+	case before:
+		snapshot.Mode = dbmodel.PromptOverrideModeBefore
+	}
+	return snapshot
+}
+
+// promptOverrideLayers returns only the layers that will add something (switch on, text set).
+func promptOverrideLayers(plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel) []promptOverrideLayer {
+	return promptOverrideLayersForAudience(plan, rule, channel, false)
+}
+
+func promptOverrideLayersForAudience(plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel, authenticatedAdmin bool) []promptOverrideLayer {
+	layers := make([]promptOverrideLayer, 0, 4)
+	if text, mode, enabled := globalPromptOverride(); oraclePromptOverrideActive(enabled, mode, text) && oraclePromptAudienceAllows(globalPromptAudience(), authenticatedAdmin) {
+		layers = append(layers, promptOverrideLayer{source: "global", mode: mode, text: text})
+	}
+	if plan != nil && oraclePromptAudienceAllows(plan.PromptAudience, authenticatedAdmin) && oraclePromptOverrideActive(plan.PromptOverrideEnabled, plan.PromptOverrideMode, plan.SystemPromptOverride) {
+		layers = append(layers, promptOverrideLayer{source: "access_plan:" + plan.Slug, mode: plan.PromptOverrideMode, text: plan.SystemPromptOverride})
+	}
+	if rule != nil && oraclePromptAudienceAllows(rule.PromptAudience, authenticatedAdmin) && oraclePromptOverrideActive(rule.PromptOverrideEnabled, rule.PromptOverrideMode, rule.SystemPromptOverride) {
+		layers = append(layers, promptOverrideLayer{source: "route_rule:" + rule.RequestModel, mode: rule.PromptOverrideMode, text: rule.SystemPromptOverride})
+	}
+	if channel != nil && oraclePromptAudienceAllows(channel.PromptAudience, authenticatedAdmin) && oraclePromptOverrideActive(channel.PromptOverrideEnabled, channel.PromptOverrideMode, channel.SystemPromptOverride) {
+		layers = append(layers, promptOverrideLayer{source: "channel:" + channel.Name, mode: channel.PromptOverrideMode, text: channel.SystemPromptOverride})
+	}
+	return layers
+}
+
+func globalPromptAudience() dbmodel.PromptAudience {
+	value, err := op.SettingGetString(dbmodel.SettingKeyPromptAudience)
+	if err != nil {
+		return dbmodel.PromptAudienceAll
+	}
+	return dbmodel.PromptAudience(value)
+}
+
+func globalPromptOverride() (string, dbmodel.PromptOverrideMode, bool) {
+	text, err := op.SettingGetString(dbmodel.SettingKeyPromptOverrideSystem)
+	if err != nil {
+		return "", dbmodel.PromptOverrideModeBefore, false
+	}
+	mode := dbmodel.PromptOverrideModeBefore
+	if value, err := op.SettingGetString(dbmodel.SettingKeyPromptOverrideMode); err == nil {
+		mode = dbmodel.PromptOverrideMode(value)
+	}
+	enabled := false
+	if value, err := op.SettingGetString(dbmodel.SettingKeyPromptOverrideEnabled); err == nil {
+		enabled = value == "true"
+	}
+	return strings.TrimSpace(text), mode, enabled
+}
+
+// ---------- oracle 核心（a7fd2e93 的拼接实现，逐函数原封复制，只加 oracle 前缀） ----------
+
+// oraclePromptOverrideActive：旧「开关 + 非空文本」判定（dbmodel.PromptOverrideActive 的副本）。
+// 文本 trim 后为空 → 这一层什么都不加；legacy 模式值（没有开关列的旧数据）视作开。
+func oraclePromptOverrideActive(enabled bool, mode dbmodel.PromptOverrideMode, text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	return enabled || oracleIsLegacyPromptOverrideMode(mode)
+}
+
+// oracleIsLegacyPromptOverrideMode：append_system / replace_system 是开关列之前的旧值。
+func oracleIsLegacyPromptOverrideMode(mode dbmodel.PromptOverrideMode) bool {
+	return mode == dbmodel.PromptOverrideModeAppendSystem || mode == dbmodel.PromptOverrideModeReplaceSystem
+}
+
+// oracleNormalizePromptOverrideMode：任何存储值都折到 before/after（dbmodel 同义）。
+func oracleNormalizePromptOverrideMode(mode dbmodel.PromptOverrideMode) dbmodel.PromptOverrideMode {
+	if mode == dbmodel.PromptOverrideModeAfter {
+		return dbmodel.PromptOverrideModeAfter
+	}
+	return dbmodel.PromptOverrideModeBefore
+}
+
+// oraclePromptAudienceAllows：旧受众判定（dbmodel.PromptAudienceAllows 的副本）。
+func oraclePromptAudienceAllows(audience dbmodel.PromptAudience, authenticatedAdmin bool) bool {
+	switch audience {
+	case "", dbmodel.PromptAudienceAll:
+		return true
+	case dbmodel.PromptAudienceAdminOnly:
+		return authenticatedAdmin
+	default:
+		return false
+	}
+}
+
+// oracleClearResponsesRawPromptShape：旧 relay 在注入后的形状清理（生产 prompt_override.go
+// 的同名函数副本），保持 oracle 与本轮生产改动完全解耦。
+func oracleClearResponsesRawPromptShape(req *transformerModel.InternalLLMRequest) {
+	if req == nil {
+		return
+	}
+	req.ResponsesInstructions = nil
+	req.ResponsesInputRaw = nil
+}
+
+// oraclePromptSlot locates the request's own system prompt inside the internal message list.
+type oraclePromptSlot struct {
+	// index of the message holding the system prompt, -1 when the request has none.
+	index int
+	// asNewBlock: the protocol keeps the system prompt as an array of blocks; a layer is
+	// added as its own block (Anthropic array-form system) instead of editing text.
+	asNewBlock bool
+	// beforeAt / afterAt: where a new block goes for "before" / "after".
+	beforeAt, afterAt int
+	// trimExisting: new-api TrimSpace's the existing text and drops the "\n" when it is blank
+	// (Anthropic string system, Responses instructions).
+	trimExisting bool
+}
+
+func oraclePromptSlotFor(req *transformerModel.InternalLLMRequest) oraclePromptSlot {
+	switch req.RawAPIFormat {
+	case transformerModel.APIFormatAnthropicMessage:
+		return oracleAnthropicPromptSlot(req)
+	case transformerModel.APIFormatOpenAIResponse:
+		// Inbound puts a non-empty `instructions` as Messages[0] and keeps the raw value in
+		// ResponsesInstructions. developer/system items inside `input` are NOT the
+		// instructions slot (new-api's codex adaptor only looks at `instructions`).
+		if req.ResponsesInstructions != nil && len(req.Messages) > 0 && oracleIsSystemRole(req.Messages[0].Role) {
+			return oraclePromptSlot{index: 0, trimExisting: true}
+		}
+		return oraclePromptSlot{index: -1}
+	case transformerModel.APIFormatGeminiContents:
+		// Inbound joins systemInstruction.parts' non-empty texts with "\n" into Messages[0],
+		// so editing its start/end equals editing the first/last non-empty text part.
+		if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+			return oraclePromptSlot{index: 0}
+		}
+		return oraclePromptSlot{index: -1}
+	default:
+		// OpenAI chat: first system (or developer) message anywhere, like new-api's
+		// containSystemPrompt loop.
+		for i, msg := range req.Messages {
+			if oracleIsSystemRole(msg.Role) {
+				return oraclePromptSlot{index: i}
+			}
+		}
+		return oraclePromptSlot{index: -1}
+	}
+}
+
+// Claude CLI system header blocks. A genuine Claude Code request starts its system array
+// with the billing header block followed by the agent identity block; the Anthropic outbound
+// cloak keys on exactly that (billing header must stay parts[0], otherwise it synthesizes
+// one). A "before" block is therefore inserted AFTER these blocks so the CLI's own blocks
+// keep their positions and bytes and no second billing header is ever synthesized.
+const (
+	oracleClaudeBillingHeaderPrefix = "x-anthropic-billing-header:"
+	oracleClaudeAgentSDKMarker      = "built on Anthropic's Claude Agent SDK"
+	oracleClaudeCodeIdentityMarker  = "You are Claude Code, Anthropic's official CLI for Claude"
+)
+
+func oracleAnthropicPromptSlot(req *transformerModel.InternalLLMRequest) oraclePromptSlot {
+	// Only the leading system run is the top-level `system`; later role=system messages are
+	// mid-conversation system messages (claude CLI beta) and stay where they are.
+	leading := 0
+	for leading < len(req.Messages) && req.Messages[leading].Role == "system" {
+		leading++
+	}
+	if leading == 0 {
+		return oraclePromptSlot{index: -1}
+	}
+	if req.TransformerMetadata["anthropic_system_array_format"] != "true" {
+		return oraclePromptSlot{index: 0, trimExisting: true}
+	}
+	beforeAt := 0
+	if beforeAt < leading && strings.HasPrefix(strings.TrimSpace(oraclePromptMessageText(req.Messages[beforeAt])), oracleClaudeBillingHeaderPrefix) {
+		beforeAt++
+	}
+	if beforeAt < leading {
+		text := oraclePromptMessageText(req.Messages[beforeAt])
+		if strings.Contains(text, oracleClaudeAgentSDKMarker) || strings.HasPrefix(strings.TrimSpace(text), oracleClaudeCodeIdentityMarker) {
+			beforeAt++
+		}
+	}
+	return oraclePromptSlot{index: 0, asNewBlock: true, beforeAt: beforeAt, afterAt: leading}
+}
+
+func oracleApplyPromptOverrideText(req *transformerModel.InternalLLMRequest, text string, mode dbmodel.PromptOverrideMode) {
+	after := mode == dbmodel.PromptOverrideModeAfter
+	slot := oraclePromptSlotFor(req)
+	if slot.index < 0 {
+		oracleInsertSystemMessage(req, 0, text)
+		if req.RawAPIFormat == transformerModel.APIFormatOpenAIResponse {
+			instructions := text
+			req.ResponsesInstructions = &instructions
+		}
+		return
+	}
+	if slot.asNewBlock {
+		if after {
+			oracleInsertSystemMessage(req, slot.afterAt, text)
+		} else {
+			oracleInsertSystemMessage(req, slot.beforeAt, text)
+		}
+		return
+	}
+	msg := &req.Messages[slot.index]
+	if len(msg.Content.MultipleContent) > 0 {
+		part := transformerModel.MessageContentPart{Type: "text", Text: &text}
+		parts := make([]transformerModel.MessageContentPart, 0, len(msg.Content.MultipleContent)+1)
+		if after {
+			parts = append(append(parts, msg.Content.MultipleContent...), part)
+		} else {
+			parts = append(append(parts, part), msg.Content.MultipleContent...)
+		}
+		msg.Content.MultipleContent = parts
+	} else {
+		existing := ""
+		if msg.Content.Content != nil {
+			existing = *msg.Content.Content
+		}
+		if slot.trimExisting {
+			existing = strings.TrimSpace(existing)
+		}
+		merged := text
+		switch {
+		case slot.trimExisting && existing == "":
+		case after:
+			merged = existing + "\n" + text
+		default:
+			merged = text + "\n" + existing
+		}
+		msg.Content.Content = &merged
+	}
+	if req.RawAPIFormat == transformerModel.APIFormatOpenAIResponse && slot.index == 0 && msg.Content.Content != nil {
+		instructions := *msg.Content.Content
+		req.ResponsesInstructions = &instructions
+	}
+}
+
+func oracleInsertSystemMessage(req *transformerModel.InternalLLMRequest, at int, text string) {
+	content := text
+	msg := transformerModel.Message{Role: "system", Content: transformerModel.MessageContent{Content: &content}}
+	out := make([]transformerModel.Message, 0, len(req.Messages)+1)
+	out = append(out, req.Messages[:at]...)
+	out = append(out, msg)
+	out = append(out, req.Messages[at:]...)
+	req.Messages = out
+}
+
+func oracleIsSystemRole(role string) bool {
+	return role == "system" || role == "developer"
+}
+
+func oraclePromptMessageText(msg transformerModel.Message) string {
+	if msg.Content.Content != nil {
+		return *msg.Content.Content
+	}
+	for _, part := range msg.Content.MultipleContent {
+		if part.Type == "text" && part.Text != nil {
+			return *part.Text
+		}
+	}
+	return ""
+}
+
 type promptResult struct {
 	body   map[string]any
 	raw    []byte
@@ -26,10 +349,20 @@ type promptResult struct {
 }
 
 // promptWire parses body with the inbound, applies the layers exactly like relay.go does
-// (applyPromptOverrides, then clearResponsesRawPromptShape when a layer applied), runs the
-// real outbound and returns the upstream body/headers. No network.
+// (applyPromptOverrides, then oracleClearResponsesRawPromptShape when a layer applied), runs
+// the real outbound and returns the upstream body/headers. No network. The oracle side never
+// touches internal/prompt: the expected path is the a7fd2e93 copy below.
 func promptWire(t *testing.T, in inbound.InboundType, body string, out outbound.OutboundType,
 	tweak func(*transformerModel.InternalLLMRequest), plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel,
+) promptResult {
+	return promptWireForAudience(t, in, body, out, tweak, plan, rule, channel, false)
+}
+
+// promptWireForAudience 与 promptWire 相同，但把「调用者是不是已认证管理员」交给 oracle，
+// 用来让 admin_only 受众也能在旧四层 oracle 上跑出基准字节。
+func promptWireForAudience(t *testing.T, in inbound.InboundType, body string, out outbound.OutboundType,
+	tweak func(*transformerModel.InternalLLMRequest), plan *dbmodel.AccessPlan, rule *dbmodel.AccessRouteRule, channel *dbmodel.Channel,
+	authenticatedAdmin bool,
 ) promptResult {
 	t.Helper()
 	ctx := context.Background()
@@ -43,9 +376,9 @@ func promptWire(t *testing.T, in inbound.InboundType, body string, out outbound.
 	if tweak != nil {
 		tweak(req)
 	}
-	snap := applyPromptOverrides(req, plan, rule, channel)
+	snap := applyPromptOverridesForAudience(req, plan, rule, channel, authenticatedAdmin)
 	if len(snap.Sources) > 0 {
-		clearResponsesRawPromptShape(req)
+		oracleClearResponsesRawPromptShape(req)
 	}
 	httpReq, err := outbound.Get(out).TransformRequest(context.Background(), req, "https://upstream.invalid", "sk-test")
 	if err != nil {
@@ -430,6 +763,27 @@ func TestPromptLayerOrderAnthropicBlocks(t *testing.T) {
 		"You are a Claude agent, built on Anthropic's Claude Agent SDK.", "PLAN", "MAIN", "ROUTE", "CHAN"}
 	if !reflect.DeepEqual(texts, want) {
 		t.Fatalf("got %q", texts)
+	}
+}
+
+// admin_only 受众（旧四层 oracle 侧）：普通主体拿不到管理员层，管理员主体拿得到；
+// 受众只影响自己那一层，其它层照常注入。这条基准由**独立 oracle** 算出，新规则表那边的
+// 对应比对在 prompt_rules_test.go（TestPromptRulesAudienceAdminOnlyMatchesLegacyOracle）。
+func TestPromptAudienceAdminOnlyOracle(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"system","content":"S"},{"role":"user","content":"hi"}]}`
+	plan := &dbmodel.AccessPlan{Slug: "vip", SystemPromptOverride: "ADMIN-PLAN", PromptOverrideMode: before, PromptOverrideEnabled: true, PromptAudience: dbmodel.PromptAudienceAdminOnly}
+	rule := ruleWith("OPEN", after)
+
+	ordinary := promptWire(t, inbound.InboundTypeOpenAIChat, body, outbound.OutboundTypeOpenAIChat, nil, plan, rule, nil)
+	jsonEq(t, "ordinary", ordinary.body["messages"], `[{"role":"system","content":"S\nOPEN"},{"role":"user","content":"hi"}]`)
+	if !reflect.DeepEqual(ordinary.snap.Sources, []string{"route_rule:m"}) {
+		t.Fatalf("ordinary sources %#v（admin_only 层必须被跳过）", ordinary.snap.Sources)
+	}
+
+	admin := promptWireForAudience(t, inbound.InboundTypeOpenAIChat, body, outbound.OutboundTypeOpenAIChat, nil, plan, rule, nil, true)
+	jsonEq(t, "admin", admin.body["messages"], `[{"role":"system","content":"ADMIN-PLAN\nS\nOPEN"},{"role":"user","content":"hi"}]`)
+	if !reflect.DeepEqual(admin.snap.Sources, []string{"access_plan:vip", "route_rule:m"}) {
+		t.Fatalf("admin sources %#v", admin.snap.Sources)
 	}
 }
 

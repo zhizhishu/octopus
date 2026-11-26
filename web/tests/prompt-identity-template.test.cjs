@@ -49,12 +49,21 @@ test('快捷品牌草稿可重复替换自己标记的身份段，不动原有�
 
 test('UI插入仍走已有每层保存按钮且只在管理员视图', () => {
     const source = fs.readFileSync(path.join(__dirname, '../src/components/modules/prompt/index.tsx'), 'utf8');
+    const editor = fs.readFileSync(path.join(__dirname, '../src/components/modules/prompt/rule-editor.tsx'), 'utf8');
     const builder = fs.readFileSync(path.join(__dirname, '../src/components/modules/prompt/PromptIdentityBuilder.tsx'), 'utf8');
+    // 只在管理员视图：普通用户看不到插入入口。
     assert.match(source, /role === 'admin' \? <AdminPromptWorkspace \/> : <UserPromptView \/>/);
     assert.match(source, /<PromptIdentityBuilder/);
-    assert.match(source, /appendIdentityPreset\(current\.text, identityPreset\)/);
-    assert.match(source, /onSave=\{save\}|onClick=\{save\}/);
+    // 模板只填进当前规则草稿；入口在规则编辑器里，插完必须手动点「保存」。
+    assert.match(editor, /appendIdentityPreset\(current\.text, identityPreset\)/);
+    assert.match(source, /identityPreset=\{identityPreset\}/);
+    // 保存走规则接口：新建规则 / 更新已有规则各一条真实接线（不再有旧四层的 onSave）。
+    assert.match(source, /create\.mutateAsync\(promptRuleDraftPayload\(draft\.value\)\)|create\.mutateAsync\(payload\)/);
+    assert.match(source, /update\.mutateAsync\(\{ \.\.\.payload, id: payload\.id \}\)/);
+    assert.match(editor, /onClick=\{onSave\}/);
+    // builder 自己的两条承诺不变：中性模式不删原有 system/developer，且要显式「填入草稿」。
     assert.match(builder, /中性模式不会删除原有 system\/developer/);
     assert.match(builder, /onApplyGlobal/);
+    // 一键模板落到规则草稿时替换自己标记的身份段，不重复累加。
     assert.match(source, /upsertIdentityPreset\(/);
 });

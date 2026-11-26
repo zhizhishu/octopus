@@ -5,6 +5,7 @@ import (
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/prompt"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
@@ -34,14 +35,19 @@ type groupRaceCandidate struct {
 // stopping at the first serial / non-opt-in / disabled / protocol-incompatible / keyless
 // one (the rest, if any, are left for the normal candidate loop). For each channel it
 // clones the parent's ORIGINAL request (main has already restored the original template),
-// sets that item's model name, and applies prompt overrides on the main goroutine — the
-// builder never re-applies the parent template's prompt. Keys are filtered by breaker
-// scope (or taken wholesale for no-breaker channels) using the existing health / owner /
-// sticky preference. Each channel's keys are interleaved round-robin into one global
-// sequence so the first wave yields one key per channel before filling.
+// sets that item's model name, and applies the request's prompt-rule snapshot on the main
+// goroutine — the builder never re-applies the parent template's prompt and never re-reads
+// the rule store. Keys are filtered by breaker scope (or taken wholesale for no-breaker
+// channels) using the existing health / owner / sticky preference. Each channel's keys are
+// interleaved round-robin into one global sequence so the first wave yields one key per
+// channel before filling.
 //
 // endpoint is the resolved request endpoint (the same string attempt spans record under);
 // it is threaded into the breaker scope so the key filter matches what the racers record.
+//
+// promptRules 是本请求已读好的规则快照（Handler 主路径从 relay.go 传入）；直接调用者
+// （测试或其它未来入口）可以不传，此时在这里读一次 —— 仍然是一个竞速一次读取，绝不逐
+// 候选回表。空/nil 快照（含入口读取失败）即「这个请求没有规则」：竞速照常跑，不注入。
 //
 // additionalChannels counts only the contiguous candidates that actually joined, not
 // counting the current one.
@@ -53,6 +59,7 @@ func buildGroupRaceContenders(
 	currentKeys []dbmodel.ChannelKey,
 	route routeGroupResult,
 	endpoint string,
+	promptRulesArg ...[]dbmodel.PromptRule,
 ) (contenders []raceContender, additionalChannels int) {
 	if req == nil || req.internalRequest == nil || currentChannel == nil {
 		return nil, 0
@@ -75,8 +82,9 @@ func buildGroupRaceContenders(
 	}
 
 	candidates := make([]groupRaceCandidate, 0, maxGroupRaceChannels)
+	promptRules := racePromptRulesSnapshot(ctx, promptRulesArg)
 
-	current, ok := buildGroupRaceCandidate(req, currentItem, currentChannel, route, endpoint, currentKeys)
+	current, ok := buildGroupRaceCandidate(req, currentItem, currentChannel, route, endpoint, currentKeys, promptRules)
 	if !ok {
 		return nil, 0
 	}
@@ -93,7 +101,7 @@ func buildGroupRaceContenders(
 		if !groupRaceChannelCompatible(req.internalRequest, channel) {
 			break
 		}
-		next, ok := buildGroupRaceCandidate(req, item, channel, route, endpoint, nil)
+		next, ok := buildGroupRaceCandidate(req, item, channel, route, endpoint, nil, promptRules)
 		if !ok {
 			break
 		}
@@ -104,9 +112,18 @@ func buildGroupRaceContenders(
 	return interleaveGroupRaceContenders(candidates), additionalChannels
 }
 
+// racePromptRulesSnapshot 解析竞速要用的规则快照：Handler 主路径传入本请求已读好的那份
+// （传了就以它为准，nil = 本请求没有规则，不再回表）；没传时（直接调用者）在这里读一次。
+func racePromptRulesSnapshot(ctx context.Context, passed [][]dbmodel.PromptRule) []dbmodel.PromptRule {
+	if len(passed) > 0 {
+		return passed[0]
+	}
+	return loadPromptRulesOrNone(ctx, "race_group")
+}
+
 // buildGroupRaceCandidate builds one channel's contribution: it clones the parent's
-// untouched request, pins the item's model name, applies the cross-channel prompt layers on
-// the MAIN goroutine, then derives the runtime model and routing capability key from that
+// untouched request, pins the item's model name, applies the request's prompt-rule snapshot
+// on the MAIN goroutine, then derives the runtime model and routing capability key from that
 // SAME template. It then selects the contending keys with the breaker filter scoped by
 // exactly the (runtime model, endpoint, capability) tuple failures are RECORDED under, so a
 // tripped scope is honoured instead of a phantom (raw-model, empty-endpoint) one.
@@ -117,6 +134,7 @@ func buildGroupRaceCandidate(
 	route routeGroupResult,
 	endpoint string,
 	presetKeys []dbmodel.ChannelKey,
+	promptRules []dbmodel.PromptRule,
 ) (groupRaceCandidate, bool) {
 	if channel == nil {
 		return groupRaceCandidate{}, false
@@ -126,7 +144,14 @@ func buildGroupRaceCandidate(
 		return groupRaceCandidate{}, false
 	}
 	template.Model = item.ModelName
-	snapshot := applyPromptOverridesForAudience(template, route.AccessPlan, route.AccessRouteRule, channel, req.promptIsAdmin)
+	// 用 Handler 入口已读好的请求级快照注入：本函数不再回表（一个请求只读一次规则）。
+	// 快照为空（含入口读取失败）即「这个请求没有规则」，候选照常参赛、不注入任何文本。
+	snapshot := applyPromptRulesForAudience(template, promptRules, prompt.Scope{
+		PlanID:       promptScopePlanID(route.AccessPlan),
+		RequestModel: req.requestModel,
+		ChannelID:    channel.ID,
+		IsAdmin:      req.promptIsAdmin,
+	})
 	if len(snapshot.Sources) > 0 {
 		clearResponsesRawPromptShape(template)
 	}

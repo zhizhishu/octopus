@@ -10,10 +10,15 @@ const endpoint = fs.readFileSync(path.join(project, 'api/endpoints/redteam-lab.t
 
 test('红队面板有独立管理页签，老提示词草稿切换时保留挂载', () => {
     assert.match(workspace, /function AdminPromptWorkspace/);
-    assert.match(workspace, /tab === 'redteam'/);
+    // 三个页签：规则 / 合并预览 / 破甲实验。
+    assert.match(workspace, /\{ value: 'redteam', label: '破甲实验' \}/);
     assert.match(workspace, /<RedTeamLab \/>/);
+    // 三个面板常驻挂载，只用 hidden 切换：切走不卸载，破甲实验里的状态和提示词草稿都不丢。
     assert.match(workspace, /hidden=\{tab !== 'rules'\}/);
+    assert.match(workspace, /hidden=\{tab !== 'preview'\}/);
     assert.match(workspace, /hidden=\{tab !== 'redteam'\}/);
+    assert.doesNotMatch(workspace, /\{tab === 'redteam'\s*\?/, '破甲实验不能被条件渲染成「切走就卸载」');
+    assert.doesNotMatch(workspace, /tab !== 'redteam' &&/, '同上：不要用 && 短路卸载');
     assert.doesNotMatch(workspace, /高级实验接口（预留）/);
 });
 
