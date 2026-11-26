@@ -189,7 +189,7 @@ export function PelicanTest({ channels }: { channels: Channel[] }) {
     const [source, setSource] = useState<CreativeItem | null>(null);
     const [confirmClear, setConfirmClear] = useState(false);
 
-    const { data: rounds } = useCreativeRounds(30);
+    const { data: rounds, isError: roundsError, refetch: refetchRounds } = useCreativeRounds(30);
     const { data: budget } = useAuditBudget();
     const createRound = useCreateCreativeRound();
     const pin = usePinCreative();
@@ -198,8 +198,14 @@ export function PelicanTest({ channels }: { channels: Channel[] }) {
 
     // 没选轮次时看最新一轮。
     const activeRoundId = roundId || rounds?.[0]?.round_id || '';
-    const { data: items, isLoading: itemsLoading } = useCreativeRound(activeRoundId);
+    const { data: items, isLoading: itemsLoading, isError: itemsError, refetch: refetchItems } = useCreativeRound(activeRoundId);
     const round = rounds?.find((item) => item.round_id === activeRoundId);
+    // 读取失败（不是数据为空）：要说「没读到」，不能让用户以为图被删了。
+    const readFailed = roundsError || itemsError;
+    const retryRead = () => {
+        if (roundsError) void refetchRounds();
+        if (itemsError) void refetchItems();
+    };
 
     const options = useMemo<MultiPickerOption[]>(
         () =>
@@ -353,7 +359,7 @@ export function PelicanTest({ channels }: { channels: Channel[] }) {
 
             <div className="flex flex-wrap items-center gap-2 px-1">
                 <h3 className="min-w-0 flex-1 text-base font-semibold">
-                    {round ? roundLabel(round.created_at, round.total) : '还没有出过图'}
+                    {round ? roundLabel(round.created_at, round.total) : readFailed ? '读取失败' : '还没有出过图'}
                 </h3>
                 {(rounds?.length ?? 0) > 0 && (
                     <SearchableSelect
@@ -386,7 +392,15 @@ export function PelicanTest({ channels }: { channels: Channel[] }) {
                 <p className="px-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">题目：{round.prompt}</p>
             )}
 
-            {activeRoundId === '' ? (
+            {readFailed ? (
+                <div className="rounded-3xl border border-dashed border-destructive/40 bg-destructive/5 p-8 text-center text-sm">
+                    <p className="font-medium text-destructive">读取失败</p>
+                    <p className="mt-1 text-xs text-muted-foreground">没读到这一轮（网络或服务端出错），不是图被删了。</p>
+                    <Button type="button" variant="outline" size="sm" className="mt-3 h-8 rounded-lg text-xs" onClick={retryRead}>
+                        重试
+                    </Button>
+                </div>
+            ) : activeRoundId === '' ? (
                 <div className="rounded-3xl border border-dashed border-border/70 bg-muted/20 p-8 text-center text-sm text-muted-foreground">
                     选几个模型，点「一起出图」，它们画的鹈鹕会并排出现在这里。
                 </div>

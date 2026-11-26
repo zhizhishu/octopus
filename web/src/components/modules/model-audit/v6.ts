@@ -209,11 +209,17 @@ export function creativeSrcDoc(item: Pick<CreativeItem, 'format' | 'content'>): 
         if (/<head[\s>]/i.test(content)) return content.replace(/<head([^>]*)>/i, `<head$1>${csp}`);
         return `<!doctype html><html><head>${csp}<meta charset="utf-8"></head><body>${content}</body></html>`;
     }
+    const content = item.content ?? '';
+    // 有 viewBox 才让它铺满：preserveAspectRatio 默认等比居中，不会变形。
+    // 没有 viewBox 的 SVG 强设 100% 宽高只会被拉伸，只给上限、按原尺寸居中。
+    const svgSize = /<svg[^>]*\bviewBox\s*=/i.test(content)
+        ? 'svg{max-width:100%;max-height:100%;width:100%;height:100%}'
+        : 'svg{max-width:100%;max-height:100%}';
     return (
         `<!doctype html><html><head>${csp}<meta charset="utf-8">` +
         '<style>html,body{margin:0;height:100%;background:#fff}body{display:flex;align-items:center;justify-content:center}' +
-        'svg{max-width:100%;max-height:100%;width:100%;height:100%}</style></head>' +
-        `<body>${item.content ?? ''}</body></html>`
+        svgSize + '</style></head>' +
+        `<body>${content}</body></html>`
     );
 }
 
@@ -226,7 +232,7 @@ export function creativeMeta(item: Pick<CreativeItem, 'duration_ms' | 'output_to
     return parts.join(' · ');
 }
 
-/** 没出成图时卡片上那句话。 */
+/** 没出成图时卡片上那句话。失败原因优先用后端给的 item.error（真因），没给才回落通用文案。 */
 export function creativeFailureText(item: Pick<CreativeItem, 'status' | 'error' | 'kind'>): string {
     switch (item.status) {
         case 'pending':
@@ -236,7 +242,8 @@ export function creativeFailureText(item: Pick<CreativeItem, 'status' | 'error' 
         case 'timeout':
             return item.error || '超时了';
         case 'invalid':
-            return item.kind === 'html' ? '没返回能用的 HTML' : '没返回合法 SVG';
+            // 后端会说清楚为什么（回复是空的 / 没返回合法的 SVG/HTML / 图太大…），照实显示。
+            return item.error || (item.kind === 'html' ? '没返回能用的 HTML' : '没返回合法 SVG');
         case 'failed':
             return item.error ? `没出成：${item.error}` : '没出成';
         default:

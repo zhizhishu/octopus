@@ -108,6 +108,24 @@ test('creative frames get a no-network CSP and the pelican prompt is the origina
     assert.ok(page.indexOf('Content-Security-Policy') < page.indexOf('<title>'), 'the CSP goes first inside <head>');
     assert.equal(creativeFailureText({ status: 'invalid', kind: 'pelican', error: '' }), '没返回合法 SVG');
     assert.equal(creativeFailureText({ status: 'timeout', kind: 'pelican', error: '超时（180 秒没出完）' }), '超时（180 秒没出完）');
+    assert.equal(
+        creativeFailureText({ status: 'invalid', kind: 'pelican', error: '回复是空的' }),
+        '回复是空的',
+        'the invalid branch shows the backend reason instead of a generic line',
+    );
+    assert.equal(creativeFailureText({ status: 'invalid', kind: 'html', error: '' }), '没返回能用的 HTML');
+});
+
+test('an svg without a viewBox is not stretched to fill the frame', () => {
+    const { creativeSrcDoc } = v6();
+    const FULL = 'svg{max-width:100%;max-height:100%;width:100%;height:100%}';
+    const FIT = 'svg{max-width:100%;max-height:100%}';
+    const withBox = creativeSrcDoc({ format: 'svg', content: '<svg viewBox="0 0 500 450"><rect/></svg>' });
+    assert.ok(withBox.includes(FULL), 'a viewBox svg may fill the box: preserveAspectRatio keeps it even');
+    const noBox = creativeSrcDoc({ format: 'svg', content: '<svg><circle r="4"/></svg>' });
+    assert.equal(noBox.includes(FULL), false, 'no viewBox: never force width/height 100% (that stretches it)');
+    assert.ok(noBox.includes(FIT), 'no viewBox: only cap the size');
+    assert.ok(noBox.includes('align-items:center;justify-content:center'), 'still centered');
 });
 
 test('the creative iframe never gets allow-same-origin', () => {
@@ -122,7 +140,7 @@ test('the creative iframe never gets allow-same-origin', () => {
 
 function pelicanPage(options = {}) {
     const runtime = createRuntime();
-    const state = { created: [], pinned: [], deleted: [], cleared: 0, toasts: [] };
+    const state = { created: [], pinned: [], deleted: [], cleared: 0, toasts: [], refetched: [] };
     const toast = new Proxy({}, { get: (_, kind) => (...a) => state.toasts.push([kind, ...a]) });
     const items = options.items ?? [];
     const { PelicanTest } = load('src/components/modules/model-audit/PelicanTest.tsx', {
@@ -136,8 +154,17 @@ function pelicanPage(options = {}) {
         '@/components/modules/channel/channel-utils': { getSelectedChannelModels: (ch) => ch.selected_models ?? [] },
         './MultiPicker': widgets('MultiPicker'),
         '@/api/endpoints/model-audit': {
-            useCreativeRounds: () => ({ data: options.rounds ?? [] }),
-            useCreativeRound: () => ({ data: items, isLoading: false }),
+            useCreativeRounds: () => ({
+                data: options.rounds ?? [],
+                isError: options.roundsError === true,
+                refetch: () => { state.refetched.push('rounds'); },
+            }),
+            useCreativeRound: () => ({
+                data: items,
+                isLoading: false,
+                isError: options.itemsError === true,
+                refetch: () => { state.refetched.push('round'); },
+            }),
             useAuditBudget: () => ({ data: options.budget ?? { used: 0, limit: 200, remaining: 200 } }),
             useCreateCreativeRound: () => ({ isPending: false, mutate: (vars, cb) => { state.created.push(vars); cb?.onSuccess?.({ round_id: 'r1', ids: [1] }); } }),
             usePinCreative: () => ({ isPending: false, mutate: (vars) => state.pinned.push(vars) }),
@@ -221,6 +248,41 @@ test('pelican: cards render in a sandboxed frame, failures show why, and deletes
     assert.equal(p.state.cleared, 0);
     findElement(tree, (n) => n.type === 'Button' && squash(n) === '确定清空').props.onClick();
     assert.equal(p.state.cleared, 1);
+});
+
+test('pelican: a failed read says so and offers a retry instead of pretending the images were deleted', () => {
+    const rounds = [{ round_id: 'r1', kind: 'pelican', prompt: 'x', created_at: new Date().toISOString(), total: 2, active: 0, pinned: 0 }];
+
+    const roundFailed = pelicanPage({ rounds, itemsError: true });
+    let tree = roundFailed.render();
+    let body = squash(tree);
+    assert.match(body, /读取失败/);
+    assert.equal(/都删掉了/.test(body), false, 'a read failure must not claim the images were deleted');
+    findElement(tree, (n) => n.type === 'Button' && squash(n) === '重试').props.onClick();
+    assert.deepEqual(roundFailed.state.refetched, ['round']);
+
+    const roundsFailed = pelicanPage({ roundsError: true });
+    tree = roundsFailed.render();
+    body = squash(tree);
+    assert.match(body, /读取失败/);
+    assert.equal(/还没有出过图/.test(body), false, 'a failed round list is not an empty history');
+    findElement(tree, (n) => n.type === 'Button' && squash(n) === '重试').props.onClick();
+    assert.deepEqual(roundsFailed.state.refetched, ['rounds']);
+});
+
+test('pelican: a failure card shows the backend reason and still offers the raw reply', () => {
+    const p = pelicanPage({
+        rounds: [{ round_id: 'r1', kind: 'pelican', prompt: 'x', created_at: new Date().toISOString(), total: 2, active: 0, pinned: 0 }],
+        items: [
+            creative({ id: 1, status: 'invalid', format: '', content: '', raw: '', error: '回复是空的' }),
+            creative({ id: 2, status: 'invalid', format: '', content: '', raw: '<svg viewBox="0 0 500', error: '没返回合法的 SVG/HTML' }),
+        ],
+    });
+    const body = squash(p.render());
+    assert.match(body, /回复是空的/, 'the real reason from the server is visible');
+    assert.match(body, /没返回合法的 SVG\/HTML/);
+    const rawLinks = findAll(p.render(), (n) => n.type === 'button' && squash(n) === '看原文 ›');
+    assert.equal(rawLinks.length, 1, 'only the item that has a raw reply offers it');
 });
 
 /* ------------------------------------------------------------------ 任务页 */

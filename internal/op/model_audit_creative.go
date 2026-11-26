@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -168,7 +169,14 @@ type CreativeRound struct {
 	Pinned    int       `json:"pinned"`
 }
 
+// creativePinnedRoundCap 额外带出来的收藏轮次上限：收藏的轮次不会被 7 天清理删掉，
+// 数量会一直长，所以给个上限，免得列表越拉越长。
+const creativePinnedRoundCap = 100
+
 // ModelAuditCreativeRounds 最近的轮次（新的在前）。
+//
+// 取「最近 limit 轮」并上「任何有收藏的轮次」：收藏的老图不该因为轮次太老就从
+// 列表里消失、找不到。两段按 last_id 排序去重后一起返回。
 func ModelAuditCreativeRounds(ctx context.Context, limit int) ([]CreativeRound, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
@@ -180,17 +188,41 @@ func ModelAuditCreativeRounds(ctx context.Context, limit int) ([]CreativeRound, 
 		Active  int
 		Pinned  int
 	}
-	var rows []row
-	err := db.GetDB().WithContext(ctx).Model(&model.ModelAuditCreative{}).
-		Select("round_id, MAX(id) AS last_id, COUNT(*) AS total, " +
-			"SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS active, " +
-			"SUM(CASE WHEN pinned THEN 1 ELSE 0 END) AS pinned").
-		Group("round_id").Order("last_id DESC").Limit(limit).Scan(&rows).Error
-	if err != nil {
+	const aggSelect = "round_id, MAX(id) AS last_id, COUNT(*) AS total, " +
+		"SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS active, " +
+		"SUM(CASE WHEN pinned THEN 1 ELSE 0 END) AS pinned"
+
+	var recent []row
+	if err := db.GetDB().WithContext(ctx).Model(&model.ModelAuditCreative{}).
+		Select(aggSelect).Group("round_id").Order("last_id DESC").Limit(limit).
+		Scan(&recent).Error; err != nil {
 		return nil, err
 	}
-	out := make([]CreativeRound, 0, len(rows))
-	for _, r := range rows {
+	var pinned []row
+	if err := db.GetDB().WithContext(ctx).Model(&model.ModelAuditCreative{}).
+		Select(aggSelect).Group("round_id").
+		Having("SUM(CASE WHEN pinned THEN 1 ELSE 0 END) > 0").
+		Order("last_id DESC").Limit(creativePinnedRoundCap).
+		Scan(&pinned).Error; err != nil {
+		return nil, err
+	}
+
+	merged := make(map[string]row, len(recent)+len(pinned))
+	order := make([]string, 0, len(recent)+len(pinned))
+	for _, list := range [][]row{recent, pinned} {
+		for _, r := range list {
+			if _, dup := merged[r.RoundID]; dup {
+				continue
+			}
+			merged[r.RoundID] = r
+			order = append(order, r.RoundID)
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return merged[order[i]].LastID > merged[order[j]].LastID })
+
+	out := make([]CreativeRound, 0, len(order))
+	for _, roundID := range order {
+		r := merged[roundID]
 		var first model.ModelAuditCreative
 		if err := db.GetDB().WithContext(ctx).Select("kind, prompt, created_at").
 			Where("round_id = ?", r.RoundID).Order("id ASC").First(&first).Error; err != nil {
@@ -350,14 +382,83 @@ func creativeTruncate(s string) string {
 
 var (
 	creativeFenceRe = regexp.MustCompile("(?s)```[ \\t]*([A-Za-z0-9_+-]*)[^\\n]*\\n(.*?)```")
-	creativeSVGRe   = regexp.MustCompile(`(?is)<svg[\s>].*?</svg\s*>`)
 	creativeHTMLRe  = regexp.MustCompile(`(?is)(<!doctype\s+html.*?</html\s*>|<html[\s>].*?</html\s*>)`)
+	// 配对 <svg> 用：开标签、闭标签分开找，再按嵌套层数配对。一条 `.*?</svg>`
+	// 非贪婪只会配到内层，贪婪又会把两个独立的 svg 并成一个，都不行。
+	creativeSVGOpenRe  = regexp.MustCompile(`(?i)<svg[\s/>]`)
+	creativeSVGCloseRe = regexp.MustCompile(`(?i)</svg\s*>`)
 )
+
+// creativeBlockTags 成对闭合的块级标签：只有 <div>…</div> 这种才算「有 HTML 结构」，
+// 裸一个 `<`（比如模型在解释 5 < 10）不算。
+var creativeBlockTags = []string{"html", "head", "body", "div", "section", "main", "article", "figure", "canvas", "table", "ul", "ol", "p"}
+
+var creativeBlockTagRe = func() [][2]*regexp.Regexp {
+	out := make([][2]*regexp.Regexp, 0, len(creativeBlockTags))
+	for _, tag := range creativeBlockTags {
+		out = append(out, [2]*regexp.Regexp{
+			regexp.MustCompile(`(?is)<` + tag + `[\s>]`),
+			regexp.MustCompile(`(?is)</` + tag + `\s*>`),
+		})
+	}
+	return out
+}()
+
+// creativeHasHTMLStructure 这一段里有没有成对闭合的块级标签。
+func creativeHasHTMLStructure(s string) bool {
+	for _, pair := range creativeBlockTagRe {
+		if pair[0].MatchString(s) && pair[1].MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+type creativeSVGToken struct {
+	start, end int
+	close      bool
+}
+
+// creativeOutermostSVG 取最外层完整闭合的 <svg>…</svg>。
+//
+// 嵌套的 <svg>（外框里再画小图标）按层数配对到最外层的闭合标签；两个并列的
+// <svg> 各自配对，不会被并成一个；前一个 <svg> 没闭合就跳过它接着找下一个。
+func creativeOutermostSVG(s string) string {
+	tokens := make([]creativeSVGToken, 0, 8)
+	for _, m := range creativeSVGOpenRe.FindAllStringIndex(s, -1) {
+		tokens = append(tokens, creativeSVGToken{start: m[0], end: m[1]})
+	}
+	for _, m := range creativeSVGCloseRe.FindAllStringIndex(s, -1) {
+		tokens = append(tokens, creativeSVGToken{start: m[0], end: m[1], close: true})
+	}
+	if len(tokens) == 0 {
+		return ""
+	}
+	sort.Slice(tokens, func(i, j int) bool { return tokens[i].start < tokens[j].start })
+	for i := range tokens {
+		if tokens[i].close {
+			continue
+		}
+		depth := 0
+		for j := i; j < len(tokens); j++ {
+			if tokens[j].close {
+				depth--
+			} else {
+				depth++
+			}
+			if depth == 0 {
+				return s[tokens[i].start:tokens[j].end]
+			}
+		}
+	}
+	return ""
+}
 
 // ExtractCreative 从回复里认出要显示的 SVG 或 HTML。
 //
 // 认的顺序：先看代码块（```svg / ```html / ```xml，或者块里有 <svg）——模型多半
-// 这么交；再在正文里找第一个完整的 <svg>…</svg>；最后找整页 HTML。
+// 这么交；多块时从最后一块往前找，模型常常先写草稿再给最终版，没闭合的块本来就
+// 配不上、直接跳过。再在正文里找最外层完整闭合的 <svg>…</svg>；最后找整页 HTML。
 // 都找不到返回 ok=false（页面上显示「没返回合法 SVG」并给原文）。
 // 超过 256KB 也算不合法：存不下，也不该塞进页面。
 func ExtractCreative(reply string) (format, content string, ok bool, reason string) {
@@ -372,32 +473,46 @@ func ExtractCreative(reply string) (format, content string, ok bool, reason stri
 		}
 		return f, c, true, ""
 	}
-	for _, m := range creativeFenceRe.FindAllStringSubmatch(text, -1) {
-		lang := strings.ToLower(strings.TrimSpace(m[1]))
-		body := m[2]
+	// fromBody 从一个代码块的正文里认出图；认不出来返回 ok=false 且 reason 为空。
+	fromBody := func(lang, body string) (string, string, bool, string) {
 		switch lang {
 		case "svg":
-			if svg := creativeSVGRe.FindString(body); svg != "" {
+			if svg := creativeOutermostSVG(body); svg != "" {
 				return pick("svg", svg)
 			}
 		case "html", "htm":
-			if strings.Contains(strings.ToLower(body), "<") {
+			// 光含一个 `<` 不算 HTML：要整页形态或成对闭合的块级标签。
+			if creativeHTMLRe.MatchString(body) || creativeHasHTMLStructure(body) {
 				return pick("html", body)
 			}
+			if svg := creativeOutermostSVG(body); svg != "" {
+				return pick("svg", svg)
+			}
 		default:
-			if svg := creativeSVGRe.FindString(body); svg != "" {
+			if svg := creativeOutermostSVG(body); svg != "" {
 				return pick("svg", svg)
 			}
 			if page := creativeHTMLRe.FindString(body); page != "" {
 				return pick("html", page)
 			}
+			if creativeHasHTMLStructure(body) {
+				return pick("html", body)
+			}
+		}
+		return "", "", false, ""
+	}
+	blocks := creativeFenceRe.FindAllStringSubmatch(text, -1)
+	for i := len(blocks) - 1; i >= 0; i-- {
+		lang := strings.ToLower(strings.TrimSpace(blocks[i][1]))
+		if f, c, ok, reason := fromBody(lang, blocks[i][2]); ok || reason != "" {
+			return f, c, ok, reason
 		}
 	}
 	if page := creativeHTMLRe.FindString(text); page != "" {
 		// 整页 HTML 里通常也有 <svg>：整页优先，脚本和样式才不会丢。
 		return pick("html", page)
 	}
-	if svg := creativeSVGRe.FindString(text); svg != "" {
+	if svg := creativeOutermostSVG(text); svg != "" {
 		return pick("svg", svg)
 	}
 	return "", "", false, "没返回合法的 SVG/HTML"

@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,12 @@ const (
 	creativeRunTimeout = 180 * time.Second
 	// creativeSlotWait 同一模型有检测在跑时最多等多久再放弃。
 	creativeSlotWait = 10 * time.Minute
+	// creativeLaneRestartBackoff 车道意外退出后重拉的起步间隔。
+	creativeLaneRestartBackoff = 5 * time.Second
+	// creativeLaneRestartMaxBackoff 重拉间隔的上限。
+	creativeLaneRestartMaxBackoff = 5 * time.Minute
+	// creativeLaneHealthyAfter 车道活过这么久才算「健康」，重拉间隔从头算。
+	creativeLaneHealthyAfter = time.Minute
 )
 
 func init() {
@@ -156,6 +164,9 @@ func clearUnpinnedCreatives(c *gin.Context) {
 var creativeWorkerStarted bool
 
 // StartModelAuditCreativeWorker 拉起鹈鹕测试的执行车道。可重复调用。
+//
+// 车道不能死：车道 goroutine 万一退出（循环里 panic 被兜住、或者车道自己返回），
+// 就退避几秒后重新拉起；活过 creativeLaneHealthyAfter 才算健康，重拉间隔从头算。
 func StartModelAuditCreativeWorker() {
 	if creativeWorkerStarted {
 		return
@@ -169,18 +180,57 @@ func StartModelAuditCreativeWorker() {
 		} else if n > 0 {
 			log.Warnf("creative reclaimed %d interrupted item(s)", n)
 		}
-		ticker := time.NewTicker(creativePollInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			for {
-				row, err := op.ModelAuditCreativeClaimNext(ctx)
-				if err != nil || row == nil {
-					break
-				}
-				runOneCreative(ctx, row)
+		backoff := creativeLaneRestartBackoff
+		for {
+			started := time.Now()
+			panicked := runCreativeLane(ctx)
+			// 活过一阵子再死说明不是持续性故障，退避从头算；短命退出就翻倍往后拖。
+			if time.Since(started) >= creativeLaneHealthyAfter {
+				backoff = creativeLaneRestartBackoff
+			}
+			log.Warnf("creative lane stopped (panic=%v), restarting in %s", panicked, backoff)
+			time.Sleep(backoff)
+			backoff *= 2
+			if backoff > creativeLaneRestartMaxBackoff {
+				backoff = creativeLaneRestartMaxBackoff
 			}
 		}
 	})
+}
+
+// runCreativeLane 串行出图的主循环：一直转到进程退出。
+// 返回 true 表示是 panic 退出的（已经在这里兜住并记了栈，不让整个 goroutine 死掉）。
+func runCreativeLane(ctx context.Context) (panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			log.Errorf("creative lane panicked: %v\n%s", r, debug.Stack())
+		}
+	}()
+	ticker := time.NewTicker(creativePollInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		for {
+			row, err := op.ModelAuditCreativeClaimNext(ctx)
+			if err != nil || row == nil {
+				break
+			}
+			runOneCreative(ctx, row)
+		}
+	}
+	return false
+}
+
+// creativePanicSummary 把 panic 值压成一句短话：错误文案要能直接显示在卡片上。
+func creativePanicSummary(v any) string {
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		s = "unknown"
+	}
+	if r := []rune(s); len(r) > 200 {
+		s = string(r[:200]) + "…"
+	}
+	return s
 }
 
 // runOneCreative 出一张图：1 次请求，走渠道检测的出站链路。绝不 panic 外泄。
@@ -192,6 +242,13 @@ func runOneCreative(ctx context.Context, row *model.ModelAuditCreative) {
 			log.Warnf("creative %d finish failed: %v", row.ID, err)
 		}
 	}
+	// 单张出图 panic 只把这张落成 failed，车道继续跑下一张（defer 包着，不动下面的发送代码）。
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("creative %d panicked: %v\n%s", row.ID, r, debug.Stack())
+			finish(op.CreativeOutcome{Status: model.CreativeFailed, Error: "出图时崩了：" + creativePanicSummary(r)})
+		}
+	}()
 
 	channel, err := op.ChannelGet(row.ChannelID, ctx)
 	if err != nil || channel == nil {

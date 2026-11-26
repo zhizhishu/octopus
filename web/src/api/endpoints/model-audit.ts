@@ -615,6 +615,8 @@ export type CreativeRound = {
 export type CreativeTarget = { channel_id: number; model: string };
 
 export function useCreativeRounds(limit = 30) {
+    // retry: false：失败了就立刻把错误态交给页面（鹈鹕页自己给「重试」按钮），
+    // 不在后台反复重试刷屏。
     return useQuery({
         queryKey: ['model-audit', 'creative', 'rounds', limit],
         queryFn: async () => apiClient.get<CreativeRound[]>(`/api/v1/model-audit/creative/rounds?limit=${limit}`),
@@ -628,6 +630,7 @@ export function useCreativeRounds(limit = 30) {
 }
 
 export function useCreativeRound(roundId: string) {
+    // 同上：isError 会透到 PelicanTest，页面显示「读取失败 + 重试」而不是「图都删掉了」。
     return useQuery({
         queryKey: ['model-audit', 'creative', 'round', roundId],
         queryFn: async () => apiClient.get<CreativeItem[]>(`/api/v1/model-audit/creative/rounds/${encodeURIComponent(roundId)}`),
