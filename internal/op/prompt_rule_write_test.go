@@ -97,7 +97,7 @@ func TestPromptRuleTogglePersistsDisabled(t *testing.T) {
 // 无效：created_at 保留库值，updated_at 每次修改由服务端推进；false 不丢。
 func TestPromptRuleUpdateLocatesByBodyIDKeepsTimes(t *testing.T) {
 	setupPromptRuleTest(t)
-	rule := promptRuleFixture(t, "locate-by-id")
+	rule := promptRuleFixture(t, "locate-by-id", nil)
 	before := loadPromptRule(t, rule.ID)
 
 	forged := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -133,7 +133,7 @@ func TestPromptRuleUpdateLocatesByBodyIDKeepsTimes(t *testing.T) {
 // 报 ErrPromptRuleInvalid，静默丢列/静默清空都算错。
 func TestPromptRuleUpdateRejectsInvalidReferences(t *testing.T) {
 	setupPromptRuleTest(t)
-	rule := promptRuleFixture(t, "bad-refs")
+	rule := promptRuleFixture(t, "bad-refs", nil)
 	patch := rule
 	patch.PlanMode = model.PromptRulePlanModeSelected
 	patch.PlanIDs = []int{rule.ID + 9999}
@@ -148,8 +148,8 @@ func TestPromptRuleUpdateRejectsInvalidReferences(t *testing.T) {
 // 失败要原子（一次都不写），成功则 sort 与下标一致。
 func TestPromptRuleReorderRejectsDuplicateAndGaps(t *testing.T) {
 	setupPromptRuleTest(t)
-	first := promptRuleFixture(t, "reorder-a")
-	second := promptRuleFixture(t, "reorder-b")
+	first := promptRuleFixture(t, "reorder-a", nil)
+	second := promptRuleFixture(t, "reorder-b", nil)
 
 	ctx := testContext(t)
 	if err := PromptRuleReorder([]int{first.ID, first.ID}, ctx); !errors.Is(err, ErrPromptRuleReorder) {
