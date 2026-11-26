@@ -426,10 +426,15 @@ func testChannelProxy(c *gin.Context) {
 // A database uniqueness violation means the same request body can never succeed: that is a
 // client-side conflict (409), and answering 500 instead tells the caller the server broke and
 // invites a retry against a call that cannot work — which is how a duplicate channel name became
-// a retry loop in the field. Everything else keeps the existing 500.
+// a retry loop in the field. An invalid queue configuration is likewise the caller's parameter
+// error (400), not a server fault. Everything else keeps the existing 500.
 func writeConflictOrInternal(c *gin.Context, err error) {
 	if isUniqueConstraintViolation(err) {
 		resp.Error(c, http.StatusConflict, err.Error())
+		return
+	}
+	if errors.Is(err, op.ErrChannelQueueSettings) {
+		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	resp.Error(c, http.StatusInternalServerError, err.Error())

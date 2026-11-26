@@ -139,6 +139,8 @@ export interface ChannelFormData {
     priority: number;
     max_concurrent: number;
     rpm_limit: number;
+    queue_size: number;
+    queue_timeout_ms: number;
     race_mode: boolean;
     race_key_concurrency: number;
     race_delay_ms: number;
@@ -1031,6 +1033,58 @@ export function ChannelForm({
                         }}
                     />
                     <p className="text-xs text-muted-foreground">{t('rpmLimitHint')}</p>
+                </div>
+        </>
+    );
+
+    const queueSizeField = (
+        <>
+                <div className="space-y-2">
+                    <label htmlFor={`${idPrefix}-queue-size`} className="text-sm font-medium text-card-foreground">
+                        {t('queueSize')}
+                    </label>
+                    <Input
+                        className='rounded-xl'
+                        id={`${idPrefix}-queue-size`}
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={String(formData.queue_size ?? 0)}
+                        onChange={(event) => {
+                            const n = Number.parseInt(event.target.value, 10);
+                            onFormDataChange({ ...formData, queue_size: Number.isFinite(n) && n > 0 ? n : 0 });
+                        }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('queueSizeHint')}</p>
+                    {/* 后端校验：queue_size>0 必须有 max_concurrent>0（没有并发上限就永远不会「满」）。 */}
+                    {(formData.queue_size ?? 0) > 0 && (formData.max_concurrent ?? 0) <= 0 && (
+                        <p className="text-xs text-amber-700 dark:text-amber-400">{t('queueSizeNeedsConcurrency')}</p>
+                    )}
+                </div>
+        </>
+    );
+
+    const queueTimeoutField = (
+        <>
+                <div className="space-y-2">
+                    <label htmlFor={`${idPrefix}-queue-timeout`} className="text-sm font-medium text-card-foreground">
+                        {t('queueTimeout')}
+                    </label>
+                    <Input
+                        className='rounded-xl'
+                        id={`${idPrefix}-queue-timeout`}
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step={0.001}
+                        value={String((formData.queue_timeout_ms ?? 0) / 1000)}
+                        onChange={(event) => {
+                            const seconds = Number.parseFloat(event.target.value);
+                            onFormDataChange({ ...formData, queue_timeout_ms: Number.isFinite(seconds) ? Math.round(seconds * 1000) : 0 });
+                        }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('queueTimeoutHint')}</p>
                 </div>
         </>
     );
@@ -2086,6 +2140,8 @@ export function ChannelForm({
                 {maxConcurrentField}
                 {raceField}
                 {rpmField}
+                {queueSizeField}
+                {queueTimeoutField}
                 {keyStrategyField}
             </div>
 
@@ -2158,6 +2214,8 @@ export function ChannelForm({
                     {maxConcurrentField}
                     {raceField}
                     {rpmField}
+                    {queueSizeField}
+                    {queueTimeoutField}
                     {keyStrategyField}
                 </div>
                 {breakerBlock}

@@ -174,7 +174,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		// gateSkipReason 只保留最近一次的维度，供日志与终态文案使用。
 		gateSkippedCount int
 		gateSkipReason   string
-		// gateSkippedChannels 汇总第一次尝试里被闸门拒掉的渠道（含上限配置），供整轮
+		// gateSkippedChannels 汇总第一次尝试里被闸门拒掉的渠道（含上限/排队配置），供整轮
 		// 候选全拒后的排队探测用；gateRequeued 保证整轮排队最多发生一次。见收尾 requeue 块。
 		gateSkippedChannels []balancer.GateCandidate
 		gateRequeued        bool
@@ -715,12 +715,12 @@ attemptChannels:
 		}
 	}
 	// 渠道级硬限流闸门：一整轮候选跑完仍全被拒（lastErr==nil、gateSkippedCount>0、没写
-	// 业务数据），且本请求还没排过队时，先排队——最多 ChannelGateWaitBudget(3s) 总时长，
-	// 每 25ms 探一遍被跳过的渠道是否有任一空位；有就重跑一轮候选（只重跑一次）。3s 内
-	// 没空位或客户端断开，就落到下面的 429 channel_rate_limited 终态（救援轮态后自会照旧）。
+	// 业务数据）且本请求还没排过队时，只排这一次：预算取候选里最大的 QueueTimeoutMs
+	//（ChannelGateQueueBudget，QueueSize=0 则不排），每 25ms 探一遍是否有任一空位，有就
+	// 重跑一轮候选。等不到或客户端断开，落到下面的 429 channel_rate_limited 终态。
 	if !gateRequeued && lastErr == nil && gateSkippedCount > 0 && !req.wroteBusinessData {
 		gateRequeued = true
-		if balancer.ChannelGateWaitAnyOpen(originalRequest.Context(), gateSkippedChannels, balancer.ChannelGateWaitBudget, func() bool {
+		if balancer.ChannelGateWaitAnyOpen(originalRequest.Context(), gateSkippedChannels, balancer.ChannelGateQueueBudget(gateSkippedChannels), func() bool {
 			return originalRequest.Context().Err() != nil
 		}) {
 			requeueSticky := routeStickyEnabled(group.Mode, clientSession.Source)
@@ -1131,8 +1131,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 本渠道的「并发位 + RPM 滑动窗口名额」。占不到就不是「失败」，是「此刻发不出去」——
 	// 先于 StartAttempt 返回，所以不会留下半个 span，也不会记任何错误统计/熔断/健康分。
 	// 闸门只按渠道计数，所以它用的是 BeginRuntimeAttempt 的同一个 channel。
-	// maxWait=0：占不到位立即退，排队语义统一在 Handler 收尾做（整轮被拒后探到空位
-	// 才重跑一轮），绝不在单个候选内部各等 ChannelGateWaitBudget（N 个候选 × 3s）。
+	// maxWait=0：占不到位立即退，排队统一在 Handler 收尾按渠道排队配置只做一次。
 	gateCtx := ra.attemptGateContext()
 	clientGone := func() bool { return gateCtx.Err() != nil }
 	releaseGate, gateReason := balancer.AdmitChannelGate(gateCtx, ra.channel.ID, ra.channel.MaxConcurrent, ra.channel.RPMLimit, 0, clientGone)
@@ -1145,9 +1144,11 @@ func (ra *relayAttempt) attempt() attemptResult {
 			Skipped:    true,
 			SkipReason: gateReason,
 			GateSkippedChannels: []balancer.GateCandidate{{
-				ChannelID:     ra.channel.ID,
-				MaxConcurrent: ra.channel.MaxConcurrent,
-				RPMLimit:      ra.channel.RPMLimit,
+				ChannelID:      ra.channel.ID,
+				MaxConcurrent:  ra.channel.MaxConcurrent,
+				RPMLimit:       ra.channel.RPMLimit,
+				QueueSize:      ra.channel.QueueSize,
+				QueueTimeoutMs: ra.channel.QueueTimeoutMs,
 			}},
 		}
 	}

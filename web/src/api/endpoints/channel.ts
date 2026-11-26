@@ -76,6 +76,10 @@ export type Channel = {
     priority: number;
     max_concurrent: number;
     rpm_limit: number;
+    // 排队可调：硬限流闸门占不到位时这条渠道最多让几个请求排队（0 = 不排队，满了立刻 429），
+    // 以及每个排队请求最多等多少毫秒（0 = 后端默认 3 秒）。与后端 model.Channel 对齐。
+    queue_size: number;
+    queue_timeout_ms: number;
     key_select_strategy: KeySelectStrategy;
     disable_circuit_breaker: boolean;
     race_mode: boolean;
@@ -139,6 +143,8 @@ export type CreateChannelRequest = {
     priority?: number;
     max_concurrent?: number;
     rpm_limit?: number;
+    queue_size?: number;
+    queue_timeout_ms?: number;
     key_select_strategy?: KeySelectStrategy;
     disable_circuit_breaker?: boolean;
     race_mode?: boolean;
@@ -185,6 +191,9 @@ export type UpdateChannelRequest = {
     priority?: number;
     max_concurrent?: number;
     rpm_limit?: number;
+    // 显式 0 有意义（关掉排队 / 用默认等待），所以更新时靠「和现值不同才发」表达，不靠缺省跳过。
+    queue_size?: number;
+    queue_timeout_ms?: number;
     key_select_strategy?: KeySelectStrategy;
     disable_circuit_breaker?: boolean;
     race_mode?: boolean;
@@ -335,6 +344,8 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 priority: item.priority ?? 0,
                 max_concurrent: item.max_concurrent ?? 0,
                 rpm_limit: item.rpm_limit ?? 0,
+                queue_size: item.queue_size ?? 0,
+                queue_timeout_ms: item.queue_timeout_ms ?? 0,
                 key_select_strategy: item.key_select_strategy ?? 0,
                 disable_circuit_breaker: item.disable_circuit_breaker ?? false,
                 race_mode: item.race_mode ?? false,
@@ -441,6 +452,9 @@ export function useCopyChannel() {
                 priority: source.priority,
                 max_concurrent: source.max_concurrent,
                 rpm_limit: source.rpm_limit,
+                // 排队配置是渠道自身的旋钮，复制时一并带上；漏了会把「会排队」的渠道复制成「不排队」。
+                queue_size: source.queue_size ?? 0,
+                queue_timeout_ms: source.queue_timeout_ms ?? 0,
                 key_select_strategy: source.key_select_strategy,
                 disable_circuit_breaker: source.disable_circuit_breaker,
                 // 主动探测是渠道自身的开关，复制时一并带上；漏了会把“会被探测”的渠道复制成“永不探测”。

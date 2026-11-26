@@ -18,11 +18,9 @@ import (
 // 作用域是**渠道**，不是 (渠道, key, 模型)：上限本来就是渠道级配置，同一渠道上
 // 不同模型、不同 key 的尝试必须合计计数，否则换个模型名就能绕过上限。
 const (
-	// ChannelGateWaitBudget 是单次准入的排队等待预算：占不到位时最多等这么久（期间
-	// 按 channelGatePollInterval 轮询），等到了就照常发送。3s 这个数是刻意选的——
-	// 它远小于一次真实 429 的等待，调用方宁可先排 3s 队拿到真回复，也不愿立刻吃一个
-	// 我们自己造出来的假限流错误。
-	ChannelGateWaitBudget = 3 * time.Second
+	// ChannelGateQueueTimeoutDefault 是渠道没配排队时长（QueueTimeoutMs=0）时每个请求的
+	// 默认等待上限。
+	ChannelGateQueueTimeoutDefault = 3 * time.Second
 
 	// ChannelGateReasonConcurrency / ChannelGateReasonRPM 是闸门拒绝的维度标签。
 	// 它们会进 Iterator.Skip 的审计消息（AttemptSkipped），让日志能回答「这次到底
@@ -45,6 +43,10 @@ type channelGate struct {
 
 	// inFlight 是当前占住并发位的在途尝试数（release 时归还）。
 	inFlight int64
+
+	// waiters 是此刻排在这条渠道队里的请求数（跨 key、跨模型合计）。由
+	// ChannelGateWaitAnyOpen 占/还：排队人数达到渠道的 QueueSize 后新来的请求立即被拒。
+	waiters int
 
 	// reqWindow / reqBucketSec 是 60 个每秒桶的滑动窗口，口径与 telemetry.go 里
 	// runtimeEntry 的 reqWindow/reqBucketSec 一致：reqBucketSec 记每个槽位当前代表
@@ -134,6 +136,9 @@ func (g *channelGate) tryAcquire(maxConcurrent, rpmLimit int, now time.Time) (fu
 // 获取失败时，若 maxWait>0 且 ctx 未取消且 clientGone()=false，则在 maxWait 内轮询
 // 等待（channelGatePollInterval 一拍）直到成功/超时；等到了也算成功占位。
 // 每一拍都重新检查 ctx 取消 / 截止时间 / clientGone，调用端一走就不再白等。
+//
+// 注意排队上限（Channel.QueueSize / QueueTimeoutMs）不在这里：生产调用点一律传
+// maxWait=0，排队统一在整轮全拒后只做一次（见 ChannelGateWaitAnyOpen）。
 func AdmitChannelGate(ctx context.Context, channelID int, maxConcurrent, rpmLimit int, maxWait time.Duration, clientGone func() bool) (release func(), reason string) {
 	if channelID <= 0 || (maxConcurrent <= 0 && rpmLimit <= 0) {
 		// 不限（或渠道 ID 无效）：不占位。返回幂等空释放，调用方可以无条件 defer。
@@ -179,12 +184,40 @@ func AdmitChannelGate(ctx context.Context, channelID int, maxConcurrent, rpmLimi
 	}
 }
 
-// GateCandidate 是整轮候选里被闸门拒掉的渠道（含其上限配置）：排队探测只回答「有没有
-// 空位」，真正的占用发生在重跑候选时的 AdmitChannelGate。
+// GateCandidate 是整轮候选里被闸门拒掉的渠道（含上限与排队配置）：排队探测只回答
+// 「有没有空位」，真正的占用发生在重跑候选时的 AdmitChannelGate。
+//
+// QueueSize<=0 表示这条候选不排队；QueueTimeoutMs=0 表示用 ChannelGateQueueTimeoutDefault。
 type GateCandidate struct {
-	ChannelID     int
-	MaxConcurrent int
-	RPMLimit      int
+	ChannelID      int
+	MaxConcurrent  int
+	RPMLimit       int
+	QueueSize      int
+	QueueTimeoutMs int
+}
+
+// channelGateQueueTimeout 把一个候选的 QueueTimeoutMs 折算成等待时长：0 = 默认 3s。
+func channelGateQueueTimeout(candidate GateCandidate) time.Duration {
+	if candidate.QueueTimeoutMs > 0 {
+		return time.Duration(candidate.QueueTimeoutMs) * time.Millisecond
+	}
+	return ChannelGateQueueTimeoutDefault
+}
+
+// ChannelGateQueueBudget 是整轮排队预算：取候选里最大的生效等待时长（QueueTimeoutMs，
+// 0 用默认），所以整轮只等一次、不超过最宽松的那个渠道配置。没有可排队的候选
+// （QueueSize<=0）时返回 0，调用方的排队就等于立刻放弃。
+func ChannelGateQueueBudget(candidates []GateCandidate) time.Duration {
+	var budget time.Duration
+	for _, candidate := range candidates {
+		if candidate.ChannelID <= 0 || candidate.QueueSize <= 0 {
+			continue
+		}
+		if timeout := channelGateQueueTimeout(candidate); timeout > budget {
+			budget = timeout
+		}
+	}
+	return budget
 }
 
 // channelGateHasRoomLocked 是 ChannelGateHasRoom 的持锁内核。调用者必须持有 g.mu。
@@ -196,6 +229,30 @@ func (g *channelGate) hasRoomLocked(maxConcurrent, rpmLimit int, now time.Time) 
 		return false
 	}
 	return true
+}
+
+// reserveWaiter 占一个排队位：queueSize<=0（不排队）或队已满时返回 false。
+// 判定与占位在同一把锁里，否则并发请求会一起把排队人数推过 QueueSize。
+func (g *channelGate) reserveWaiter(queueSize int) bool {
+	if queueSize <= 0 {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.waiters >= queueSize {
+		return false
+	}
+	g.waiters++
+	return true
+}
+
+// releaseWaiter 归还一个排队位（等待结束、超时、取消都走这里）。幂等到不会减成负数。
+func (g *channelGate) releaseWaiter() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.waiters > 0 {
+		g.waiters--
+	}
 }
 
 // ChannelGateHasRoom 只读探测：该渠道此刻是否还占得到「并发位 + RPM 名额」。不占位、
@@ -212,20 +269,85 @@ func ChannelGateHasRoom(channelID, maxConcurrent, rpmLimit int) bool {
 	return gate.hasRoomLocked(maxConcurrent, rpmLimit, time.Now())
 }
 
+// channelGateWaitSlot 是一轮排队里占住的一条候选渠道的排队位。deadline 是这条候选
+// 自己的等待上限（QueueTimeoutMs，0 用默认，且不超过整轮预算）。
+type channelGateWaitSlot struct {
+	candidate GateCandidate
+	gate      *channelGate
+	deadline  time.Time
+	released  bool
+}
+
+// release 归还排队位，幂等（超时先还、函数退出时 defer 再还一次也不会多减）。
+func (s *channelGateWaitSlot) release() {
+	if s == nil || s.released {
+		return
+	}
+	s.released = true
+	s.gate.releaseWaiter()
+}
+
 // ChannelGateWaitAnyOpen 在 candidates 任一渠道出现空位时返回 true（调用方据此重跑一轮
-// 候选）。总预算 budget，每 channelGatePollInterval 一拍对整个候选集只读探测一遍；
-// clientGone（含 ctx 取消）为真或预算用尽时立刻返回 false——绝不把一个已经走掉的
-// 调用端继续排在队里。
+// 候选）。
+//
+// 同渠道候选去重后只占一个排队位；QueueSize<=0（不排队）或队列已满的候选立即退出；
+// 每个候选最多等自己的 QueueTimeoutMs（0 用默认，且不超过 budget）；每
+// channelGatePollInterval 探一拍，ctx 取消 / clientGone / 预算用尽时立刻返回 false。
+// 无论从哪条分支退出，本次占的排队位都会归还。
 func ChannelGateWaitAnyOpen(ctx context.Context, candidates []GateCandidate, budget time.Duration, clientGone func() bool) bool {
 	if len(candidates) == 0 || budget <= 0 {
 		return false
 	}
 	deadline := time.Now().Add(budget)
+	slots := make([]*channelGateWaitSlot, 0, len(candidates))
+	defer func() {
+		for _, slot := range slots {
+			slot.release()
+		}
+	}()
+
+	queued := make(map[int]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.ChannelID <= 0 {
+			continue
+		}
+		if _, dup := queued[candidate.ChannelID]; dup {
+			// 同渠道只排一个位：重复候选不能把 QueueSize 吃两次。
+			continue
+		}
+		queued[candidate.ChannelID] = struct{}{}
+		gate := channelGateFor(candidate.ChannelID)
+		if !gate.reserveWaiter(candidate.QueueSize) {
+			// QueueSize<=0（这条渠道不排队）或者队已经满了：立即拒，不白等。
+			continue
+		}
+		slotDeadline := time.Now().Add(channelGateQueueTimeout(candidate))
+		if slotDeadline.After(deadline) {
+			slotDeadline = deadline
+		}
+		slots = append(slots, &channelGateWaitSlot{candidate: candidate, gate: gate, deadline: slotDeadline})
+	}
+
 	for {
-		for _, candidate := range candidates {
-			if ChannelGateHasRoom(candidate.ChannelID, candidate.MaxConcurrent, candidate.RPMLimit) {
+		now := time.Now()
+		pending := 0
+		for _, slot := range slots {
+			if slot.released {
+				continue
+			}
+			if !now.Before(slot.deadline) {
+				// 这条候选已经等够自己的配置：先归还排队位，再把剩下的候选等完。
+				slot.release()
+				continue
+			}
+			pending++
+			if ChannelGateHasRoom(slot.candidate.ChannelID, slot.candidate.MaxConcurrent, slot.candidate.RPMLimit) {
 				return true
 			}
+		}
+		if pending == 0 {
+			// 没有能排队的候选（不排队 / 队满 / 都等够了自己的上限）。
+			return false
 		}
 		if ctx != nil && ctx.Err() != nil {
 			return false

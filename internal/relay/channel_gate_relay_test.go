@@ -252,7 +252,7 @@ func TestChannelGateConcurrencyCapHoldsUnderBurst(t *testing.T) {
 	}
 }
 
-// —— c1：全满后排队，3s 内有空位则成功 ——
+// —— c1：全满后排队（渠道配了 QueueSize>0），默认 3s 内有空位则成功 ——
 func TestChannelGateRequeueSucceedsWhenSlotOpens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayChannelGateDB(t)
@@ -264,9 +264,12 @@ func TestChannelGateRequeueSucceedsWhenSlotOpens(t *testing.T) {
 		Enabled:       true,
 		Model:         "gate-model-requeue",
 		MaxConcurrent: 1,
-		BaseUrls:      []dbmodel.BaseUrl{{URL: upX.URL}},
-		Keys:          []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "x-key"}},
-		Priority:      1,
+		// 排队是显式开关：QueueSize>0 才会在整轮全拒后统一排一次队。
+		// QueueTimeoutMs=0 走默认 3s。
+		QueueSize: 1,
+		BaseUrls:  []dbmodel.BaseUrl{{URL: upX.URL}},
+		Keys:      []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "x-key"}},
+		Priority:  1,
 	}
 	if err := op.ChannelCreate(&channelX, ctx); err != nil {
 		t.Fatalf("create channel X: %v", err)
@@ -286,8 +289,8 @@ func TestChannelGateRequeueSucceedsWhenSlotOpens(t *testing.T) {
 	if elapsed < 500*time.Millisecond {
 		t.Fatalf("request must actually wait for the freed slot, elapsed %v too short", elapsed)
 	}
-	if elapsed >= balancer.ChannelGateWaitBudget {
-		t.Fatalf("a slot freed at 600ms; the request must not burn the whole 3s budget, elapsed %v", elapsed)
+	if elapsed >= balancer.ChannelGateQueueTimeoutDefault {
+		t.Fatalf("a slot freed at 600ms; the request must not burn the whole 3s default budget, elapsed %v", elapsed)
 	}
 	if hits := upX.hitCount(); hits != 1 {
 		t.Fatalf("expected exactly one real upstream attempt after the requeue, hits = %d", hits)
@@ -295,7 +298,7 @@ func TestChannelGateRequeueSucceedsWhenSlotOpens(t *testing.T) {
 }
 
 // —— c2：全满且 3s 内无空位——429 + code channel_rate_limited + Retry-After 头；
-// 等待总时长≈3s（单次排队，双 key 渠道也绝不 N×3s）——
+// 等待总时长≈该渠道的 QueueTimeoutMs（单次排队，双 key 渠道也绝不 N×预算）——
 func TestChannelGateAllFullReturns429AfterSingleQueue(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayChannelGateDB(t)
@@ -307,6 +310,7 @@ func TestChannelGateAllFullReturns429AfterSingleQueue(t *testing.T) {
 		Enabled:       true,
 		Model:         "gate-model-full",
 		MaxConcurrent: 1,
+		QueueSize:     1,
 		BaseUrls:      []dbmodel.BaseUrl{{URL: upX.URL}},
 		Keys: []dbmodel.ChannelKey{
 			{Enabled: true, ChannelKey: "x-key-1"},
@@ -645,5 +649,169 @@ func TestChannelGateUnlimitedChannelBehaviorUnchanged(t *testing.T) {
 	}
 	if hits := upX.hitCount(); hits != 11 {
 		t.Fatalf("unlimited channel must carry every request, upstream hits = %d", hits)
+	}
+}
+
+// —— h：QueueSize=0（不排队）立即 429，不吃默认 3s ——
+func TestChannelGateQueueDisabledReturns429WithoutWaiting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayChannelGateDB(t)
+
+	upX := newGateUpstream(t, http.StatusOK, 0)
+	channelX := dbmodel.Channel{
+		Name:          "gate-noqueue-x",
+		Type:          outbound.OutboundTypeOpenAIChat,
+		Enabled:       true,
+		Model:         "gate-model-noqueue",
+		MaxConcurrent: 1,
+		// 刻意不配 QueueSize：0 = 不排队。
+		BaseUrls: []dbmodel.BaseUrl{{URL: upX.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "x-key"}},
+		Priority: 1,
+	}
+	if err := op.ChannelCreate(&channelX, ctx); err != nil {
+		t.Fatalf("create channel X: %v", err)
+	}
+
+	release := occupyChannelGate(t, channelX.ID, 1)
+	defer release()
+
+	start := time.Now()
+	code, body, _ := doGateChatRequest("gate-model-noqueue")
+	elapsed := time.Since(start)
+
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("a full channel without a queue must answer 429 at once, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, "channel_rate_limited") {
+		t.Fatalf("429 body must carry code channel_rate_limited, got: %s", body)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("QueueSize=0 must not wait at all, elapsed %v", elapsed)
+	}
+	if hits := upX.hitCount(); hits != 0 {
+		t.Fatalf("no request may reach the full channel's upstream, hits = %d", hits)
+	}
+}
+
+// —— i：排队时长按渠道的 QueueTimeoutMs 走（0 才是默认 3s）——
+func TestChannelGateQueueTimeoutFollowsChannelConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayChannelGateDB(t)
+
+	upX := newGateUpstream(t, http.StatusOK, 0)
+	channelX := dbmodel.Channel{
+		Name:           "gate-queue-timeout-x",
+		Type:           outbound.OutboundTypeOpenAIChat,
+		Enabled:        true,
+		Model:          "gate-model-queue-timeout",
+		MaxConcurrent:  1,
+		QueueSize:      1,
+		QueueTimeoutMs: 800,
+		BaseUrls:       []dbmodel.BaseUrl{{URL: upX.URL}},
+		Keys:           []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "x-key"}},
+		Priority:       1,
+	}
+	if err := op.ChannelCreate(&channelX, ctx); err != nil {
+		t.Fatalf("create channel X: %v", err)
+	}
+
+	release := occupyChannelGate(t, channelX.ID, 1)
+	defer release()
+
+	start := time.Now()
+	code, body, _ := doGateChatRequest("gate-model-queue-timeout")
+	elapsed := time.Since(start)
+
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("the slot never frees, the queued request must end with 429, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, "channel_rate_limited") {
+		t.Fatalf("429 body must carry code channel_rate_limited, got: %s", body)
+	}
+	if elapsed < 700*time.Millisecond {
+		t.Fatalf("the queue must last the configured 800ms, elapsed %v too short", elapsed)
+	}
+	if elapsed > 2500*time.Millisecond {
+		t.Fatalf("the queue must honour the configured 800ms (not the 3s default), elapsed %v", elapsed)
+	}
+	if hits := upX.hitCount(); hits != 0 {
+		t.Fatalf("no request may reach the full channel's upstream, hits = %d", hits)
+	}
+}
+
+// —— j：排队人数按渠道合计（跨模型/跨 key）：队满时后来的请求立即拒 ——
+func TestChannelGateQueueSharedAcrossModelsAndKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayChannelGateDB(t)
+
+	upX := newGateUpstream(t, http.StatusOK, 0)
+	channelX := dbmodel.Channel{
+		Name:           "gate-queue-shared-x",
+		Type:           outbound.OutboundTypeOpenAIChat,
+		Enabled:        true,
+		Model:          "gate-model-q-a,gate-model-q-b",
+		MaxConcurrent:  1,
+		QueueSize:      1,
+		QueueTimeoutMs: 1500,
+		BaseUrls:       []dbmodel.BaseUrl{{URL: upX.URL}},
+		Keys: []dbmodel.ChannelKey{
+			{Enabled: true, ChannelKey: "x-key-1"},
+			{Enabled: true, ChannelKey: "x-key-2"},
+		},
+		Priority: 1,
+	}
+	if err := op.ChannelCreate(&channelX, ctx); err != nil {
+		t.Fatalf("create channel X: %v", err)
+	}
+
+	release := occupyChannelGate(t, channelX.ID, 1)
+
+	// 请求 1 在队里（渠道并发=1 被占满，QueueSize=1 让它排上）。
+	type gateResult struct {
+		code    int
+		body    string
+		elapsed time.Duration
+	}
+	firstDone := make(chan gateResult, 1)
+	go func() {
+		start := time.Now()
+		code, body, _ := doGateChatRequest("gate-model-q-a")
+		firstDone <- gateResult{code: code, body: body, elapsed: time.Since(start)}
+	}()
+	// 排队是进程内状态，用一小段时间把「请求 1 已经排上队」等出来；请求 1 自己的超时是
+	// 1500ms，300ms 余量远大于它的入队耗时。
+	time.Sleep(300 * time.Millisecond)
+
+	// 请求 2 走同渠道的另一个模型（另一个 key）：排队人数按渠道合计，队里已有 1 个
+	//（QueueSize=1），所以它必须立刻被拒，而不是也排 1500ms。
+	start := time.Now()
+	code2, body2, _ := doGateChatRequest("gate-model-q-b")
+	secondElapsed := time.Since(start)
+	if code2 != http.StatusTooManyRequests {
+		t.Fatalf("a full per-channel queue must reject the second model/key at once, got %d: %s", code2, body2)
+	}
+	if !strings.Contains(body2, "channel_rate_limited") {
+		t.Fatalf("429 body must carry code channel_rate_limited, got: %s", body2)
+	}
+	if secondElapsed > 700*time.Millisecond {
+		t.Fatalf("the second request must not queue behind the first (队列按渠道合计), elapsed %v", secondElapsed)
+	}
+
+	// 空出一个并发位：队里的请求 1 必须被放行。
+	release()
+	select {
+	case got := <-firstDone:
+		if got.code != http.StatusOK || !strings.Contains(got.body, `"chat.completion"`) {
+			t.Fatalf("the queued request must succeed once a slot frees, got %d: %s", got.code, got.body)
+		}
+		if got.elapsed < 250*time.Millisecond {
+			t.Fatalf("the queued request must actually have waited for the freed slot, elapsed %v", got.elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the queued request never returned")
+	}
+	if hits := upX.hitCount(); hits != 1 {
+		t.Fatalf("only the queued request may reach the upstream, hits = %d", hits)
 	}
 }

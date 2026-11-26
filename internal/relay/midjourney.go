@@ -789,9 +789,11 @@ runIterator:
 				gateSkippedCount++
 				gateSkipReason = gateReason
 				gateSkippedChannels = appendGateCandidates(gateSkippedChannels, []balancer.GateCandidate{{
-					ChannelID:     channel.ID,
-					MaxConcurrent: channel.MaxConcurrent,
-					RPMLimit:      channel.RPMLimit,
+					ChannelID:      channel.ID,
+					MaxConcurrent:  channel.MaxConcurrent,
+					RPMLimit:       channel.RPMLimit,
+					QueueSize:      channel.QueueSize,
+					QueueTimeoutMs: channel.QueueTimeoutMs,
 				}})
 				break
 			}
@@ -878,13 +880,13 @@ runIterator:
 		}
 	}
 
-	// 渠道级硬限流闸门：一整轮候选跑完仍全被拒、且本请求还没排过队时，先排队——最多
-	// ChannelGateWaitBudget(3s) 总时长，每 25ms 探一遍被跳过的渠道是否有任一空位；有就
-	// 重跑一轮候选（只重跑一次）。3s 后仍满或客户端断开，走下面的 429 终态（与 relay.go
-	// Handler 的 channel_rate_limited 同口径）。
+	// 渠道级硬限流闸门：一整轮候选跑完仍全被拒、且本请求还没排过队时，先排队——预算取
+	// 候选渠道里最大的 QueueTimeoutMs（ChannelGateQueueBudget，QueueSize=0 则不排），每
+	// 25ms 探一遍被跳过的渠道是否有任一空位；有就重跑一轮候选（只重跑一次）。等不到或
+	// 客户端断开，走下面的 429 终态（与 relay.go Handler 的 channel_rate_limited 同口径）。
 	if !gateRequeued && lastErr == nil && gateSkippedCount > 0 && !c.Writer.Written() {
 		gateRequeued = true
-		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateWaitBudget, func() bool { return ctx.Err() != nil }) {
+		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateQueueBudget(gateSkippedChannels), func() bool { return ctx.Err() != nil }) {
 			iter = balancer.NewIteratorWithSession(group, apiKeyID, plan.model, "", false)
 			metrics.debug.route("gate-requeue", group, iter, false)
 			goto runIterator

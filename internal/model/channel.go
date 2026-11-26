@@ -41,6 +41,8 @@ type Channel struct {
 	Priority          int                   `json:"priority" gorm:"default:0"`
 	MaxConcurrent     int                   `json:"max_concurrent" gorm:"default:0"`      // 单渠道并发上限(在途+预约请求数), 0=不限. 达到上限后该渠道在选路中降档(让请求铺到其它渠道), 但不硬拉黑(无更优时仍可用)
 	RPMLimit          int                   `json:"rpm_limit" gorm:"default:0"`           // 单渠道每分钟请求上限(近60s在途/已发起的上游尝试数), 0=不限. 达到上限后该渠道在选路中降档(同 MaxConcurrent 的软降档语义, 让突发铺到其它渠道), 不硬拉黑
+	QueueSize         int                   `json:"queue_size" gorm:"default:0"`          // 硬限流闸门占不到位时最多让几个请求排队(按渠道整体算, 跨key/模型), 0=不排队. 照 axonhub ChannelRateLimit.QueueSize 搬过来
+	QueueTimeoutMs    int                   `json:"queue_timeout_ms" gorm:"default:0"`    // 排队最多等多少毫秒, 0=默认3000. 只在 QueueSize>0 时生效, 而 QueueSize>0 要求 MaxConcurrent>0
 	KeySelectStrategy KeySelectStrategy     `json:"key_select_strategy" gorm:"default:0"` // key 选取策略: 0=成本均衡(默认,按TotalCost升序) 1=同key优先(粘住最小ID的健康key,只在它冷却时让位、恢复即切回,最大化按key的prompt缓存命中)
 	// DisableCircuitBreaker turns this channel into a "no circuit breaker" pass-through:
 	// it forwards EVERY request to the upstream like a direct client — never
@@ -262,6 +264,8 @@ type ChannelUpdateRequest struct {
 	Priority              *int                   `json:"priority,omitempty"`
 	MaxConcurrent         *int                   `json:"max_concurrent,omitempty"`
 	RPMLimit              *int                   `json:"rpm_limit,omitempty"`
+	QueueSize             *int                   `json:"queue_size,omitempty"`
+	QueueTimeoutMs        *int                   `json:"queue_timeout_ms,omitempty"`
 	KeySelectStrategy     *KeySelectStrategy     `json:"key_select_strategy,omitempty"`
 	DisableCircuitBreaker *bool                  `json:"disable_circuit_breaker,omitempty"`
 	RaceMode              *bool                  `json:"race_mode,omitempty"`
@@ -366,6 +370,24 @@ func ValidateChannelRaceSettings(raceMode bool, concurrency int, delayMs int) er
 	return nil
 }
 
+// ValidateChannelQueueSettings 校验排队旋钮（口径照 axonhub 的 biz.ValidateRateLimit）：
+//   - 两个字段都必须 >= 0（负数不成意义，只能拒绝）；
+//   - QueueSize > 0 必须有 MaxConcurrent > 0——没有并发上限就永远没有「满」，队列无从谈起，
+//     静默接受只会让运营商以为「排队」生效了；QueueTimeoutMs 单独配（QueueSize=0）是允许的，
+//     只是不生效（与 axonhub 一致）。
+func ValidateChannelQueueSettings(maxConcurrent, queueSize, queueTimeoutMs int) error {
+	if queueSize < 0 {
+		return fmt.Errorf("queue_size must be >= 0 (got %d)", queueSize)
+	}
+	if queueTimeoutMs < 0 {
+		return fmt.Errorf("queue_timeout_ms must be >= 0 (got %d)", queueTimeoutMs)
+	}
+	if queueSize > 0 && maxConcurrent <= 0 {
+		return fmt.Errorf("queue_size requires max_concurrent > 0 (got queue_size=%d, max_concurrent=%d)", queueSize, maxConcurrent)
+	}
+	return nil
+}
+
 func (c *Channel) Validate() error {
 	if c == nil {
 		return nil
@@ -386,6 +408,10 @@ func (c *Channel) Validate() error {
 			return err
 		}
 	}
+	// 排队旋钮是整条渠道上的一组值（创建时就能看全），所以直接按整条渠道校验。
+	if err := ValidateChannelQueueSettings(c.MaxConcurrent, c.QueueSize, c.QueueTimeoutMs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -399,6 +425,8 @@ func (req *ChannelUpdateRequest) Validate() error {
 	if req.RedactFlags != nil && HasInvalidRedactFlag(*req.RedactFlags) {
 		return fmt.Errorf("redact_flags 含有未知检测器字母 %q，可用字母为 %s", *req.RedactFlags, RedactFlagLetters)
 	}
+	// QueueSize/QueueTimeoutMs 的跨字段约束（QueueSize>0 需要 MaxConcurrent>0）不在这里判：
+	// PATCH 只带其中一半字段，判定放在 op.ChannelUpdate 的合并校验里（那里能看到老行）。
 	concurrency := 2
 	if req.RaceKeyConcurrency != nil {
 		concurrency = *req.RaceKeyConcurrency

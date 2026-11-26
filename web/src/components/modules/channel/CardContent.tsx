@@ -49,6 +49,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         priority: channel.priority ?? 0,
         max_concurrent: channel.max_concurrent ?? 0,
         rpm_limit: channel.rpm_limit ?? 0,
+        // 编辑初值必须带上排队旋钮，否则一打开编辑就把它们当 0（保存时被当成「改成了 0」）。
+        queue_size: channel.queue_size ?? 0,
+        queue_timeout_ms: channel.queue_timeout_ms ?? 0,
         race_mode: channel.race_mode ?? false,
         race_key_concurrency: channel.race_key_concurrency ?? 2,
         race_delay_ms: channel.race_delay_ms ?? 0,
@@ -120,6 +123,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if ((formData.priority ?? 0) !== (channel.priority ?? 0)) req.priority = formData.priority ?? 0;
         if ((formData.max_concurrent ?? 0) !== (channel.max_concurrent ?? 0)) req.max_concurrent = formData.max_concurrent ?? 0;
         if ((formData.rpm_limit ?? 0) !== (channel.rpm_limit ?? 0)) req.rpm_limit = formData.rpm_limit ?? 0;
+        // 显式 0 也是有效配置（关掉排队 / 用默认等待），只在和现值不同时才发。
+        if ((formData.queue_size ?? 0) !== (channel.queue_size ?? 0)) req.queue_size = formData.queue_size ?? 0;
+        if ((formData.queue_timeout_ms ?? 0) !== (channel.queue_timeout_ms ?? 0)) req.queue_timeout_ms = formData.queue_timeout_ms ?? 0;
         if ((formData.race_mode ?? false) !== (channel.race_mode ?? false)) req.race_mode = formData.race_mode ?? false;
         if ((formData.race_key_concurrency ?? 2) !== (channel.race_key_concurrency ?? 2)) req.race_key_concurrency = formData.race_key_concurrency ?? 2;
         if ((formData.race_delay_ms ?? 0) !== (channel.race_delay_ms ?? 0)) req.race_delay_ms = formData.race_delay_ms ?? 0;

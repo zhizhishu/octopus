@@ -973,9 +973,11 @@ func runRaceContenders(
 			gateReason = res.gateReason
 		}
 		gateCandidates[res.channel.ID] = balancer.GateCandidate{
-			ChannelID:     res.channel.ID,
-			MaxConcurrent: res.channel.MaxConcurrent,
-			RPMLimit:      res.channel.RPMLimit,
+			ChannelID:      res.channel.ID,
+			MaxConcurrent:  res.channel.MaxConcurrent,
+			RPMLimit:       res.channel.RPMLimit,
+			QueueSize:      res.channel.QueueSize,
+			QueueTimeoutMs: res.channel.QueueTimeoutMs,
 		}
 	}
 	if lastErr == nil && gateSkipped > 0 && gateSkipped == len(loserResults) {

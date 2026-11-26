@@ -2,6 +2,7 @@ package op
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -20,6 +21,10 @@ var channelCache = cache.New[int, model.Channel](16)
 var channelKeyCache = cache.New[int, model.ChannelKey](16)
 var channelKeyCacheNeedUpdate = make(map[int]struct{})
 var channelKeyCacheNeedUpdateLock sync.Mutex
+
+// ErrChannelQueueSettings：渠道排队旋钮本身不合法（负数，或 QueueSize>0 但合并没有并发上限）。
+// 这是请求参数错，handler 据 errors.Is 回 400，而不是当成服务端故障。
+var ErrChannelQueueSettings = errors.New("channel queue settings are invalid")
 
 func ChannelList(ctx context.Context) ([]model.Channel, error) {
 	channels := make([]model.Channel, 0, channelCache.Len())
@@ -354,6 +359,15 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "rpm_limit")
 		updates.RPMLimit = *req.RPMLimit
 	}
+	if req.QueueSize != nil {
+		// 指针语义：显式 0 必须真的落库（Updates(struct) 会跳过零值）。
+		selectFields = append(selectFields, "queue_size")
+		updates.QueueSize = *req.QueueSize
+	}
+	if req.QueueTimeoutMs != nil {
+		selectFields = append(selectFields, "queue_timeout_ms")
+		updates.QueueTimeoutMs = *req.QueueTimeoutMs
+	}
 	if req.KeySelectStrategy != nil {
 		selectFields = append(selectFields, "key_select_strategy")
 		updates.KeySelectStrategy = *req.KeySelectStrategy
@@ -469,6 +483,13 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		updates.BatchImage = req.BatchImage
 	}
 
+	// 排队旋钮是跨字段配置（QueueSize>0 需要 MaxConcurrent>0），只看本次 patch 会误判，
+	// 所以按「库里的老行 + 本次 patch」的合并结果整条校验。
+	if err := validateChannelQueueAfterUpdate(oldChannel, req); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
 	// 只有当有字段需要更新时才执行 UPDATE
 	if len(selectFields) > 0 {
 		if err := tx.Model(&model.Channel{}).Where("id = ?", req.ID).Select(selectFields).Updates(&updates).Error; err != nil {
@@ -569,6 +590,35 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 
 	channel, _ := channelCache.Get(req.ID)
 	return &channel, nil
+}
+
+// channelQueueSettingsAfterUpdate 返回「老行 + 本次 patch」合并后的
+//（maxConcurrent, queueSize, queueTimeoutMs）。nil 字段沿用库里的值。
+func channelQueueSettingsAfterUpdate(oldChannel model.Channel, req *model.ChannelUpdateRequest) (maxConcurrent, queueSize, queueTimeoutMs int) {
+	maxConcurrent, queueSize, queueTimeoutMs = oldChannel.MaxConcurrent, oldChannel.QueueSize, oldChannel.QueueTimeoutMs
+	if req == nil {
+		return maxConcurrent, queueSize, queueTimeoutMs
+	}
+	if req.MaxConcurrent != nil {
+		maxConcurrent = *req.MaxConcurrent
+	}
+	if req.QueueSize != nil {
+		queueSize = *req.QueueSize
+	}
+	if req.QueueTimeoutMs != nil {
+		queueTimeoutMs = *req.QueueTimeoutMs
+	}
+	return maxConcurrent, queueSize, queueTimeoutMs
+}
+
+// validateChannelQueueAfterUpdate 是部分更新后的整条渠道校验（只算排队这一组）：
+// 合并结果不合法就包上 ErrChannelQueueSettings，handler 据此回 400。
+func validateChannelQueueAfterUpdate(oldChannel model.Channel, req *model.ChannelUpdateRequest) error {
+	maxConcurrent, queueSize, queueTimeoutMs := channelQueueSettingsAfterUpdate(oldChannel, req)
+	if err := model.ValidateChannelQueueSettings(maxConcurrent, queueSize, queueTimeoutMs); err != nil {
+		return fmt.Errorf("%w: %v", ErrChannelQueueSettings, err)
+	}
+	return nil
 }
 
 func channelRuntimeIdentityChanged(oldChannel model.Channel, req *model.ChannelUpdateRequest) bool {
