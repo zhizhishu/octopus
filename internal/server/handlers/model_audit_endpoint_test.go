@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/db"
-	"github.com/zhizhishu/octopus/internal/db/migrate"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
@@ -32,10 +31,6 @@ func TestManualAuditEntryUsesSharedEndpoint(t *testing.T) {
 			t.Fatalf("close db: %v", err)
 		}
 	})
-	// 同 setupV6HandlerTest：进程内非首个测试库要手动补 032 的系统 Key。
-	if err := migrate.MigrateSystemAPIKeyForTest(db.GetDB()); err != nil {
-		t.Fatalf("seed system api key: %v", err)
-	}
 	if err := op.InitCache(); err != nil {
 		t.Fatalf("init cache: %v", err)
 	}

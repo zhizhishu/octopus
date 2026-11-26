@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
@@ -168,7 +169,7 @@ func TestRunChannelEmbeddingProbeOnCapabilityChannel(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:                 "capability-embedding-probe",
 		Type:                 outbound.OutboundTypeOpenAIResponse,
 		Enabled:              false,
@@ -176,7 +177,11 @@ func TestRunChannelEmbeddingProbeOnCapabilityChannel(t *testing.T) {
 		Keys:                 []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "embed-key"}},
 		Capabilities:         []string{dbmodel.CapabilityEmbeddings},
 		OpenAIEmbeddingsPath: "/embeddings",
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "doubao-embedding",
 		Endpoint: embeddingTestEndpointName,
 	})
@@ -194,9 +199,6 @@ func TestRunChannelEmbeddingProbeOnCapabilityChannel(t *testing.T) {
 	// 不能被拼成 /v1/embeddings。
 	if sawPath != "/embeddings" {
 		t.Fatalf("upstream saw path %q, want /embeddings", sawPath)
-	}
-	if result.UpstreamPath != "/embeddings" {
-		t.Fatalf("upstream path = %q, want /embeddings", result.UpstreamPath)
 	}
 	if !sawContentType {
 		t.Fatalf("嵌入请求必须带 Content-Type: application/json")
@@ -240,7 +242,7 @@ func TestRunChannelEmbeddingProbeOnAnthropicDropsCLIIdentity(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:                 "anthropic-embedding-probe",
 		Type:                 outbound.OutboundTypeAnthropic,
 		Enabled:              false,
@@ -249,7 +251,11 @@ func TestRunChannelEmbeddingProbeOnAnthropicDropsCLIIdentity(t *testing.T) {
 		Capabilities:         []string{dbmodel.CapabilityEmbeddings},
 		OpenAIEmbeddingsPath: "/embeddings",
 		Cloak:                dbmodel.ChannelCloak{Mode: "always", Shape: "claude"},
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "embed-anthropic",
 		Endpoint: embeddingTestEndpointName,
 	})

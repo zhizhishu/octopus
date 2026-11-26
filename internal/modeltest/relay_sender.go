@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modelverify"
-	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/relay"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	geminiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/gemini"
@@ -22,23 +21,21 @@ import (
 )
 
 // RelaySender 把渠道测试 / 模型检测（含鹈鹕 creative）的题目经**正常 relay 转发
-// 链路**发出去（用户 2026-11-26 拍板：这些检测一律走「系统」Key + relay，不再用
-// modeltest 自建探针出站）。
+// 链路**发出去（用户 2026-11-26 拍板：学 new-api controller/channel-test.go，
+// 不再用 modeltest 自建探针出站，也不需要任何 API Key）。
 //
 // 与 ProbeSender 的分工：
 //   - ProbeSender 仍服务断路器定时探测与红队（探针契约不动，shape 由 testChannelKey
 //     那套负责）；
-//   - RelaySender 是渠道测试/模型检测的出站：拿内置「系统」Key（迁移 032）在进程内
-//     合成一个 gin 请求，钉死被测渠道（relay.MarkInternalPinnedChannel），直接调
-//     relay.Handler。上游指纹/形状/cloak/闸门/attempts/转发日志全部走生产同一条链
-//     路——对上游而言，一次检测请求与一次真实转发在字节层面无法区分；对运营而言，
-//     转发日志里能看到这次检测的 attempts、耗时、费用，api_key_id 是系统 Key。
+//   - RelaySender 是渠道测试/模型检测的出站：进程内合成一个 gin 请求（不带任何
+//     身份），直接调 relay.HandlerForChannelTest——被测渠道以参数直指定。上游
+//     指纹/形状/cloak/闸门/attempts/转发日志全部走生产同一条链路——对上游而言，
+//     一次检测请求与一次真实转发在字节层面无法区分；对运营而言，转发日志里能
+//     看到这次检测的 attempts、耗时、费用，request_source=model_test。
 //
-// 钉扎语义（relay/internal_pin.go）：候选只有被测渠道，不跳渠道、无兜底、无救援、
-// 不占用户额度、不注入提示词规则。渠道停用不拦（测一条停用渠道是合法操作）。
-//
-// 密钥明文只在内存里经手：从 op.SystemAPIKeyGet 取出 → 写进合成请求的
-// Authorization 头 → 请求结束即弃。不落日志、不进结果、不回传调用方。
+// 测试语义（relay/channel_test_entry.go）：候选只有被测渠道，不跳渠道、无兜底、
+// 无救援、不占用户额度、不注入提示词规则、不计渠道 RPM。渠道停用不拦（测一条
+// 停用渠道是合法操作）。没保存（ID<=0）的渠道不许测——准入直接拒，见下。
 type RelaySender struct {
 	channel      dbmodel.Channel
 	requestModel string
@@ -64,6 +61,11 @@ const relayInternalUserAgent = "octopus-internal-test/1.0"
 // 能力位、base url），调用方（model_audit_worker 等）依赖这些错误区分
 // 「确定性失败」与「可重试」。
 func NewRelaySender(channel dbmodel.Channel, requestModel, endpoint string) (*RelaySender, error) {
+	// 用户 2026-11-26 拍板：没保存的渠道不许测。pin 对 ID<=0 本就只能空转，
+	// 这里在准入直接说人话，别让请求落进正常路由撞出莫名其妙的 404。
+	if channel.ID <= 0 {
+		return nil, errors.New("渠道未保存，请先保存再测试")
+	}
 	if channel.Type == outbound.OutboundTypeSystemOne {
 		return nil, fmt.Errorf("决策模型渠道不走 relay 检测，请用渠道里的「测试」")
 	}
@@ -315,18 +317,11 @@ func (s *RelaySender) Send(ctx context.Context, ask modelverify.Ask) (int, *tran
 	if err != nil {
 		return 0, nil, err
 	}
-	systemKey, err := op.SystemAPIKeyGet(ctx)
-	if err != nil {
-		return 0, nil, fmt.Errorf("系统 Key 不可用（迁移 032 应在启动时创建它）: %w", err)
-	}
-	owner, _ := op.UserGet(systemKey.UserID)
-
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	httpReq := httptest.NewRequest(spec.method, spec.path, bytes.NewReader(spec.body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", relayInternalUserAgent)
-	httpReq.Header.Set("Authorization", "Bearer "+systemKey.APIKey)
 	reqCtx := ctx
 	if s.inboundType == inbound.InboundTypeGemini {
 		// gemini 入站的 model/stream 来自 URL 动作而非请求体（与 handlers/gemini.go
@@ -336,20 +331,19 @@ func (s *RelaySender) Send(ctx context.Context, ask modelverify.Ask) (int, *tran
 	httpReq = httpReq.WithContext(reqCtx)
 	ginCtx.Request = httpReq
 
-	// 合成 APIKeyAuth 会设置的上下文身份（内部调用不走那个中间件——它对系统 Key
-	// 恒 403）。user_role 给 admin：检测请求与探针时代一样不注入提示词规则（钉扎
-	// 请求在 relay 里已整段跳过），这里只是让身份语义自洽。
-	ginCtx.Set("api_key_id", systemKey.ID)
-	ginCtx.Set("user_id", owner.ID)
+	// 身份全零值：没有任何 API Key/用户。统计与 last_used 的 op 层函数对零 id
+	// 本来就是空操作；user_role 给 admin 只是让身份语义自洽（测试入口在 relay
+	// 里已整段跳过提示词注入，与角色无关）。
+	ginCtx.Set("api_key_id", 0)
+	ginCtx.Set("user_id", 0)
 	ginCtx.Set("user_role", string(dbmodel.UserRoleAdmin))
 	ginCtx.Set("request_ip", "127.0.0.1")
 	ginCtx.Set("supported_models", "")
 
-	relay.MarkInternalPinnedChannel(ginCtx, s.channel)
-	relay.Handler(s.inboundType, ginCtx)
+	relay.HandlerForChannelTest(s.inboundType, ginCtx, s.channel)
 
 	status := recorder.Code
-	parsed := relay.InternalPinnedResponse(ginCtx)
+	parsed := relay.InternalTestResponse(ginCtx)
 	if status >= 400 || parsed == nil {
 		message := relayErrorMessage(recorder.Body.Bytes())
 		if message == "" {

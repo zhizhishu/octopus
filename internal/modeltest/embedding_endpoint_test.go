@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
@@ -190,13 +191,17 @@ func TestRunChannelEmbeddingProbeSucceedsWithoutCLIShape(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:     "embedding-draft-channel",
 		Type:     outbound.OutboundTypeOpenAIEmbedding,
 		Enabled:  false,
 		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "embed-key"}},
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "test-embed-model",
 		Endpoint: embeddingTestEndpointName,
 	})
@@ -213,8 +218,10 @@ func TestRunChannelEmbeddingProbeSucceedsWithoutCLIShape(t *testing.T) {
 	if result.RequestEndpoint != embeddingTestEndpointName {
 		t.Fatalf("request_endpoint = %q, want %q", result.RequestEndpoint, embeddingTestEndpointName)
 	}
-	if result.RequestPath != "/v1/embeddings" || result.UpstreamPath != "/v1/embeddings" {
-		t.Fatalf("request path = %q / upstream path = %q, want /v1/embeddings on both", result.RequestPath, result.UpstreamPath)
+	// relay 链路不在 result 里回填 UpstreamPath（那是探针自建出站才知道的元数据，
+	// 见 runner.go testChannelKey）；上游真打哪条路径以 mock 实际收到的为准。
+	if result.RequestPath != "/v1/embeddings" {
+		t.Fatalf("request path = %q, want /v1/embeddings", result.RequestPath)
 	}
 	if sawPath != "/v1/embeddings" {
 		t.Fatalf("upstream saw path %q, want /v1/embeddings", sawPath)

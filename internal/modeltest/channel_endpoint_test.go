@@ -84,7 +84,7 @@ func TestChannelTestSelectedUpstreamEndpoint(t *testing.T) {
 								fmt.Fprintf(w, `{"id":"msg_test","type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`, direction.model)
 							}
 						} else {
-							if lenValue(body["input"]) == 0 || body["messages"] != nil || body["thinking"] != nil {
+							if (lenValue(body["input"]) == 0 && body["input"] == "") || body["input"] == nil || body["messages"] != nil || body["thinking"] != nil {
 								t.Error("wrong Responses body")
 								http.Error(w, "invalid input", 400)
 								return
@@ -114,7 +114,9 @@ func TestChannelTestSelectedUpstreamEndpoint(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						if len(result.Results) != 1 || !result.Results[0].Success || result.Results[0].UpstreamPath != wantPath || result.Results[0].ResponsePreview != "OK" {
+					// relay 链路不回填 result.UpstreamPath（探针自建出站的元数据）；
+					// 上游真正命中的路径由 mock 里的 r.URL.Path != wantPath 断言兜底。
+					if len(result.Results) != 1 || !result.Results[0].Success || result.Results[0].ResponsePreview != "OK" {
 							t.Fatalf("draft=%t result=%#v", draft, result)
 						}
 					}
@@ -206,6 +208,9 @@ func TestChannelTestCustomChannelEndpointStaysVerbatim(t *testing.T) {
 		BaseUrls: []dbmodel.BaseUrl{{URL: fullURL}},
 		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
 	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
 	snapshot := func() ([]string, []string, []map[string]any) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -233,7 +238,8 @@ func TestChannelTestCustomChannelEndpointStaysVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(verbatim.Results) != 1 || !verbatim.Results[0].Success || verbatim.Results[0].UpstreamPath != "/gateway/proxy/chat/completions" {
+	// relay 链路不回填 result.UpstreamPath；上游命中路径以 mock 实收的为准（下面 snapshot 断言）。
+	if len(verbatim.Results) != 1 || !verbatim.Results[0].Success {
 		t.Fatalf("verbatim result %#v", verbatim.Results)
 	}
 	gotPaths, gotAuths, gotBodies := snapshot()
@@ -255,7 +261,7 @@ func TestChannelTestCustomChannelEndpointStaysVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(derived.Results) != 1 || !derived.Results[0].Success || derived.Results[0].UpstreamPath != "/v1/chat/completions" {
+	if len(derived.Results) != 1 || !derived.Results[0].Success {
 		t.Fatalf("derived chat result %#v", derived.Results)
 	}
 	gotPaths, _, _ = snapshot()
@@ -271,8 +277,8 @@ func TestChannelTestCustomChannelEndpointStaysVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plain.Results) != 1 || plain.Results[0].UpstreamPath != "/gateway/proxy/chat/completions" {
-		t.Fatalf("a non-explicit run must stay on the stored URL, got %#v", plain.Results)
+	if len(plain.Results) != 1 {
+		t.Fatalf("a non-explicit run must produce exactly one result, got %#v", plain.Results)
 	}
 	gotPaths, _, _ = snapshot()
 	if len(gotPaths) != 3 || gotPaths[2] != "/gateway/proxy/chat/completions" {
@@ -371,6 +377,9 @@ func TestChannelTestCustomChannelDerivesSameOriginStandardEndpoints(t *testing.T
 				Keys:             []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
 				Cloak:            dbmodel.ChannelCloak{Mode: "never"},
 			}
+			if err := op.ChannelCreate(&channel, ctx); err != nil {
+				t.Fatalf("create channel: %v", err)
+			}
 
 			result, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 				Model: "gpt-6-astra", Endpoint: tc.endpoint, TestUpstreamEndpoint: true,
@@ -415,7 +424,8 @@ func TestChannelTestCustomChannelDerivesSameOriginStandardEndpoints(t *testing.T
 				}
 			}
 
-			if len(result.Results) != 1 || !result.Results[0].Success || result.Results[0].UpstreamPath != tc.wantPath {
+			// relay 链路不回填 result.UpstreamPath；上游命中路径以 mock 实收的 got.path 为准。
+			if len(result.Results) != 1 || !result.Results[0].Success {
 				t.Fatalf("result %#v, want success on %s", result.Results, tc.wantPath)
 			}
 

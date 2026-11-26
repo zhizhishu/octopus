@@ -59,8 +59,8 @@ func TestAuditEndpointBothEntriesShareOneSource(t *testing.T) {
 	} {
 		entryCalls += assertFilePathUsesSharedEndpoint(t, filepath.Join(root, rel))
 	}
-	if entryCalls < 3 {
-		t.Fatalf("审计入口里调用 modeltest.NewProbeSender/NewRelaySender 的次数 = %d, want >= 3（手动 handler / 手动队列 worker / 定时检测各一处）", entryCalls)
+	if entryCalls < 2 {
+		t.Fatalf("审计入口里调用 modeltest.NewRelaySender 的次数 = %d, want >= 2（手动 handler / 检测队列 worker 各一处；定时检测生产路径走同一个 worker，task/audit.go 里残留的就地探针只是 wiring 测试的接线，不算入口）", entryCalls)
 	}
 
 	// 两个包的非测试代码里都不许再出现端点字面量：出现就说明又写了一份映射。
@@ -74,10 +74,12 @@ func TestAuditEndpointBothEntriesShareOneSource(t *testing.T) {
 
 // assertFilePathUsesSharedEndpoint 断言一个入口文件：
 //  1. 没有留下任何一个端点映射函数（旧名字或新的同义 switch）；
-//  2. 每一处 modeltest.NewProbeSender 的端点实参，最终都只可能来自
-//     op.AuditEndpointForChannel。
+//  2. 每一处 modeltest.NewRelaySender 的端点实参，最终都只可能来自
+//     op.AuditEndpointForChannel。检测在 26dca17 之后只走 relay 发送器；
+//     NewProbeSender 仅剩断路器/红队/hlwy 与 wiring 测试的探针接线，
+//     那些不是审计入口，不在本判据范围内。
 //
-// 返回该文件里 NewProbeSender 的调用次数。
+// 返回该文件里 NewRelaySender 的调用次数。
 func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -99,7 +101,7 @@ func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
 		}
 	}
 
-	// 2) 每处 NewProbeSender 的端点实参唯一来源是共享函数。
+	// 2) 每处 NewRelaySender 的端点实参唯一来源是共享函数。
 	calls := 0
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -107,11 +109,11 @@ func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel == nil || (sel.Sel.Name != "NewProbeSender" && sel.Sel.Name != "NewRelaySender") {
+		if !ok || sel.Sel == nil || sel.Sel.Name != "NewRelaySender" {
 			return true
 		}
 		if len(call.Args) < 3 {
-			t.Errorf("%s: NewProbeSender 实参不足 3 个（端点名是第 3 个）", fset.Position(call.Pos()).String())
+			t.Errorf("%s: NewRelaySender 实参不足 3 个（端点名是第 3 个）", fset.Position(call.Pos()).String())
 			return true
 		}
 		calls++
@@ -122,7 +124,7 @@ func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
 		}
 		ident, ok := arg.(*ast.Ident)
 		if !ok {
-			t.Errorf("%s: NewProbeSender 的端点实参既不是 op.%s(...) 也不是由它赋值的变量，而是 %T"+
+			t.Errorf("%s: NewRelaySender 的端点实参既不是 op.%s(...) 也不是由它赋值的变量，而是 %T"+
 				"——端点判据必须只有一个来源", pos, auditEndpointSharedSelector, arg)
 			return true
 		}

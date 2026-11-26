@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
-	"github.com/zhizhishu/octopus/internal/db/migrate"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
@@ -32,12 +31,6 @@ func setupModelTestDB(t *testing.T) context.Context {
 			t.Fatalf("close db: %v", err)
 		}
 	})
-	// 迁移注册清单每个进程只在首次 InitDB 跑一轮（跑完即清空），本包的后续测试库
-	// 不会有 032 建的系统 Key；渠道检测改走 relay 链路后没它就发不出请求，这里按
-	// 幂等导出补齐（已在的库直接返回）。
-	if err := migrate.MigrateSystemAPIKeyForTest(db.GetDB()); err != nil {
-		t.Fatalf("seed system api key: %v", err)
-	}
 	if err := op.InitCache(); err != nil {
 		t.Fatalf("init cache: %v", err)
 	}
@@ -407,7 +400,11 @@ func TestPrepareCodexModelTestRequestUsesStableDeviceAcrossSessions(t *testing.T
 	}
 }
 
-func TestRunHonorsExplicitStreamMode(t *testing.T) {
+func TestRunChannelRelayMirrorsNonStreamInboundEvenWhenStreamExplicit(t *testing.T) {
+	// relay 设计：渠道检测的合成入站请求一律非流式（relay_sender.go buildRelayRequest
+	// 的 stream=false），relay 对 openai_chat 上游镜像客户端的流式偏好，所以上游
+	// 收到的一定是非流式请求。ModelTestRequest.Stream 在 relay 链路里不再消费——
+	// 本测试钉死这一点：即便调用方显式要 stream=true，上游形状也不变。
 	ctx := setupModelTestDB(t)
 
 	var seenStream atomic.Value
@@ -417,10 +414,15 @@ func TestRunHonorsExplicitStreamMode(t *testing.T) {
 			t.Fatalf("decode upstream request: %v", err)
 		}
 		seenStream.Store(payload["stream"] == true)
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":null}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-test",
+			"object":"chat.completion",
+			"created":123,
+			"model":"gpt-test",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+		}`))
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -432,6 +434,9 @@ func TestRunHonorsExplicitStreamMode(t *testing.T) {
 			URL: upstream.URL,
 		}},
 		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
 	}
 
 	stream := true
@@ -446,12 +451,15 @@ func TestRunHonorsExplicitStreamMode(t *testing.T) {
 	if response.Summary.Success != 1 || response.Results[0].ResponsePreview != "OK" {
 		t.Fatalf("unexpected stream model-test response: %#v", response)
 	}
-	if got, _ := seenStream.Load().(bool); !got {
-		t.Fatalf("expected upstream request to include stream=true")
+	if got, _ := seenStream.Load().(bool); got {
+		t.Fatalf("relay 链路渠道检测的上游入站必须是非流式")
 	}
 }
 
-func TestRunOpenAIChatStreamsByDefault(t *testing.T) {
+func TestRunOpenAIChatNonStreamByDefault(t *testing.T) {
+	// 探针时代 openai_chat 默认流式是为了不让 thinking 模型的长前奏撑爆连通性
+	// 超时；relay 链路里这道保护由 relay 自己的超时/聚合承担，合成入站恒非流式
+	// （见上一条测试的注释）。上游因此收到非流式请求，回普通 JSON。
 	ctx := setupModelTestDB(t)
 
 	var seenStream atomic.Value
@@ -461,17 +469,19 @@ func TestRunOpenAIChatStreamsByDefault(t *testing.T) {
 			t.Fatalf("decode upstream request: %v", err)
 		}
 		seenStream.Store(payload["stream"] == true)
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":null}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-test",
+			"object":"chat.completion",
+			"created":123,
+			"model":"glm-5.2",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+		}`))
 	}))
 	t.Cleanup(upstream.Close)
 
-	// No Stream field set: the openai_chat probe must default to streaming so a thinking
-	// model (glm/deepseek) that emits a long reasoning preamble streams its first content
-	// instead of buffering the whole blob server-side and blowing the connectivity timeout.
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:    "default-stream-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: false,
@@ -479,7 +489,12 @@ func TestRunOpenAIChatStreamsByDefault(t *testing.T) {
 			URL: upstream.URL,
 		}},
 		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "glm-5.2",
 		Endpoint: "openai_chat",
 	})
@@ -489,24 +504,19 @@ func TestRunOpenAIChatStreamsByDefault(t *testing.T) {
 	if response.Summary.Success != 1 || response.Results[0].ResponsePreview != "OK" {
 		t.Fatalf("unexpected default-stream response: %#v", response)
 	}
-	if got, _ := seenStream.Load().(bool); !got {
-		t.Fatalf("expected openai_chat model test to default to stream=true")
+	if got, _ := seenStream.Load().(bool); got {
+		t.Fatalf("relay 链路渠道检测的上游入站必须是非流式")
 	}
 }
 
-func TestRunChannelUsesUnsavedConfig(t *testing.T) {
+func TestRunChannelRejectsUnsavedChannel(t *testing.T) {
+	// 用户 2026-11-26 拍板：没保存（没有 ID）的渠道不许测。relay 检测入口在
+	// 准入直接拒，不再走 pin 空转落进正常路由撞 404。
 	ctx := setupModelTestDB(t)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"id":"chatcmpl-test",
-			"object":"chat.completion",
-			"created":123,
-			"model":"gpt-4o",
-			"choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],
-			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
-		}`))
+		t.Errorf("unsaved channel must never reach the upstream")
+		w.WriteHeader(http.StatusBadRequest)
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -524,12 +534,12 @@ func TestRunChannelUsesUnsavedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run channel test: %v", err)
 	}
-	if response.Summary.Success != 1 {
-		t.Fatalf("unexpected response: %#v", response)
+	if response.Summary.Success != 0 || response.Summary.Failed != 1 {
+		t.Fatalf("unsaved channel must fail the summary, got %#v", response.Summary)
 	}
 	result := response.Results[0]
-	if !result.Success || result.ChannelName != "draft-channel" || result.ResponsePreview != "OK" {
-		t.Fatalf("unexpected draft channel result: %#v", result)
+	if result.Success || !strings.Contains(result.Error, "渠道未保存") {
+		t.Fatalf("rejection reason must name the unsaved channel, got %#v", result)
 	}
 }
 
@@ -567,7 +577,7 @@ func TestRunChannelRecordsHTTPProxyConnectivity(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	channelProxy := proxy.URL
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:    "proxy-test-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
@@ -577,7 +587,11 @@ func TestRunChannelRecordsHTTPProxyConnectivity(t *testing.T) {
 		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
 		Proxy:        true,
 		ChannelProxy: &channelProxy,
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "gpt-proxy",
 		Endpoint: "openai_chat",
 	})
@@ -606,7 +620,7 @@ func TestRunChannelReportsProxyConnectivityFailure(t *testing.T) {
 	ctx := setupModelTestDB(t)
 
 	channelProxy := "ftp://proxy.invalid:21"
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:    "bad-proxy-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
@@ -616,7 +630,11 @@ func TestRunChannelReportsProxyConnectivityFailure(t *testing.T) {
 		Keys:         []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
 		Proxy:        true,
 		ChannelProxy: &channelProxy,
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "gpt-proxy",
 		Endpoint: "openai_chat",
 	})
@@ -1347,13 +1365,16 @@ func TestRunRedactsSecretsFromUpstreamErrorSummary(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"code":"invalid_api_key","message":"Authorization: Bearer sk-leaked-provider and x-api-key: sk-second-leaked"}}`))
+		// relay 设计下客户端能看到上游细节的唯一路径是 request-invalid（400/422 +
+		// invalid_request_error，见 upstream_error.go relayErrorResponse）：其余状态
+		// 一律 generic。所以本测试用 400 透细节，密钥必须在这条通路上被打码。
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","code":"invalid_api_key","message":"Authorization: Bearer sk-leaked-provider and x-api-key: sk-second-leaked"}}`))
 	}))
 	t.Cleanup(upstream.Close)
 
 	stream := false
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:    "redacted-error-channel",
 		Type:    outbound.OutboundTypeOpenAIChat,
 		Enabled: true,
@@ -1361,7 +1382,11 @@ func TestRunRedactsSecretsFromUpstreamErrorSummary(t *testing.T) {
 			URL: upstream.URL,
 		}},
 		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "sk-provider-request"}},
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "gpt-error",
 		Endpoint: "openai_chat",
 		Stream:   &stream,
@@ -1377,11 +1402,13 @@ func TestRunRedactsSecretsFromUpstreamErrorSummary(t *testing.T) {
 	if len(result.Attempts) > 0 {
 		combined += " " + result.Attempts[0].Msg
 	}
-	if strings.Contains(combined, "sk-") || strings.Contains(combined, "sk_leaked") || strings.Contains(combined, "Bearer sk") {
+	if strings.Contains(combined, "sk-leaked") || strings.Contains(combined, "sk-second") || strings.Contains(combined, "Bearer sk") {
 		t.Fatalf("model-test error leaked secret material: %#v", result)
 	}
-	if !strings.Contains(result.Error, "[redacted]") || result.ErrorCode != "invalid_api_key" {
-		t.Fatalf("expected redacted provider error with code, got %#v", result)
+	// relay 链路不把上游错误码填进 result.ErrorCode（探针时代适配器元数据），
+	// 钉打码本身：上游原因透出来了，但密钥材料一字不漏。
+	if !strings.Contains(result.Error, "[redacted]") {
+		t.Fatalf("expected redacted provider error, got %#v", result)
 	}
 }
 
@@ -1405,7 +1432,7 @@ func TestRunChannelDecodesCompressedUpstreamErrorBody(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	stream := false
-	response, err := RunChannel(ctx, dbmodel.Channel{
+	channel := dbmodel.Channel{
 		Name:    "compressed-error-channel",
 		Type:    outbound.OutboundTypeAnthropic,
 		Enabled: true,
@@ -1413,7 +1440,11 @@ func TestRunChannelDecodesCompressedUpstreamErrorBody(t *testing.T) {
 			URL: upstream.URL,
 		}},
 		Keys: []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "sk-provider-request"}},
-	}, dbmodel.ModelTestRequest{
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 		Model:    "claude-opus-5-5",
 		Endpoint: "anthropic_messages",
 		Stream:   &stream,

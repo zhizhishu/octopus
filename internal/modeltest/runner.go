@@ -121,10 +121,10 @@ type modelRunner struct {
 	// 这是合法的客户端行为，不是凭空多出来的字段。默认 false = 沿用既有的
 	// {"type":"disabled"}（普通轮的真 CLI 形态）。
 	probeThinking bool
-	// relayOutbound：本次测试的出站走 relay 正常转发链路（RelaySender：系统 Key +
-	// 钉扎渠道），不再用 testChannelKey 自建探针出站。渠道测试（RunChannel，
-	// directChannel 路径）为 true；模型测试页的路由路径（Run，按用户身份试路由）
-	// 保持探针出站不变。
+	// relayOutbound：本次测试的出站走 relay 正常转发链路（RelaySender 经
+	// HandlerForChannelTest 进程内入口直指定渠道），不再用 testChannelKey 自建
+	// 探针出站。渠道测试（RunChannel，directChannel 路径）为 true；模型测试页的
+	// 路由路径（Run，按用户身份试路由）保持探针出站不变。
 	relayOutbound bool
 	// lastHeaderFamilies 是本次出站收到 2xx 回复时抄下的响应头家族类别
 	// （只读头名，见 model.ClassifyUpstreamHeaderFamilies）。
@@ -811,9 +811,10 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 		return false
 	}
 
-	// 渠道测试（directChannel 路径）改走 relay 正常转发链路：系统 Key + 钉扎本渠道，
-	// 上游指纹/形状/cloak/闸门/日志与生产完全一致；key 的选择与 429 换 key 重试
-	// 由 relay 按生产口径完成，attempts/耗时/费用落转发日志（api_key_id=系统 Key）。
+	// 渠道测试（directChannel 路径）走 relay 正常转发链路（HandlerForChannelTest
+	// 进程内入口直指定本渠道）：上游指纹/形状/cloak/闸门/日志与生产完全一致；
+	// key 的选择与 429 换 key 重试由 relay 按生产口径完成，attempts/耗时/费用
+	// 落转发日志（request_source=model_test）。
 	if r.relayOutbound {
 		return r.tryChannelViaRelay(ctx, channel, upstreamModel)
 	}

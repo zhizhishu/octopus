@@ -9,6 +9,7 @@ import (
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modelverify"
+	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
 
@@ -59,16 +60,27 @@ func adaptiveTestChannel(url string) dbmodel.Channel {
 // so the spelling must follow the model while older models keep the byte-identical disabled.
 func TestModelTestThinkingOffFollowsModel(t *testing.T) {
 	ctx := setupModelTestDB(t)
+	// relay 链路后，上游看到的 thinking 形状就是**生产转发**的形状（合成入站不带
+	// thinking，形状全部由 relay 的渠道 cloak/CLI 黄金形状逻辑决定）：adaptive-only
+	// 模型（opus-5*/sonnet-5*/haiku-5*）一律 adaptive+omitted+effort=high；非 adaptive
+	// 的 opus-4-5 不做任何注入。钉死的关键契约不变：adaptive-only 模型绝不能收到
+	// {"type":"disabled"}（上游对它 400）。haiku-5-5 旧断言写 disabled 是探针时代
+	// 的误拼——它本来就在 adaptive-only 名单里（runner.go 注释）。
 	for modelName, want := range map[string][2]string{
-		"claude-opus-5-5":   {`{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
-		"claude-sonnet-5-5": {`{"type":"adaptive","display":"omitted"}`, `{"effort":"low"}`},
-		"claude-haiku-5-5":  {`{"type":"disabled"}`, ``},
-		"claude-opus-4-5":   {`{"type":"disabled"}`, ``},
+		"claude-opus-5-5":   {`{"type":"adaptive","display":"omitted"}`, `{"effort":"high"}`},
+		"claude-sonnet-5-5": {`{"type":"adaptive","display":"omitted"}`, `{"effort":"high"}`},
+		"claude-haiku-5-5":  {`{"type":"adaptive","display":"omitted"}`, `{"effort":"high"}`},
+		"claude-opus-4-5":   {``, ``},
 	} {
 		for _, endpoint := range []string{"anthropic_messages", "openai_chat"} {
 			t.Run(modelName+"/"+endpoint, func(t *testing.T) {
 				upstream, seen := captureAnthropicThinking(t)
-				response, err := RunChannel(ctx, adaptiveTestChannel(upstream.URL), dbmodel.ModelTestRequest{
+				channel := adaptiveTestChannel(upstream.URL)
+				channel.Name = "adaptive-only-" + modelName + "-" + endpoint
+				if err := op.ChannelCreate(&channel, ctx); err != nil {
+					t.Fatalf("create channel: %v", err)
+				}
+				response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
 					Model:    modelName,
 					Endpoint: endpoint,
 				})

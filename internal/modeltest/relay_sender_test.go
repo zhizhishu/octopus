@@ -118,11 +118,11 @@ func TestRelayRequestTurnsReplayThinkingBlocks(t *testing.T) {
 func TestRelaySenderAdmissionErrors(t *testing.T) {
 	// 缺 base url / 缺模型的渠道在发送前就该被拦下（错误口径与 NewProbeSender
 	// 一致，供 worker 区分「确定性失败」与「可重试」）。
-	chat := dbmodel.Channel{Type: outbound.OutboundTypeOpenAIChat}
+	chat := dbmodel.Channel{ID: 1, Type: outbound.OutboundTypeOpenAIChat}
 	if _, err := NewRelaySender(chat, "gpt-6.2", "openai_chat"); err == nil {
 		t.Fatal("channel without base url must be rejected")
 	}
-	anthropic := dbmodel.Channel{Type: outbound.OutboundTypeAnthropic}
+	anthropic := dbmodel.Channel{ID: 1, Type: outbound.OutboundTypeAnthropic}
 	if _, err := NewRelaySender(anthropic, "", "anthropic_messages"); err == nil {
 		t.Fatal("empty model must be rejected")
 	}
