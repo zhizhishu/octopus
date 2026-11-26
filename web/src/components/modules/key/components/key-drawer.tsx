@@ -285,10 +285,12 @@ function DrawerBody({ apiKey, tab, onTabChange, users, plans, spentOf, onClose, 
                 <div className="flex items-center gap-2 border-t border-border bg-background px-6 py-4">
                     {apiKey && !apiKey.system && <button type="button" className={btnDanger} onClick={() => onDelete(apiKey)}><Trash2 className="size-4" />{t('delete')}</button>}
                     <button type="button" className={cn(btn, 'ml-auto')} onClick={onClose}>{t('cancel')}</button>
-                    <button type="button" className={btnPrimary} disabled={pending} onClick={save}>
-                        {pending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
-                        {apiKey ? t('save') : t('create')}
-                    </button>
+                    {!apiKey?.system && (
+                        <button type="button" className={btnPrimary} disabled={pending} onClick={save}>
+                            {pending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+                            {apiKey ? t('save') : t('create')}
+                        </button>
+                    )}
                 </div>
             )}
         </>
