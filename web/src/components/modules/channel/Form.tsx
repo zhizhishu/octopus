@@ -925,11 +925,27 @@ export function ChannelForm({
         </>
     );
 
-    const maxConcurrentField = (
-        <>
+    // 「限流」小卡片：并发 / RPM / 满了怎么办（回错还是排队）收成一张卡。
+    // 后端 gate 语义：0 = 不限；queue_size>0 必须同时有 max_concurrent>0（没有并发上限就永远不会「满」），
+    // 所以并发清 0 时排队一并清 0，让表单永远踩不到后端会拒的状态。
+    const gateMaxConcurrent = formData.max_concurrent ?? 0;
+    const gateRpmLimit = formData.rpm_limit ?? 0;
+    const gateQueueSize = formData.queue_size ?? 0;
+    const gateQueueWaitSec = (formData.queue_timeout_ms ?? 0) / 1000;
+    const gateQueuing = gateQueueSize > 0;
+    const gateMaxSummary = gateMaxConcurrent > 0 ? t('gateMaxPhrase', { n: gateMaxConcurrent }) : t('gateUnlimited');
+    const gateRpmSummary = gateRpmLimit > 0 ? t('gateRpmPhrase', { n: gateRpmLimit }) : t('gateUnlimited');
+    const gateWhenFullSummary = gateQueuing
+        ? t('gateSummaryQueue', { size: gateQueueSize, wait: gateQueueWaitSec > 0 ? gateQueueWaitSec : 3 })
+        : t('gateSummaryReject');
+
+    const gateCard = (
+        <div className="space-y-3 rounded-xl border border-border bg-card/60 p-3 sm:col-span-2">
+            <div className="text-sm font-medium text-card-foreground">{t('gateTitle')}</div>
+            <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
                     <label htmlFor={`${idPrefix}-max-concurrent`} className="text-sm font-medium text-card-foreground">
-                        {t('maxConcurrent')}
+                        {t('gateMaxConcurrent')}
                     </label>
                     <Input
                         className='rounded-xl'
@@ -941,12 +957,119 @@ export function ChannelForm({
                         value={String(formData.max_concurrent ?? 0)}
                         onChange={(event) => {
                             const n = Number.parseInt(event.target.value, 10);
-                            onFormDataChange({ ...formData, max_concurrent: Number.isFinite(n) && n > 0 ? n : 0 });
+                            const max = Number.isFinite(n) && n > 0 ? n : 0;
+                            onFormDataChange(max > 0
+                                ? { ...formData, max_concurrent: max }
+                                : { ...formData, max_concurrent: max, queue_size: 0 });
                         }}
                     />
-                    <p className="text-xs text-muted-foreground">{t('maxConcurrentHint')}</p>
+                    <p className="text-xs text-muted-foreground">{t('gateZeroUnlimited')}</p>
                 </div>
-        </>
+                <div className="space-y-2">
+                    <label htmlFor={`${idPrefix}-rpm-limit`} className="text-sm font-medium text-card-foreground">
+                        {t('gateRpm')}
+                    </label>
+                    <Input
+                        className='rounded-xl'
+                        id={`${idPrefix}-rpm-limit`}
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={String(formData.rpm_limit ?? 0)}
+                        onChange={(event) => {
+                            const n = Number.parseInt(event.target.value, 10);
+                            onFormDataChange({ ...formData, rpm_limit: Number.isFinite(n) && n > 0 ? n : 0 });
+                        }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('gateZeroUnlimited')}</p>
+                </div>
+            </div>
+            <div className="space-y-2">
+                <div className="text-sm font-medium text-card-foreground">{t('gateWhenFull')}</div>
+                <div
+                    role="radiogroup"
+                    aria-label={t('gateWhenFull')}
+                    className="inline-flex min-h-11 max-w-full items-center overflow-x-auto rounded-xl border border-input bg-muted/40 p-0.5 text-xs"
+                >
+                    <button
+                        type="button"
+                        role="radio"
+                        aria-checked={!gateQueuing}
+                        onClick={() => onFormDataChange({ ...formData, queue_size: 0 })}
+                        className={cn(
+                            'min-h-11 shrink-0 rounded-lg px-2.5 transition-colors',
+                            gateQueuing ? 'text-muted-foreground hover:text-foreground' : 'bg-background font-medium text-foreground shadow-sm',
+                        )}
+                    >
+                        {t('gateFullReject')}
+                    </button>
+                    <button
+                        type="button"
+                        role="radio"
+                        aria-checked={gateQueuing}
+                        disabled={gateMaxConcurrent <= 0}
+                        onClick={() => onFormDataChange({ ...formData, queue_size: gateQueueSize > 0 ? gateQueueSize : 5 })}
+                        className={cn(
+                            'min-h-11 shrink-0 rounded-lg px-2.5 transition-colors',
+                            gateQueuing ? 'bg-background font-medium text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                            gateMaxConcurrent <= 0 && 'cursor-not-allowed opacity-50',
+                        )}
+                    >
+                        {t('gateFullQueue')}
+                    </button>
+                </div>
+                {gateMaxConcurrent <= 0 && (
+                    <p className="text-xs text-muted-foreground">{t('gateQueueNeedsLimit')}</p>
+                )}
+            </div>
+            {gateQueuing && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                        <label htmlFor={`${idPrefix}-queue-size`} className="text-sm font-medium text-card-foreground">
+                            {t('gateQueueSize')}
+                        </label>
+                        <Input
+                            className='rounded-xl'
+                            id={`${idPrefix}-queue-size`}
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            step={1}
+                            value={String(formData.queue_size ?? 0)}
+                            onChange={(event) => {
+                                const n = Number.parseInt(event.target.value, 10);
+                                onFormDataChange({ ...formData, queue_size: Number.isFinite(n) && n > 0 ? n : 0 });
+                            }}
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label htmlFor={`${idPrefix}-queue-wait`} className="text-sm font-medium text-card-foreground">
+                            {t('gateQueueWait')}
+                        </label>
+                        <Input
+                            className='rounded-xl'
+                            id={`${idPrefix}-queue-wait`}
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            step={0.001}
+                            value={String((formData.queue_timeout_ms ?? 0) / 1000)}
+                            onChange={(event) => {
+                                const seconds = Number.parseFloat(event.target.value);
+                                onFormDataChange({ ...formData, queue_timeout_ms: Number.isFinite(seconds) ? Math.round(seconds * 1000) : 0 });
+                            }}
+                        />
+                        <p className="text-xs text-muted-foreground">{t('gateQueueWaitHint')}</p>
+                    </div>
+                </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+                {gateMaxConcurrent <= 0 && gateRpmLimit <= 0
+                    ? t('gateUnlimited')
+                    : t('gateSummaryLine', { max: gateMaxSummary, rpm: gateRpmSummary, full: gateWhenFullSummary })}
+            </p>
+        </div>
     );
 
     const raceField = (
@@ -1014,82 +1137,6 @@ export function ChannelForm({
                             </div>
                         </div>
                     )}
-                </div>
-        </>
-    );
-
-    const rpmField = (
-        <>
-                <div className="space-y-2">
-                    <label htmlFor={`${idPrefix}-rpm-limit`} className="text-sm font-medium text-card-foreground">
-                        {t('rpmLimit')}
-                    </label>
-                    <Input
-                        className='rounded-xl'
-                        id={`${idPrefix}-rpm-limit`}
-                        type="number"
-                        inputMode="numeric"
-                        min={0}
-                        step={1}
-                        value={String(formData.rpm_limit ?? 0)}
-                        onChange={(event) => {
-                            const n = Number.parseInt(event.target.value, 10);
-                            onFormDataChange({ ...formData, rpm_limit: Number.isFinite(n) && n > 0 ? n : 0 });
-                        }}
-                    />
-                    <p className="text-xs text-muted-foreground">{t('rpmLimitHint')}</p>
-                </div>
-        </>
-    );
-
-    const queueSizeField = (
-        <>
-                <div className="space-y-2">
-                    <label htmlFor={`${idPrefix}-queue-size`} className="text-sm font-medium text-card-foreground">
-                        {t('queueSize')}
-                    </label>
-                    <Input
-                        className='rounded-xl'
-                        id={`${idPrefix}-queue-size`}
-                        type="number"
-                        inputMode="numeric"
-                        min={0}
-                        step={1}
-                        value={String(formData.queue_size ?? 0)}
-                        onChange={(event) => {
-                            const n = Number.parseInt(event.target.value, 10);
-                            onFormDataChange({ ...formData, queue_size: Number.isFinite(n) && n > 0 ? n : 0 });
-                        }}
-                    />
-                    <p className="text-xs text-muted-foreground">{t('queueSizeHint')}</p>
-                    {/* 后端校验：queue_size>0 必须有 max_concurrent>0（没有并发上限就永远不会「满」）。 */}
-                    {(formData.queue_size ?? 0) > 0 && (formData.max_concurrent ?? 0) <= 0 && (
-                        <p className="text-xs text-amber-700 dark:text-amber-400">{t('queueSizeNeedsConcurrency')}</p>
-                    )}
-                </div>
-        </>
-    );
-
-    const queueTimeoutField = (
-        <>
-                <div className="space-y-2">
-                    <label htmlFor={`${idPrefix}-queue-timeout`} className="text-sm font-medium text-card-foreground">
-                        {t('queueTimeout')}
-                    </label>
-                    <Input
-                        className='rounded-xl'
-                        id={`${idPrefix}-queue-timeout`}
-                        type="number"
-                        inputMode="decimal"
-                        min={0}
-                        step={0.001}
-                        value={String((formData.queue_timeout_ms ?? 0) / 1000)}
-                        onChange={(event) => {
-                            const seconds = Number.parseFloat(event.target.value);
-                            onFormDataChange({ ...formData, queue_timeout_ms: Number.isFinite(seconds) ? Math.round(seconds * 1000) : 0 });
-                        }}
-                    />
-                    <p className="text-xs text-muted-foreground">{t('queueTimeoutHint')}</p>
                 </div>
         </>
     );
@@ -2220,11 +2267,8 @@ export function ChannelForm({
                 {nameField}
                 {typeField}
                 {priorityField}
-                {maxConcurrentField}
+                {gateCard}
                 {raceField}
-                {rpmField}
-                {queueSizeField}
-                {queueTimeoutField}
                 {keyStrategyField}
             </div>
 
@@ -2295,11 +2339,8 @@ export function ChannelForm({
             <MobileSection title={t('mobileSection.scheduling')} summary={`${t('priority')} ${formData.priority ?? 0} · ${strategyLabel}`}>
                 <div className="grid grid-cols-1 gap-4">
                     {priorityField}
-                    {maxConcurrentField}
+                    {gateCard}
                     {raceField}
-                    {rpmField}
-                    {queueSizeField}
-                    {queueTimeoutField}
                     {keyStrategyField}
                 </div>
                 {breakerBlock}
