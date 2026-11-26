@@ -813,6 +813,8 @@ runIterator:
 			usedAt := time.Now().Unix()
 
 			if fwdErr == nil {
+				// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+				balancer.RecordChannelRPMSuccess(channel.ID)
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, 0)
 				span.End(model.AttemptSuccess, statusCode, "")
 				balancer.RecordRuntimeSuccess(channel.ID, usedKey.ID, item.ModelName, balancer.AttemptRuntimeMetrics{

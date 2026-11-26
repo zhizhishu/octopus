@@ -311,6 +311,8 @@ runIterator:
 				})
 				metrics.ResponseContent = buildImagesResponseContentForLog(stream, upstreamCT, usage)
 
+				// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+				balancer.RecordChannelRPMSuccess(channel.ID)
 				costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, costDelta)
 

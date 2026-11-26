@@ -295,6 +295,8 @@ runIterator:
 			// 中途已经扣掉的部分，收尾只补差（rawProtocolRelayMetrics.Save）。
 			metrics.PreCharged = biller.Charged()
 
+			// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+			balancer.RecordChannelRPMSuccess(channel.ID)
 			costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
 			op.ChannelKeyRecordUse(usedKey, http.StatusSwitchingProtocols, usedAt, costDelta)
 			span.End(model.AttemptSuccess, http.StatusSwitchingProtocols, "")

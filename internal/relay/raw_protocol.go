@@ -302,6 +302,8 @@ runIterator:
 					recordResponsesSessionOwned(ctx, upstreamResponseID, channel.ID, usedKey.ID, apiKeyID, userID, rootHash, responseSessionSourceResponses)
 				}
 
+				// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+				balancer.RecordChannelRPMSuccess(channel.ID)
 				costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, costDelta)
 
