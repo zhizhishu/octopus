@@ -41,13 +41,6 @@ type APIKey struct {
 	// 归属固定是建它的管理员（计费走管理员的池子 + 这把 Key 自己的 MaxCost），
 	// 鉴权时只放行转发端点、且必须带模型白名单（见 middleware.APIKeyAuth）。
 	Guest bool `json:"guest" gorm:"default:false;index"`
-	// System：内置「系统」Key（迁移 032 自动建，名为「系统」）。只给进程内部的
-	// 渠道测试 / 模型检测走正常 relay 链路用：
-	//   - 外部一律不可用：middleware.ValidateAPIKey 对它恒拒绝（APIKeyAuth 回 403）；
-	//   - 不可删除、不可停用、不可编辑（op 层全拒），也不能经任何 HTTP 接口把普通 Key
-	//     标成系统 Key（op.APIKeyCreate/Update 强制擦掉这个标记）；
-	//   - 内部转发不占任何用户额度（relay 对钉扎请求跳过扣减），但费用照记在转发日志里。
-	System bool `json:"system,omitempty" gorm:"default:false"`
 	// Note：备注（访客 Key 用来写「给谁、干什么」）。
 	Note string `json:"note,omitempty" gorm:"size:512"`
 	// RevokedAt：作废时间（Unix 秒，0 = 没作废）。作废不可撤销：鉴权一律拒绝，也不能再启用；

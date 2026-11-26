@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,12 +15,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/telemetry"
 )
-
-// ErrSystemAPIKeyExternal：外部拿内置「系统」Key（迁移 032 建的那把）调任何
-// 走 APIKeyAuth 的入口。它只给进程内部的渠道测试/模型检测走 relay 链路用
-// （内部调用不经 APIKeyAuth，直接在 gin context 上设身份，见 relay 的
-// MarkInternalPinnedChannel）；对外一律 403，语义是越界而不是未授权。
-var ErrSystemAPIKeyExternal = errors.New("system API key is internal-only and cannot be used by external clients")
 
 func Auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -108,14 +101,6 @@ func APIKeyAuth() gin.HandlerFunc {
 
 		apiKeyObj, owner, err := ValidateAPIKey(c.Request.Context(), apiKey)
 		if err != nil {
-			// 系统 Key 是进程内部转发专用（渠道测试/模型检测），外部拿来调 /v1 及一切
-			// 走 APIKeyAuth 的入口一律 403——它不是一把"被禁用的用户 Key"，是根本不
-			// 属于外部调用面的东西，语义上是越界而不是未授权。
-			if errors.Is(err, ErrSystemAPIKeyExternal) {
-				resp.Error(c, http.StatusForbidden, err.Error())
-				c.Abort()
-				return
-			}
 			resp.Error(c, http.StatusUnauthorized, err.Error())
 			c.Abort()
 			return
@@ -197,11 +182,6 @@ func ValidateAPIKey(ctx context.Context, secret string) (model.APIKey, model.Use
 	key, err := op.APIKeyGetByAPIKey(secret, ctx)
 	if err != nil {
 		return key, owner, fmt.Errorf("%s", resp.ErrUnauthorized)
-	}
-	// 系统 Key 只供进程内部转发（内部调用不走本中间件，见 modeltest 的 relay 发送器），
-	// 外部使用一律拒绝。放在最前：它优先于启用/过期/作废的一切判断，口径不随 Key 的状态变。
-	if key.System {
-		return key, owner, ErrSystemAPIKeyExternal
 	}
 	if !key.Enabled {
 		return key, owner, fmt.Errorf("API key is disabled")

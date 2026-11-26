@@ -105,12 +105,6 @@ func APIKeySetEnabled(id int, enabled bool, actor model.User, ctx context.Contex
 	if enabled && existing.IsRevoked() {
 		return errAPIKeyRevoked
 	}
-	// 系统 Key 停不得（启用态本就是开，enable 是无操作也一并拒，口径最简单）：
-	// 它是进程内部转发专用，停用后渠道测试/模型检测会失去记账身份。
-	// 批量启停逐条委派到这里，所以批量路径在同一处被拦。
-	if existing.System {
-		return errSystemKeyDisable
-	}
 	if err := db.GetDB().WithContext(ctx).Model(&model.APIKey{}).Where("id = ?", id).Update("enabled", enabled).Error; err != nil {
 		return fmt.Errorf("failed to update API key: %w", err)
 	}

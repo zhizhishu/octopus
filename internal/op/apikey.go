@@ -46,9 +46,6 @@ func APIKeyCreate(key *model.APIKey, ctx context.Context) error {
 		return err
 	}
 	key.EndpointFamilies = endpointFamilies
-	// system 标记绝不接受外部输入：系统 Key 只能由迁移 032 在库内直接建，
-	// 任何经 HTTP 请求体带上来的 system=true 都在这里擦掉（与 guest/revoked_at 同一防线）。
-	key.System = false
 	wantEnabled := key.Enabled
 	if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(key).Error; err != nil {
@@ -89,14 +86,7 @@ func APIKeyUpdate(key *model.APIKey, actor model.User, ctx context.Context) erro
 		}
 		return errGuestKeyUseGuestAPI
 	}
-	// 系统 Key 一律拒改：它是进程内部转发专用，名字/备注/有效期/模型白名单任何一项被改，
-	// 内部链路的语义都会变形。只读展示不经过这里，所以无例外放行。
-	if existing.System {
-		return errSystemKeyUpdate
-	}
 	key.Guest = false
-	// system 标记同样绝不接受请求体输入：普通 Key 不能经这里把自己标成系统 Key。
-	key.System = false
 	key.RevokedAt = existing.RevokedAt
 	key.Note = existing.Note
 	if !actor.IsAdmin() {
@@ -125,7 +115,7 @@ func APIKeyUpdate(key *model.APIKey, actor model.User, ctx context.Context) erro
 		key.EndpointFamilies = endpointFamilies
 	}
 	// last_used_* 是转发路径写的审计字段，请求体里没有（或是旧值），保存时不覆盖。
-	if err := db.GetDB().WithContext(ctx).Omit("api_key", "last_used_at", "last_used_ip", "guest", "revoked_at", "note", "system").Save(key).Error; err != nil {
+	if err := db.GetDB().WithContext(ctx).Omit("api_key", "last_used_at", "last_used_ip", "guest", "revoked_at", "note").Save(key).Error; err != nil {
 		return fmt.Errorf("failed to update API key: %w", err)
 	}
 	key.APIKey = existing.APIKey
@@ -153,7 +143,6 @@ func APIKeyList(ctx context.Context, actor model.User) ([]model.APIKey, error) {
 		}
 		attachAPIKeyUserName(&apiKey)
 		attachAPIKeyAccessPlans(&apiKey)
-		redactSystemKeySecret(&apiKey)
 		keys = append(keys, apiKey)
 	}
 	return keys, nil
@@ -164,7 +153,6 @@ func APIKeyListAll(ctx context.Context) ([]model.APIKey, error) {
 	for _, apiKey := range apiKeyCache.GetAll() {
 		attachAPIKeyUserName(&apiKey)
 		attachAPIKeyAccessPlans(&apiKey)
-		redactSystemKeySecret(&apiKey)
 		keys = append(keys, apiKey)
 	}
 	return keys, nil
@@ -188,7 +176,6 @@ func APIKeyGetScoped(id int, actor model.User, ctx context.Context) (model.APIKe
 	if !actor.IsAdmin() && apiKey.UserID != actor.ID {
 		return model.APIKey{}, fmt.Errorf("API key not found")
 	}
-	redactSystemKeySecret(&apiKey)
 	return apiKey, nil
 }
 
@@ -207,11 +194,6 @@ func APIKeyDelete(id int, actor model.User, ctx context.Context) error {
 	}
 	if !actor.IsAdmin() && existing.UserID != actor.ID {
 		return fmt.Errorf("API key not found")
-	}
-	// 系统 Key 删不得：它是进程内部转发专用，删除后渠道测试/模型检测会失去记账身份。
-	// 批量删除逐条委派到这里，所以批量路径在同一处被拦。
-	if existing.System {
-		return errSystemKeyDelete
 	}
 	k := model.APIKey{
 		ID: id,
