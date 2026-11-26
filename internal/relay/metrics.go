@@ -28,11 +28,11 @@ const metricsPersistTimeout = 30 * time.Second
 // RelayMetrics 负责最终的日志收集与持久化
 type RelayMetrics struct {
 	quota *relayUserQuota
-	// internalPin：本请求是「内部钉扎转发」（渠道测试/模型检测经系统 Key 走
-	// relay 链路，见 internal_pin.go）。为 true 时计费闸门整段跳过——不扣任何
-	// 用户余额/额度（系统 Key 不占额度），费用仍随转发日志照记；UserRecordRelayIP
+	// internalTest：本请求是「渠道测试/模型检测」的内部转发（HandlerForChannelTest
+	// 进程内入口，见 channel_test_entry.go）。为 true 时计费闸门整段跳过——不扣任何
+	// 用户余额/额度（检测没有任何用户资产），费用仍随转发日志照记；UserRecordRelayIP
 	// 也不写（127.0.0.1 的内部来源不该污染用户客户端指纹记录）。
-	internalPin      bool
+	internalTest      bool
 	APIKeyID         int
 	UserID           int
 	RequestIP        string
@@ -838,10 +838,8 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 	// 落库分工: UserRecordRelayIP 是纯审计字段, 只写内存 + 周期任务批量补 DB;
 	// UserRecordUsage 是计费(月卡/余额), 必须留在同步路径上扣减——额度判断零滞后,
 	// 不能等批刷(用户定)。saveLog 里的中继日志同样已改成后台批量落库。
-	if !m.internalPin {
-		// 内部钉扎请求的来源 IP 是进程内回环，写进用户的客户端记录只会制造
-		// 噪音；系统 Key 的 last_used 照记（APIKeyRecordUse），让日志侧能确认
-		// 「这轮检测是系统 Key 发的」。
+	if !m.internalTest {
+		// 内部测试请求的来源 IP 是进程内回环，写进用户的客户端记录只会制造噪音。
 		if err := op.UserRecordRelayIP(m.UserID, m.RequestIP, m.StartTime.Unix(), persistCtx); err != nil {
 			log.Warnf("failed to record user relay ip: %v", err)
 		}
@@ -866,7 +864,7 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 	if billUser {
 		quotaCost = totalCost
 	}
-	if !m.quota.finish(persistCtx, quotaCost, success) && billUser && !m.internalPin {
+	if !m.quota.finish(persistCtx, quotaCost, success) && billUser && !m.internalTest {
 		if err := op.UserRecordUsage(m.UserID, totalCost, persistCtx); err != nil {
 			log.Warnf("failed to record user usage: %v", err)
 		}
@@ -1096,6 +1094,12 @@ func (m *RelayMetrics) buildRelayLog(ctx context.Context, err error, duration ti
 		IsStream:              m.InternalRequest != nil && m.InternalRequest.Stream != nil && *m.InternalRequest.Stream,
 		PromptOverrideMode:    string(m.PromptSnapshot.Mode),
 		PromptOverrideSources: append([]string(nil), m.PromptSnapshot.Sources...),
+	}
+	if m.internalTest {
+		// 渠道测试/模型检测的转发日志标记为 model_test（对齐 new-api 的 TokenName
+		// "Model test"）：日志页按 request_source 一眼分辨检测流量与真实流量。
+		src := "model_test"
+		relayLog.RequestSource = &src
 	}
 	applyBillingSnapshotToRelayLog(&relayLog, billingSnapshot)
 

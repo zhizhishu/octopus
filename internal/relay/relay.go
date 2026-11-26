@@ -46,6 +46,28 @@ const maxRelayInterventionRounds = 0 // 0 = unlimited; machine rescue never exha
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
+	handlerImpl(inboundType, c, nil)
+}
+
+// HandlerForChannelTest 是渠道测试/模型检测的**进程内**入口（用户 2026-11-26 拍板，
+// 学 new-api controller/channel-test.go 的 testChannel）：内部构造请求上下文、直接
+// 指定被测渠道，走与正常转发同一套适配器/转换/发送代码。与 HTTP 入口的差异全部
+// 是「不碰用户侧」：
+//   - 不经过 API Key 鉴权（合成上下文根本没有 key，身份全零值）；
+//   - 不走路由选渠道：候选只有 testChannel 这一个（完整 Channel 值，保住「测试接口」
+//     派生副本），不跳渠道、无兜底分组、无救援回合；
+//   - 不占用户额度、不受用户/分组限额（计费闸门整段跳过，费用仍照记进转发日志）；
+//   - 不注入提示词规则（检测题目必须原样到达上游）；
+//   - 不计渠道 RPM（测试不是真实流量，见 balancer/channel_gate.go 口径）；
+//   - 渠道停用不拦（测一条停用渠道是合法操作）；
+//   - 转发日志标记 request_source=model_test。
+//
+// 它不出现在任何 HTTP 路径上，只有进程内 Go 代码（modeltest）能调。
+func HandlerForChannelTest(inboundType inbound.InboundType, c *gin.Context, testChannel dbmodel.Channel) {
+	handlerImpl(inboundType, c, &testChannel)
+}
+
+func handlerImpl(inboundType inbound.InboundType, c *gin.Context, testChannel *dbmodel.Channel) {
 	// 解析请求。解析失败的审计在 parseRequest 内部的两个静默点补（读体失败/入站转换
 	// 失败）；Validate/空请求那类错误 parseRequest 自己已落行，这里不再补，避免双写。
 	internalRequest, inAdapter, err := parseRequest(inboundType, c)
@@ -68,25 +90,24 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	clientSession := deriveManagedClientSessionInfo(c.Request.Header, internalRequest)
 	clientSessionKey := clientSession.Key
 
-	// 内部钉扎转发（渠道测试/模型检测拿系统 Key 走本链路）：候选只有钉扎的那
-	// 一个渠道，不走常规选路、无兜底。钉扎值是完整 Channel（含「测试接口」下拉
-	// 派生出的 Type 副本与草稿渠道），不能按 ID 回缓存查。标记只能由进程内代码
-	// 设置（见 internal_pin.go），外部请求无法伪造。
-	pinnedChannel := internalPinnedChannel(c)
+	// 渠道测试/模型检测（HandlerForChannelTest 进程内入口）：候选只有被测的那
+	// 一个渠道，不走常规选路、无兜底。值是完整 Channel（含「测试接口」下拉派生
+	// 出的 Type 副本），不能按 ID 回缓存查；HTTP 入口永远拿不到它（参数为 nil）。
+	internalTestChannel := testChannel
 
-	// 获取通道分组（status/message 只在非钉扎分支里有意义，err 是 parseRequest
+	// 获取通道分组（status/message 只在非测试分支里有意义，err 是 parseRequest
 	// 传下来的错误变量，这里沿用不再重新声明）
 	var routeResult routeGroupResult
 	var status int
 	var message string
-	if pinnedChannel != nil {
+	if internalTestChannel != nil {
 		routeResult = routeGroupResult{
 			Group: dbmodel.Group{
 				Name: requestModel,
 				Items: []dbmodel.GroupItem{{
-					ChannelID:     pinnedChannel.ID,
+					ChannelID:     internalTestChannel.ID,
 					ModelName:     requestModel,
-					Priority:      pinnedChannel.Priority,
+					Priority:      internalTestChannel.Priority,
 					Weight:        1,
 					RoutingWeight: 1,
 				}},
@@ -121,17 +142,17 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 初始化 Metrics
 	metrics := NewRelayMetrics(apiKeyID, userID, c.GetString("request_ip"), requestModel, internalRequest)
-	if pinnedChannel == nil {
+	if internalTestChannel == nil {
 		metrics.quota, err = admitRelayUserQuota(c, requestModel)
 		if err != nil {
 			writeRelayErrorPreStream(c, inboundType, relayUserQuotaErrorStatus(err), "api_error", "user_quota", err.Error())
 			return
 		}
 	} else {
-		// 内部钉扎请求不占用户额度、不受用户/分组限额：系统 Key 不是任何用户的
-		// 资产，计费闸门（quota admission + 落账扣减）整段跳过；费用照记在转发
+		// 内部测试请求不占用户额度、不受用户/分组限额：检测没有任何用户资产，
+		// 计费闸门（quota admission + 落账扣减）整段跳过；费用照记在转发
 		// 日志里（metrics.saveLog 不受影响）。metrics.quota 保持 nil，close() 为空操作。
-		metrics.internalPin = true
+		metrics.internalTest = true
 		defer stashInternalResponse(c, metrics)
 	}
 	defer metrics.quota.close()
@@ -145,8 +166,8 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// 回落旧四层字段（与旧 globalPromptOverride 读不到设置 = 什么都不加同语义；旧算法
 	// 只活在 prompt_override_test.go 的 oracle 里）。
 	var promptRules []dbmodel.PromptRule
-	if internalRequest.IsChatRequest() && pinnedChannel == nil {
-		// 内部钉扎请求不注入提示词规则：渠道检测的题目必须原样到达上游
+	if internalRequest.IsChatRequest() && internalTestChannel == nil {
+		// 内部测试请求不注入提示词规则：渠道检测的题目必须原样到达上游
 		// （旧行为：modeltest 探针从不过 prompt.Apply；行为探针还专门要扣除
 		// 注入文字才能评分，见 ProbeSender.InjectedFamilies 的注释）。
 		promptRules = loadPromptRulesOrNone(c.Request.Context(), "handler")
@@ -179,8 +200,8 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	// 且尚未恢复)或已有并发同名轮次时 Allowed=false——该请求仍会照常转发每一个正常候选，只是
 	// 不再自动救援/自动停机；只有它自己完整成功才会在下面 defer 里解除压制。
 	var rescueLease *rescueEpisodeLease
-	if pinnedChannel == nil {
-		// 内部钉扎请求不参与救援回合：episode 允许/压制状态对一次「钉死渠道」
+	if internalTestChannel == nil {
+		// 内部测试请求不参与救援回合：episode 允许/压制状态对一次「钉死渠道」
 		// 的检测没有意义，也不能让它触发任何换家重发。
 		rescueLease = acquireRescueEpisode(apiKeyID, userID, requestEndpoint, requestModel, c.Request.Header, internalRequest)
 	}
@@ -403,12 +424,12 @@ attemptChannels:
 
 		item := iter.Item()
 
-		// 获取通道。内部钉扎请求直接用钉扎的渠道值——「测试接口」下拉会派生出
+		// 获取通道。内部测试请求直接用被测渠道值——「测试接口」下拉会派生出
 		// 改了 Type 的副本、前端也可能提交未保存的草稿渠道，按 ID 回缓存会把
 		// 它们换成库里那份，测的就不是操作者选的东西了。
 		var channel *dbmodel.Channel
-		if pinnedChannel != nil {
-			channel = pinnedChannel
+		if internalTestChannel != nil {
+			channel = internalTestChannel
 		} else {
 			var getErr error
 			channel, getErr = op.ChannelGet(item.ChannelID, c.Request.Context())
@@ -1250,7 +1271,10 @@ func (ra *relayAttempt) attempt() attemptResult {
 		// 失败/取消/被跳过的尝试不走这条分支，所以不计入 RPM。无论渠道有没有配
 		// RPMLimit 都记：渠道页要显示「本分钟 N」实时值，口径与 sub2api 的
 		// current_rpm 一致（那边也是所有转发成功都计数）；限流判定只在配了上限时读它。
-		balancer.RecordChannelRPMSuccess(ra.channel.ID)
+		// 渠道测试/模型检测不计：测试不是真实流量（照 new-api，用户 2026-11-26 拍板）。
+		if !ra.metrics.internalTest {
+			balancer.RecordChannelRPMSuccess(ra.channel.ID)
+		}
 		costDelta := ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
 		op.ChannelKeyRecordUse(ra.usedKey, statusCode, usedAt, costDelta)
 
