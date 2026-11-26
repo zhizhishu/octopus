@@ -101,6 +101,10 @@ export type Channel = {
     // 主动探测（P3）：这个渠道要不要被探测。全局总开关关着时任何渠道都不探。
     // 后端可能不给这个字段（旧响应）→ 按 false 显示；保存时显式 false 也要发出去。
     probe_enabled?: boolean;
+    // 渠道级探测覆写（0 = 沿用全局；探测用的模型空 = 跟熔断的那个模型一样）。
+    probe_daily_cap?: number;
+    probe_max_failures?: number;
+    probe_model?: string;
     proxy: boolean;
     auto_sync: boolean;
     custom_header: CustomHeader[];
@@ -162,6 +166,9 @@ export type CreateChannelRequest = {
     thinking_to_content?: boolean;
     capabilities?: string[];
     probe_enabled?: boolean;
+    probe_daily_cap?: number;
+    probe_max_failures?: number;
+    probe_model?: string;
     proxy?: boolean;
     auto_sync?: boolean;
     custom_header?: CustomHeader[];
@@ -227,6 +234,9 @@ export type UpdateChannelRequest = {
     model_mapping?: Record<string, string>;
     // 主动探测开关：显式 false 是有意义的（关掉探测），所以不能靠「缺省跳过」表达。
     probe_enabled?: boolean;
+    probe_daily_cap?: number;
+    probe_max_failures?: number;
+    probe_model?: string;
     // keys diff
     keys_to_add?: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;
     keys_to_update?: Array<{ id: number; enabled?: boolean; channel_key?: string; remark?: string }>;
@@ -355,6 +365,9 @@ export function useChannelList(options?: { enabled?: boolean }) {
                 circuit_remaining_seconds: item.circuit_remaining_seconds ?? 0,
                 circuit_open_keys: item.circuit_open_keys ?? 0,
                 probe_enabled: item.probe_enabled ?? false,
+                probe_daily_cap: item.probe_daily_cap ?? 0,
+                probe_max_failures: item.probe_max_failures ?? 0,
+                probe_model: item.probe_model ?? '',
             }) satisfies Channel,
             formatted: {
                 input_token: formatCount(item.stats.input_token),
@@ -459,6 +472,10 @@ export function useCopyChannel() {
                 disable_circuit_breaker: source.disable_circuit_breaker,
                 // 主动探测是渠道自身的开关，复制时一并带上；漏了会把“会被探测”的渠道复制成“永不探测”。
                 probe_enabled: source.probe_enabled ?? false,
+                // 渠道级探测覆写同样要跟着复制：漏了会把“被限流探测”的渠道复制成“沿用全局”。
+                probe_daily_cap: source.probe_daily_cap ?? 0,
+                probe_max_failures: source.probe_max_failures ?? 0,
+                probe_model: source.probe_model ?? '',
                 race_mode: source.race_mode,
                 race_key_concurrency: source.race_key_concurrency,
                 race_delay_ms: source.race_delay_ms,

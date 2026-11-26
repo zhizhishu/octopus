@@ -57,6 +57,11 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         race_delay_ms: channel.race_delay_ms ?? 0,
         key_select_strategy: channel.key_select_strategy ?? 0,
         disable_circuit_breaker: channel.disable_circuit_breaker ?? false,
+        // 探测四件套从 channel 快照读；进编辑前「编辑」按钮里还会再同步一次。
+        probe_enabled: channel.probe_enabled ?? false,
+        probe_daily_cap: channel.probe_daily_cap ?? 0,
+        probe_max_failures: channel.probe_max_failures ?? 0,
+        probe_model: channel.probe_model ?? '',
         enabled: channel.enabled,
         base_urls: channel.base_urls?.length ? channel.base_urls : [{ url: '', delay: 0 }],
         custom_header: channel.custom_header ?? [],
@@ -131,6 +136,12 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if ((formData.race_delay_ms ?? 0) !== (channel.race_delay_ms ?? 0)) req.race_delay_ms = formData.race_delay_ms ?? 0;
         if ((formData.key_select_strategy ?? 0) !== (channel.key_select_strategy ?? 0)) req.key_select_strategy = formData.key_select_strategy ?? 0;
         if ((formData.disable_circuit_breaker ?? false) !== (channel.disable_circuit_breaker ?? false)) req.disable_circuit_breaker = formData.disable_circuit_breaker ?? false;
+        // 探测四件套照 disable_circuit_breaker 的 diff 模式：改了才发（显式 false 也要发出去）。
+        if ((formData.probe_enabled ?? false) !== (channel.probe_enabled ?? false)) req.probe_enabled = formData.probe_enabled ?? false;
+        if ((formData.probe_daily_cap ?? 0) !== (channel.probe_daily_cap ?? 0)) req.probe_daily_cap = formData.probe_daily_cap ?? 0;
+        if ((formData.probe_max_failures ?? 0) !== (channel.probe_max_failures ?? 0)) req.probe_max_failures = formData.probe_max_failures ?? 0;
+        const nextProbeModel = formData.probe_model.trim();
+        if (nextProbeModel !== (channel.probe_model ?? '')) req.probe_model = nextProbeModel;
         if (formData.enabled !== channel.enabled) req.enabled = formData.enabled;
         const normalizedBaseUrls = (formData.base_urls ?? []).filter((u) => u.url.trim()).map((u) => ({
             url: normalizeBaseUrlForChannelType(formData.type, u.url),
@@ -561,6 +572,15 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
                                             setIsConfirmingDelete(false);
                                             return;
                                         }
+                                        // 视图页的 ChannelProbeToggle 会改 channel.probe_enabled，但 formData 是弹窗打开时的快照；
+                                        // 不同步的话，编辑页保存时会把视图页刚切的探测开关/覆写悄悄覆盖回快照值。
+                                        setFormData((prev) => ({
+                                            ...prev,
+                                            probe_enabled: channel.probe_enabled ?? false,
+                                            probe_daily_cap: channel.probe_daily_cap ?? 0,
+                                            probe_max_failures: channel.probe_max_failures ?? 0,
+                                            probe_model: channel.probe_model ?? '',
+                                        }));
                                         setAdvancedOpen(false);
                                         setIsEditing(true);
                                     }}

@@ -74,6 +74,21 @@ type Channel struct {
 	// 单独一行、不带对齐缩进：它是相邻两组之间的一个新组，往上面那组里插一行会让
 	// gofmt 重排十几行空白，把一次两行的改动变成一大片纯空白 diff。
 	ProbeEnabled bool `json:"probe_enabled" gorm:"not null;default:false"`
+
+	// ProbeDailyCap 是这个渠道每天最多自动+手动探测几次的上限，0 = 沿用全局 circuit_probe_channel_daily_cap。
+	//
+	// 与全局口径不同（全局 <=0 视为"不限"），渠道级的 0 表达的是「沿用全局」，不是「不限」：
+	// 不想受限的运维会直接用全局开关/额度表达，渠道级覆写只服务"要单渠道更紧"的场景。
+	ProbeDailyCap int `json:"probe_daily_cap" gorm:"default:0"`
+	// ProbeMaxFailures 是这个渠道「连续多少次探测未恢复就不再自动探」的上限，0 = 沿用全局
+	// circuit_probe_max_consecutive_failures。全局一次都没探不算失败停（那是"没探"），这里的同全局语义。
+	ProbeMaxFailures int `json:"probe_max_failures" gorm:"default:0"`
+	// ProbeModel 是探测实际打上游的模型名，空 = 跟熔断条目里的模型一样。
+	//
+	// 换便宜模型只能证明 Key 通，不代表坏的模型好了——探测成功仍按既有语义对确切条目做
+	// ResetScoped。存的是上游模型名（不许重映射），探测时原样使用。
+	ProbeModel string `json:"probe_model" gorm:"default:''"`
+
 	// RedactEnabled (opt-in, default false) enables credential redaction for this
 	// channel: outbound request bodies are scanned and secrets are replaced with
 	// reversible {{Redact:...}} placeholders BEFORE octopus sends the request with
@@ -302,6 +317,10 @@ type ChannelUpdateRequest struct {
 	// ProbeEnabled 用指针：显式 false 必须能真的把开关关掉，而整体省略（nil）表示
 	// 本次没提这个字段，库里的值不动。
 	ProbeEnabled *bool `json:"probe_enabled,omitempty"`
+	// 探测口径的渠道级覆写：0 = 沿用全局（见 Channel 上同名字段）；指针省略 = 本次不改。
+	ProbeDailyCap    *int    `json:"probe_daily_cap,omitempty"`
+	ProbeMaxFailures *int    `json:"probe_max_failures,omitempty"`
+	ProbeModel       *string `json:"probe_model,omitempty"`
 	// BatchImage 部分更新批处理接入参数。nil = 不动这一列（与其余指针字段同语义）。
 	// 传一个空对象 `{}` 则是**清空**（= 这个渠道不再承接批处理流量）。
 	BatchImage *ChannelBatchImage `json:"batch_image,omitempty"`
@@ -412,6 +431,15 @@ func (c *Channel) Validate() error {
 	if err := ValidateChannelQueueSettings(c.MaxConcurrent, c.QueueSize, c.QueueTimeoutMs); err != nil {
 		return err
 	}
+	// Probe overrides: 0 = follow global, so only negative values / absurd upper
+	// bounds are rejected here; the effective cap itself is resolved at scheduling
+	// time (channelDailyCapFor) and validated again upstream of the relay.
+	if c.ProbeDailyCap < 0 || c.ProbeDailyCap > 100000 {
+		return fmt.Errorf("probe_daily_cap must be an integer between 0 and 100000 (0 = follow global), got %d", c.ProbeDailyCap)
+	}
+	if c.ProbeMaxFailures < 0 || c.ProbeMaxFailures > 100 {
+		return fmt.Errorf("probe_max_failures must be an integer between 0 and 100 (0 = follow global), got %d", c.ProbeMaxFailures)
+	}
 	return nil
 }
 
@@ -446,6 +474,17 @@ func (req *ChannelUpdateRequest) Validate() error {
 		if req.RaceDelayMs != nil && (*req.RaceDelayMs < 0 || *req.RaceDelayMs > 5000) {
 			return fmt.Errorf("race_delay_ms must be between 0 and 5000 (got %d)", *req.RaceDelayMs)
 		}
+	}
+	// Probe override bounds mirror the scheduling semantics: 0 = follow global, and
+	// only what the caller actually sent is validated (same reasoning as RedactFlags
+	// above) — a PATCH that omits the field must not be rejected on the stored value's
+	// behalf. ProbeModel carries no numeric bound; the empty string keeps the breaker
+	// entry's own model.
+	if req.ProbeDailyCap != nil && (*req.ProbeDailyCap < 0 || *req.ProbeDailyCap > 100000) {
+		return fmt.Errorf("probe_daily_cap must be an integer between 0 and 100000 (0 = follow global), got %d", *req.ProbeDailyCap)
+	}
+	if req.ProbeMaxFailures != nil && (*req.ProbeMaxFailures < 0 || *req.ProbeMaxFailures > 100) {
+		return fmt.Errorf("probe_max_failures must be an integer between 0 and 100 (0 = follow global), got %d", *req.ProbeMaxFailures)
 	}
 	return nil
 }

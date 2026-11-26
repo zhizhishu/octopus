@@ -175,11 +175,13 @@ func (s *circuitProbeScheduler) countLocked(channelID int, apply func(*CircuitPr
 }
 
 // cappedLocked 判断当日额度是否已经用尽（全局与渠道两道都算，手动探测也不豁免）。
-func (s *circuitProbeScheduler) cappedLocked(cfg CircuitProbeConfig, channelID int) bool {
+// 渠道级覆写 DailyCap>0 时用覆写值，否则沿用全局 ChannelDailyCap。
+func (s *circuitProbeScheduler) cappedLocked(cfg CircuitProbeConfig, overrides CircuitProbeChannelOverrides, channelID int) bool {
 	if cfg.GlobalDailyCap > 0 && s.global.Used >= cfg.GlobalDailyCap {
 		return true
 	}
-	if cfg.ChannelDailyCap > 0 && s.channelTotals[channelID].Used >= cfg.ChannelDailyCap {
+	channelCap := cfg.channelDailyCapFor(overrides)
+	if channelCap > 0 && s.channelTotals[channelID].Used >= channelCap {
 		return true
 	}
 	return false

@@ -47,6 +47,8 @@ type probeResolved struct {
 	route          CircuitProbeRoute
 	routeOK        bool
 	channelEnabled bool
+	// channel 是这个渠道生效的探测口径覆写（零值 = 无覆写，沿用全局）。
+	channel CircuitProbeChannelOverrides
 }
 
 // probeDecision 是一次求值结论（纯计算，不改状态）。
@@ -236,6 +238,10 @@ func liveProbeTarget(now time.Time, target CircuitProbeTarget) (probeLive, bool)
 func resolveProbeCandidates(cfg CircuitProbeConfig, cb CircuitProbeCallbacks, candidates []probeCandidate) []probeResolved {
 	resolved := make([]probeResolved, len(candidates))
 	for i, candidate := range candidates {
+		// 渠道级覆写在任何 continue 之前就解析好：决策/准入两侧都要拿到。
+		if cb.ChannelProbeOverrides != nil {
+			resolved[i].channel = cb.ChannelProbeOverrides(candidate.target.ChannelID)
+		}
 		kind := classifyProbeScope(candidate.target.Endpoint, candidate.target.Capability)
 		resolved[i].kind = kind
 		resolved[i].channelEnabled = true
@@ -294,7 +300,7 @@ func (s *circuitProbeScheduler) decideLocked(now time.Time, cfg CircuitProbeConf
 		// 这一段冷却已经领过（结论可能不改变冷却段，例如调用方取消）：不再重领。
 		return probeDecision{state: CircuitProbeStateStopped}
 	}
-	if streak := probeStreakValue(candidate.target.tupleKey()); streak > 0 && streak >= cfg.maxStreak() {
+	if streak := probeStreakValue(candidate.target.tupleKey()); streak > 0 && streak >= cfg.maxStreakFor(resolved.channel) {
 		return probeDecision{state: CircuitProbeStateStopped, skipReason: probeSkipStreak}
 	}
 	if wait, ok := s.waitLocked(now, candidate.target.ChannelID, candidate.target.KeyID, candidate.target.Model); ok {
@@ -303,7 +309,7 @@ func (s *circuitProbeScheduler) decideLocked(now time.Time, cfg CircuitProbeConf
 	if at, ok := probeRealTrafficAt(candidate.target.tupleKey()); ok && at.Add(probeTrafficSkipWindow).After(now) {
 		return probeDecision{state: CircuitProbeStateSkippedTraffic, skipReason: probeSkipTraffic}
 	}
-	if s.cappedLocked(cfg, candidate.target.ChannelID) {
+	if s.cappedLocked(cfg, resolved.channel, candidate.target.ChannelID) {
 		return probeDecision{state: CircuitProbeStateDisabled, skipReason: probeSkipCapped}
 	}
 
@@ -464,6 +470,11 @@ func (s *circuitProbeScheduler) admit(now time.Time, cfg CircuitProbeConfig, cb 
 		return reject(CircuitProbeStateDisabled, 0)
 	}
 
+	var overrides CircuitProbeChannelOverrides
+	if cb.ChannelProbeOverrides != nil {
+		overrides = cb.ChannelProbeOverrides(target.ChannelID)
+	}
+
 	if !manual {
 		if !cfg.Enabled {
 			return reject(CircuitProbeStateDisabled, 0)
@@ -471,7 +482,7 @@ func (s *circuitProbeScheduler) admit(now time.Time, cfg CircuitProbeConfig, cb 
 		if cb.ChannelEnabled != nil && !cb.ChannelEnabled(target.ChannelID) {
 			return reject(CircuitProbeStateDisabled, 0)
 		}
-		if streak := probeStreakValue(target.tupleKey()); streak > 0 && streak >= cfg.maxStreak() {
+		if streak := probeStreakValue(target.tupleKey()); streak > 0 && streak >= cfg.maxStreakFor(overrides) {
 			return reject(CircuitProbeStateStopped, 0)
 		}
 		if at, ok := probeRealTrafficAt(target.tupleKey()); ok && at.Add(probeTrafficSkipWindow).After(now) {
@@ -489,7 +500,7 @@ func (s *circuitProbeScheduler) admit(now time.Time, cfg CircuitProbeConfig, cb 
 	if wait, ok := s.waitLocked(now, target.ChannelID, target.KeyID, target.Model); ok {
 		return reject(CircuitProbeStateWaitUpstream, wait.until.Sub(now))
 	}
-	if s.cappedLocked(cfg, target.ChannelID) {
+	if s.cappedLocked(cfg, overrides, target.ChannelID) {
 		return reject(CircuitProbeStateDisabled, 0)
 	}
 	if !manual {
@@ -605,7 +616,7 @@ func (s *circuitProbeScheduler) complete(claim CircuitProbeClaim, report Circuit
 		s.mu.Unlock()
 		return
 	}
-	cfg := s.cfg
+	cfg, cb := s.cfg, s.cb
 	s.mu.Unlock()
 	defer s.releaseRun(claim)
 
@@ -643,7 +654,11 @@ func (s *circuitProbeScheduler) complete(claim CircuitProbeClaim, report Circuit
 		}
 		log.Infof("circuit probe failed [%s] channel=%d key=%d model=%s trip=%d cooldown=%v",
 			target.key(), target.ChannelID, target.KeyID, target.Model, tripCount, cooldown)
-		if streak := incProbeStreak(tuple); streak >= cfg.maxStreak() {
+		channelOverrides := CircuitProbeChannelOverrides{}
+		if cb.ChannelProbeOverrides != nil {
+			channelOverrides = cb.ChannelProbeOverrides(target.ChannelID)
+		}
+		if streak := incProbeStreak(tuple); streak >= cfg.maxStreakFor(channelOverrides) {
 			log.Warnf("circuit probe stopped for %s: %d consecutive probes without recovery", tuple, streak)
 		}
 		s.countOutcome(now, target.ChannelID, func(totals *CircuitProbeTotals) { totals.Failed++ })

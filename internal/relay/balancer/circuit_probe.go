@@ -34,6 +34,8 @@ import (
 //     那一条、结算时还没变过"的 OPEN/hold 条目生效；成功只走确切的
 //     ResetScoped(channel, key, model)。真实流量的 RecordFailureWithStatusScoped 与
 //     IsTrippedScoped（Open→HalfOpen 到期判定）一个字都没改，也不被本包影响。
+//   - 渠道级覆写（每日上限/连续失败上限）非 0 时按渠道生效，0=沿用全局；全站每日上限
+//     与嵌入开关仍是全局。
 
 const (
 	// probeJitterMin/probeJitterMax 是冷却尾段的**提前量**窗口。剩余冷却 <=probeJitterMax 时，
@@ -157,6 +159,29 @@ func (c CircuitProbeConfig) maxStreak() int {
 	return DefaultCircuitProbeMaxStreak
 }
 
+// CircuitProbeChannelOverrides 是一个渠道对全局探测口径的覆写（接线层从渠道字段读来）。
+// <=0 都表达「沿用全局」——渠道级没有"不限"，0 是沿用，负值（正常不该出现）也按沿处理。
+type CircuitProbeChannelOverrides struct {
+	DailyCap  int
+	MaxStreak int
+}
+
+// maxStreakFor 返回这个渠道生效的连续未恢复上限；渠道覆写 <=0 时沿用全局口径。
+func (c CircuitProbeConfig) maxStreakFor(o CircuitProbeChannelOverrides) int {
+	if o.MaxStreak > 0 {
+		return o.MaxStreak
+	}
+	return c.maxStreak()
+}
+
+// channelDailyCapFor 返回这个渠道生效的每日上限；渠道覆写 <=0 时沿用全局 ChannelDailyCap。
+func (c CircuitProbeConfig) channelDailyCapFor(o CircuitProbeChannelOverrides) int {
+	if o.DailyCap > 0 {
+		return o.DailyCap
+	}
+	return c.ChannelDailyCap
+}
+
 // CircuitProbeCallbacks 是接线层注入的查询/执行口。
 type CircuitProbeCallbacks struct {
 	// ResolveTarget 回答"确切这一个目标（渠道+密钥+模型+熔断作用域）现在还在不在、
@@ -178,6 +203,9 @@ type CircuitProbeCallbacks struct {
 	Now func() time.Time
 	// Jitter 挑选冷却尾段的抖动，nil 表示默认实现（真随机）。
 	Jitter func(remaining time.Duration) (time.Duration, bool)
+	// ChannelProbeOverrides 回答"这个渠道有没有渠道级探测口径覆写"。nil = 所有渠道都
+	// 没有覆写（存量对接方零改动）。接线层保证实现快速返回（它会在决策/准入里按渠道调用）。
+	ChannelProbeOverrides func(channelID int) CircuitProbeChannelOverrides
 }
 
 // CircuitProbeClaim 是一次已经准入、可以开跑的探测。ID 用于 Complete 对账。

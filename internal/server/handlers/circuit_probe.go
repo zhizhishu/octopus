@@ -178,14 +178,15 @@ func circuitProbeConfig() balancer.CircuitProbeConfig {
 
 func circuitProbeCallbacks() balancer.CircuitProbeCallbacks {
 	return balancer.CircuitProbeCallbacks{
-		ResolveTarget:  resolveCircuitProbeTarget,
-		ChannelEnabled: circuitProbeChannelEnabled,
-		AuditPending:   circuitProbeAuditPending,
-		RunProbe:       runCircuitProbeProbe,
+		ResolveTarget:         resolveCircuitProbeTarget,
+		ChannelEnabled:        circuitProbeChannelEnabled,
+		ChannelProbeOverrides: circuitProbeChannelProbeOverrides,
+		AuditPending:          circuitProbeAuditPending,
+		RunProbe:              runCircuitProbeProbe,
 	}
 }
 
-// circuitProbeChannelEnabled 回答"这个渠道的**自动**探测开关开着没有"。渠道不存在按关。
+// circuitProbeChannelEnabled 回答"这个渠道的**自动**探测开关开着没有"。渠道不存在/读失败按关。
 func circuitProbeChannelEnabled(channelID int) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), circuitProbeLookupBudget)
 	defer cancel()
@@ -194,6 +195,61 @@ func circuitProbeChannelEnabled(channelID int) bool {
 		return false
 	}
 	return channel.ProbeEnabled
+}
+
+// circuitProbeChannelProbeOverrides 读一个渠道的探测覆写。渠道不存在/读失败 = 没有覆写；
+// 负值（正常不该出现）按"沿用全局"返回 0。
+func circuitProbeChannelProbeOverrides(channelID int) balancer.CircuitProbeChannelOverrides {
+	ctx, cancel := context.WithTimeout(context.Background(), circuitProbeLookupBudget)
+	defer cancel()
+	channel, err := op.ChannelGet(channelID, ctx)
+	if err != nil || channel == nil {
+		return balancer.CircuitProbeChannelOverrides{}
+	}
+	overrides := balancer.CircuitProbeChannelOverrides{
+		DailyCap:  channel.ProbeDailyCap,
+		MaxStreak: channel.ProbeMaxFailures,
+	}
+	return overrides
+}
+
+// circuitProbeChannelDailyCap 返回这个渠道**生效**的每日上限（渠道覆写>0 时用它，否则 globalCap）。
+// 渠道不存在/读失败按 globalCap。getChannelProbe / getChannelProbeStats 回显 cap 用它，
+// 让页面显示的"每天最多"和调度实际生效的上限是同一个数。
+func circuitProbeChannelDailyCap(channelID int, globalCap int) int {
+	if channelID <= 0 {
+		return globalCap
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), circuitProbeLookupBudget)
+	defer cancel()
+	channel, err := op.ChannelGet(channelID, ctx)
+	if err != nil || channel == nil {
+		return globalCap
+	}
+	if channel.ProbeDailyCap > 0 {
+		return channel.ProbeDailyCap
+	}
+	return globalCap
+}
+
+// circuitProbeChannelDailyCaps 一次建表：channelID -> 这个渠道生效的每日上限。
+// 只把覆写>0 的渠道写进表（其余条目本来就该落到全局口径）；渠道列表读失败时
+// 返回空表（调用方逐行退回全局 cap），不把一次读失败放大成 500 或全零。
+func circuitProbeChannelDailyCaps(globalCap int) map[int]int {
+	caps := map[int]int{}
+	ctx, cancel := context.WithTimeout(context.Background(), circuitProbeLookupBudget)
+	defer cancel()
+	channels, err := op.ChannelList(ctx)
+	if err != nil {
+		log.Warnf("circuit probe: read channel probe caps: %v", err)
+		return caps
+	}
+	for _, channel := range channels {
+		if channel.ProbeDailyCap > 0 {
+			caps[channel.ID] = channel.ProbeDailyCap
+		}
+	}
+	return caps
 }
 
 // circuitProbeAuditPending 回答"审计那边是不是有到点该跑的活"。
@@ -232,11 +288,17 @@ func runCircuitProbeProbe(ctx context.Context, claim balancer.CircuitProbeClaim)
 		// 准入之后渠道没了（被删/被停）：这一次不发，也不算渠道故障。
 		return balancer.CircuitProbeReport{Outcome: modeltest.CircuitProbeOutcomeSkipped}
 	}
+	// 渠道配置了 ProbeModel 时换它打上游；不改 claim.Target——熔断条目身份保持，
+	// 只换实际发送的模型名。
+	probeModel := strings.TrimSpace(claim.Target.Model)
+	if m := strings.TrimSpace(channel.ProbeModel); m != "" {
+		probeModel = m
+	}
 	result := modeltest.RunCircuitProbe(
 		ctx,
 		*channel,
 		claim.Target.KeyID,
-		claim.Target.Model,
+		probeModel,
 		claim.Route.Endpoint,
 		claim.Route.Capability,
 	)
@@ -281,6 +343,11 @@ func resolveCircuitProbeTarget(target balancer.CircuitProbeTarget) (balancer.Cir
 	if _, ok := circuitProbeKey(*channel, target.KeyID); !ok {
 		// 密钥不存在 / 被停用 / 没凭据：路由与密钥的启用判定不接受任何豁免。
 		return balancer.CircuitProbeRoute{}, false
+	}
+	// 覆写语义：渠道配置了 ProbeModel 时，它**代替**熔断条目里的模型打上游；条目里的
+	// 模型是既存事实，不再要求它仍在渠道模型配置里——校验只对着实际发送的那个名字。
+	if m := strings.TrimSpace(channel.ProbeModel); m != "" {
+		probeModel = m
 	}
 	if !circuitProbeServesModel(*channel, probeModel) {
 		return balancer.CircuitProbeRoute{}, false
@@ -491,6 +558,7 @@ func getChannelProbe(c *gin.Context) {
 		return
 	}
 	cfg := circuitProbeConfig()
+	capEffective := circuitProbeChannelDailyCap(id, cfg.ChannelDailyCap)
 	view := balancer.SnapshotCircuitProbe(id)
 	history := view.History
 	if history == nil {
@@ -499,7 +567,7 @@ func getChannelProbe(c *gin.Context) {
 	resp.Success(c, channelProbeDetailResponse{
 		ChannelID:    id,
 		Day:          view.Day,
-		Totals:       circuitProbeTotalsWithCap(view.Totals, cfg.ChannelDailyCap),
+		Totals:       circuitProbeTotalsWithCap(view.Totals, capEffective),
 		GlobalTotals: circuitProbeTotalsWithCap(view.GlobalTotals, cfg.GlobalDailyCap),
 		History:      history,
 	})
@@ -508,9 +576,16 @@ func getChannelProbe(c *gin.Context) {
 func getChannelProbeStats(c *gin.Context) {
 	cfg := circuitProbeConfig()
 	view := balancer.SnapshotCircuitProbeGlobal()
+	// 每渠道生效上限一次建表：覆盖>0 用覆写，其余（含读失败）全局口径——
+	// 页面上显示的"每天最多"必须和调度实际生效的是同一个数。
+	caps := circuitProbeChannelDailyCaps(cfg.ChannelDailyCap)
 	channels := make([]channelProbeStatsChannel, 0, len(view.Channels))
 	for _, channel := range view.Channels {
-		channels = append(channels, newChannelProbeStatsChannel(channel.ChannelID, channel.CircuitProbeTotals, cfg.ChannelDailyCap))
+		cap, ok := caps[channel.ChannelID]
+		if !ok {
+			cap = cfg.ChannelDailyCap
+		}
+		channels = append(channels, newChannelProbeStatsChannel(channel.ChannelID, channel.CircuitProbeTotals, cap))
 	}
 	resp.Success(c, channelProbeStatsResponse{
 		Day:      view.Day,

@@ -382,6 +382,18 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "probe_enabled")
 		updates.ProbeEnabled = *req.ProbeEnabled
 	}
+	if req.ProbeDailyCap != nil {
+		selectFields = append(selectFields, "probe_daily_cap")
+		updates.ProbeDailyCap = *req.ProbeDailyCap
+	}
+	if req.ProbeMaxFailures != nil {
+		selectFields = append(selectFields, "probe_max_failures")
+		updates.ProbeMaxFailures = *req.ProbeMaxFailures
+	}
+	if req.ProbeModel != nil {
+		selectFields = append(selectFields, "probe_model")
+		updates.ProbeModel = *req.ProbeModel
+	}
 	if req.RaceMode != nil {
 		selectFields = append(selectFields, "race_mode")
 		updates.RaceMode = *req.RaceMode

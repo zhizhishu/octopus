@@ -146,6 +146,11 @@ export interface ChannelFormData {
     race_delay_ms: number;
     key_select_strategy: KeySelectStrategy;
     disable_circuit_breaker: boolean;
+    // 主动探测（P3）：渠道级覆写。0 = 沿用全局；探测用的模型空 = 跟熔断的那个模型一样。
+    probe_enabled: boolean;
+    probe_daily_cap: number;
+    probe_max_failures: number;
+    probe_model: string;
     base_urls: Channel['base_urls'];
     custom_header: Channel['custom_header'];
     cloak_mode: string;
@@ -1838,6 +1843,84 @@ export function ChannelForm({
         </>
     );
 
+    // 主动探测（P3）：渠道级覆写卡片，结构与熔断卡片同风格：开关在上，
+    // 三字段（限流/停止/探测模型）在下，双列网格。
+    const probeBlock = (
+        <>
+                        <div className="rounded-xl border border-border bg-background/70 p-3">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 space-y-1">
+                                    <div className="text-xs font-semibold text-card-foreground">{t('probeCardTitle')}</div>
+                                    <p className="text-xs leading-relaxed text-muted-foreground">
+                                        {t('probeCardHint')}
+                                    </p>
+                                </div>
+                                <label className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                                    <Switch
+                                        checked={formData.probe_enabled}
+                                        onCheckedChange={(checked) => onFormDataChange({ ...formData, probe_enabled: checked })}
+                                        aria-label={t('probeCardTitle')}
+                                    />
+                                    <span>{formData.probe_enabled ? t('probeEnabledOn') : t('probeEnabledOff')}</span>
+                                </label>
+                            </div>
+                            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+                                <div className="space-y-2">
+                                    <label htmlFor={`${idPrefix}-probe-daily-cap`} className="text-sm font-medium text-card-foreground">
+                                        {t('probeDailyCap')}
+                                    </label>
+                                    <Input
+                                        className="rounded-xl"
+                                        id={`${idPrefix}-probe-daily-cap`}
+                                        type="number"
+                                        inputMode="numeric"
+                                        min={0}
+                                        step={1}
+                                        value={String(formData.probe_daily_cap ?? 0)}
+                                        onChange={(event) => {
+                                            const n = Number.parseInt(event.target.value, 10);
+                                            onFormDataChange({ ...formData, probe_daily_cap: Number.isFinite(n) ? Math.min(100000, Math.max(0, n)) : 0 });
+                                        }}
+                                    />
+                                    <p className="text-xs text-muted-foreground">{t('probeDailyCapHint')}</p>
+                                </div>
+                                <div className="space-y-2">
+                                    <label htmlFor={`${idPrefix}-probe-max-failures`} className="text-sm font-medium text-card-foreground">
+                                        {t('probeMaxFailures')}
+                                    </label>
+                                    <Input
+                                        className="rounded-xl"
+                                        id={`${idPrefix}-probe-max-failures`}
+                                        type="number"
+                                        inputMode="numeric"
+                                        min={0}
+                                        step={1}
+                                        value={String(formData.probe_max_failures ?? 0)}
+                                        onChange={(event) => {
+                                            const n = Number.parseInt(event.target.value, 10);
+                                            onFormDataChange({ ...formData, probe_max_failures: Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0 });
+                                        }}
+                                    />
+                                    <p className="text-xs text-muted-foreground">{t('probeMaxFailuresHint')}</p>
+                                </div>
+                                <div className="space-y-2 md:col-span-2">
+                                    <label htmlFor={`${idPrefix}-probe-model`} className="text-sm font-medium text-card-foreground">
+                                        {t('probeModel')}
+                                    </label>
+                                    <Input
+                                        className="rounded-xl"
+                                        id={`${idPrefix}-probe-model`}
+                                        type="text"
+                                        value={formData.probe_model ?? ''}
+                                        onChange={(e) => onFormDataChange({ ...formData, probe_model: e.target.value })}
+                                    />
+                                    <p className="text-xs leading-relaxed text-muted-foreground">{t('probeModelHint')}</p>
+                                </div>
+                            </div>
+                        </div>
+        </>
+    );
+
     const pathsBlock = (
         <>
                         {isCustomOpenAIChat(formData.type) && (
@@ -2162,6 +2245,7 @@ export function ChannelForm({
                             {cloakBlock}
                         </div>
                         {breakerBlock}
+                        {probeBlock}
                         {pathsBlock}
                         {headersBlock}
                         {regexBlock}
@@ -2219,6 +2303,7 @@ export function ChannelForm({
                     {keyStrategyField}
                 </div>
                 {breakerBlock}
+                {probeBlock}
             </MobileSection>
 
             {hasCapabilityItems && (
