@@ -40,7 +40,7 @@ func TestChannelGateHardCapsConcurrentAdmits(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			release, reason := AdmitChannelGate(context.Background(), channelID, cap, 0, 0, nil)
+			release, reason := AdmitChannelGate(context.Background(), channelID, gateCap, 0, 0, nil)
 			if reason != "" {
 				return // 占不到位：调用方立刻跳下一个候选（本测试只验峰值不越限）。
 			}
@@ -61,10 +61,10 @@ func TestChannelGateHardCapsConcurrentAdmits(t *testing.T) {
 	if got := atomic.LoadInt64(&current); got != 0 {
 		t.Fatalf("all attempts must finish with every slot released, inFlight = %d", got)
 	}
-	if got := atomic.LoadInt64(&maxObserved); got > cap {
-		t.Fatalf("observed concurrency %d exceeds hard cap %d", got, cap)
+	if got := atomic.LoadInt64(&maxObserved); got > gateCap {
+		t.Fatalf("observed concurrency %d exceeds hard gateCap %d", got, gateCap)
 	}
-	if !ChannelGateHasRoom(channelID, cap, 0) {
+	if !ChannelGateHasRoom(channelID, gateCap, 0) {
 		t.Fatalf("after full release the channel must have room again")
 	}
 }
