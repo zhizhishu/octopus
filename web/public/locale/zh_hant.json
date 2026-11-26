@@ -161,7 +161,12 @@
     "audit": "檢測",
     "log": "日誌",
     "setting": "設定",
-    "redact": "憑據脫敏"
+    "redact": "憑據脫敏",
+    "groupOverview": "總覽",
+    "groupAccess": "接入",
+    "groupUpstream": "上游",
+    "groupControl": "管控",
+    "groupSetting": "設定"
   },
   "toolbar": {
     "popover": {

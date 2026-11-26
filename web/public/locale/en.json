@@ -161,7 +161,12 @@
     "audit": "Detect",
     "log": "Log",
     "setting": "Setting",
-    "redact": "Redaction"
+    "redact": "Redaction",
+    "groupOverview": "Overview",
+    "groupAccess": "Access",
+    "groupUpstream": "Upstream",
+    "groupControl": "Control",
+    "groupSetting": "Settings"
   },
   "toolbar": {
     "popover": {

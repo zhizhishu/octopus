@@ -222,7 +222,7 @@ test('Seg: tab targets 44 on mobile (container 52 - p-1), desktop h-8/h-9 + p-[3
 });
 
 // ---------------------------------- Navbar ----------------------------------
-test('NavBar: dock buttons are real 44x44 on mobile, md classes unchanged, select handler intact', async () => {
+test('NavBar: dock buttons are real 44x44 on mobile, desktop md sizing widened, select handler intact', async () => {
     let picked = null;
     const setActiveItem = (item) => { picked = item; };
     const { NavBar } = load('src/components/modules/navbar/navbar.tsx', {
@@ -231,7 +231,7 @@ test('NavBar: dock buttons are real 44x44 on mobile, md classes unchanged, selec
         '@/lib/utils': { cn: cnMock },
         'motion/react': { motion: new Proxy({}, { get: (_, k) => (props) => ({ type: `motion.${String(k)}`, props }) }) },
         './nav-store': { useNavStore: () => ({ activeItem: 'dashboard', setActiveItem: () => {} }) },
-        '@/route/config': { routesForRole: () => [{ id: 'dashboard', icon: 'Icon' }, { id: 'logs', icon: 'Icon' }] },
+        '@/route/config': { routesForRole: () => [{ id: 'dashboard', icon: 'Icon' }, { id: 'logs', icon: 'Icon' }], navGroupsForRole: () => null },
         '@/route/use-preload': { usePreload: () => ({ preload: () => Promise.resolve() }) },
         '@/lib/animations/fluid-transitions': { ENTRANCE_VARIANTS: { navbar: {} } },
         '@/api/endpoints/user': { useAuthStore: (sel) => sel({ user: { role: 'admin' } }) },
@@ -243,8 +243,8 @@ test('NavBar: dock buttons are real 44x44 on mobile, md classes unchanged, selec
     for (const btn of buttons) {
         // Mobile dock item: the actual <button> footprint is 44x44 (was h-10 w-10).
         assert.match(btn.props.className, /h-11 w-11/);
-        // Desktop sidebar item untouched.
-        assert.match(btn.props.className, /md:h-auto md:w-32/);
+        // Desktop sidebar item: md:w-32→md:w-36 so long labels (凭据脱敏/API Key) fit without truncation.
+        assert.match(btn.props.className, /md:h-auto md:w-36/);
     }
     const active = buttons.find((b) => b.props['aria-current'] === 'page');
     assert.ok(active, 'active item must be marked');

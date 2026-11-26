@@ -1,7 +1,7 @@
 import { lazyWithPreload } from './lazy-with-preload';
 import { lazy, ComponentType } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { BadgeDollarSign, ChartColumn, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database, Shield, EyeOff } from 'lucide-react';
+import { BadgeDollarSign, ChartColumn, Home, Radio, Settings, Logs, KeyRound, Users, GitBranch, MessageSquareText, Database, Shield, EyeOff, LayoutDashboard, Plug } from 'lucide-react';
 
 export type LazyComponent = ReturnType<typeof lazy> & {
     preload: () => Promise<{ default: ComponentType<Record<string, never>> }>
@@ -32,19 +32,19 @@ const Usage_Module = lazyWithPreload(() => import('@/components/modules/usage').
 
 export const ROUTES: RouteConfig[] = [
     { id: 'home', label: 'Home', icon: Home, component: Home_Module },
-    { id: 'dashboard', label: 'Dashboard', icon: ChartColumn, component: Dashboard_Module },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, component: Dashboard_Module },
     { id: 'usage', label: 'Usage', icon: ChartColumn, component: Usage_Module },
     { id: 'user', label: 'Users', icon: Users, component: User_Module },
     { id: 'key', label: 'API Key', icon: KeyRound, component: Key_Module },
-    { id: 'channel', label: 'Channel', icon: Radio, component: Channel_Module },
-    { id: 'redact', label: 'Redact', icon: EyeOff, component: Redact_Module },
     { id: 'access-plan', label: 'Plans', icon: GitBranch, component: AccessPlan_Module },
     { id: 'model', label: 'Model', icon: BadgeDollarSign, component: Model_Module },
+    { id: 'channel', label: 'Channel', icon: Radio, component: Channel_Module },
+    { id: 'redact', label: 'Redact', icon: EyeOff, component: Redact_Module },
     { id: 'migration', label: 'Migration', icon: Database, component: Migration_Module },
+    { id: 'mcp', label: 'MCP', icon: Plug, component: MCP_Module },
     { id: 'prompt', label: 'Prompt', icon: MessageSquareText, component: Prompt_Module },
     { id: 'audit', label: 'Audit', icon: Shield, component: Audit_Module },
     { id: 'log', label: 'Log', icon: Logs, component: Log_Module },
-    { id: 'mcp', label: 'MCP', icon: Radio, component: MCP_Module },
     { id: 'setting', label: 'Setting', icon: Settings, component: Setting_Module },
 ];
 
@@ -54,7 +54,7 @@ export const CONTENT_MAP = ROUTES.reduce((acc, route) => {
 }, {} as Record<string, LazyComponent>);
 
 // 'dashboard'（仪表盘）只给管理员：它的接口是全站口径、AdminOnly。
-export const ADMIN_ROUTE_IDS = ['home', 'dashboard', 'usage', 'user', 'key', 'channel', 'redact', 'access-plan', 'model', 'migration', 'prompt', 'audit', 'log', 'mcp', 'setting'] as const;
+export const ADMIN_ROUTE_IDS = ['home', 'dashboard', 'usage', 'user', 'key', 'access-plan', 'model', 'channel', 'redact', 'migration', 'mcp', 'prompt', 'audit', 'log', 'setting'] as const;
 export const USER_ROUTE_IDS = ['home', 'usage', 'key', 'log', 'mcp'] as const;
 
 export function routeIdsForRole(role?: string | null) {
@@ -65,3 +65,15 @@ export function routesForRole(role?: string | null) {
     const ids = new Set<string>(routeIdsForRole(role));
     return ROUTES.filter((route) => ids.has(route.id));
 }
+
+// 管理员侧栏按业务分组渲染：组序即 ADMIN_ROUTE_IDS 的分组重排，
+// 各组 id 合集与原权限集合完全一致（一个 id 不多不少）。
+export interface NavGroupConfig { labelKey: string; routeIds: readonly string[] }
+export const ADMIN_NAV_GROUPS: readonly NavGroupConfig[] = [
+    { labelKey: 'groupOverview', routeIds: ['home', 'dashboard', 'usage'] },
+    { labelKey: 'groupAccess', routeIds: ['user', 'key', 'access-plan', 'model'] },
+    { labelKey: 'groupUpstream', routeIds: ['channel', 'redact', 'migration', 'mcp'] },
+    { labelKey: 'groupControl', routeIds: ['prompt', 'audit', 'log'] },
+    { labelKey: 'groupSetting', routeIds: ['setting'] },
+];
+export function navGroupsForRole(role?: string | null): readonly NavGroupConfig[] | null { return role === 'admin' ? ADMIN_NAV_GROUPS : null; }
