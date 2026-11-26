@@ -1,4 +1,4 @@
-import { ChannelType, KeySelectStrategy, type Channel, useFetchModel, useTestChannelConfig, useTestChannelProxy, type ProxyTestResult } from '@/api/endpoints/channel';
+import { ChannelType, KeySelectStrategy, type Channel, useFetchModel, useTestChannelConfig, useTestChannelProxy, type ProxyTestResult, useChannelRPMs, channelRPMOf } from '@/api/endpoints/channel';
 import { useFingerprintProfileList } from '@/api/endpoints/fingerprint-profile';
 import type { ModelTestResult } from '@/api/endpoints/model';
 import {
@@ -383,6 +383,10 @@ export function ChannelForm({
     const fetchModel = useFetchModel();
     const channelTest = useTestChannelConfig();
     const testChannelProxy = useTestChannelProxy();
+    // 「本分钟」实时 RPM（对齐 sub2api 账号页的 current_rpm）：只有编辑已有渠道时才拉，
+    // 新建渠道没有 id、也就没有读数。轮询间隔/可见性策略在 useChannelRPMs 里。
+    const channelRpmQuery = useChannelRPMs(channelId && channelId > 0 ? [channelId] : []);
+    const channelCurrentRpm = channelRPMOf(channelRpmQuery.data, channelId ?? 0);
     const { data: fingerprintProfiles } = useFingerprintProfileList();
     const sortedFingerprintProfiles = [...(fingerprintProfiles ?? [])].sort((a, b) => a.id - b.id);
     // "跟随全局" (id 0) was removed as an option. A stored id that isn't a live preset — a
@@ -928,6 +932,8 @@ export function ChannelForm({
     // 「限流」小卡片：并发 / RPM / 满了怎么办（回错还是排队）收成一张卡。
     // 后端 gate 语义：0 = 不限；queue_size>0 必须同时有 max_concurrent>0（没有并发上限就永远不会「满」），
     // 所以并发清 0 时排队一并清 0，让表单永远踩不到后端会拒的状态。
+    // RPM 口径对齐 sub2api：整分钟桶、只数成功，所以字段下方额外给一行「本分钟已成功 N 次」
+    // 实时读数（对齐 sub2api 账号页的 current_rpm），编辑已有渠道时才拉。
     const gateMaxConcurrent = formData.max_concurrent ?? 0;
     const gateRpmLimit = formData.rpm_limit ?? 0;
     const gateQueueSize = formData.queue_size ?? 0;
@@ -983,6 +989,13 @@ export function ChannelForm({
                         }}
                     />
                     <p className="text-xs text-muted-foreground">{t('gateZeroUnlimited')}</p>
+                    {channelId != null && channelId > 0 && (
+                        <p className="text-xs text-muted-foreground" title={t('gateCurrentRpmTip')}>
+                            {gateRpmLimit > 0
+                                ? t('gateCurrentRpmOfLimit', { n: channelCurrentRpm, limit: gateRpmLimit })
+                                : t('gateCurrentRpm', { n: channelCurrentRpm })}
+                        </p>
+                    )}
                 </div>
             </div>
             <div className="space-y-2">

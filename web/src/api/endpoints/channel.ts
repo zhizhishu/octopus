@@ -768,6 +768,43 @@ export function useChannelCircuits(channelId: number, enabled = true) {
     });
 }
 
+/**
+ * 渠道「本分钟」实时 RPM 读数：键是渠道 id 的字符串形式（后端给 {"1": 12}）。
+ */
+export type ChannelRPMs = Record<string, number>;
+
+/**
+ * 批量拉渠道「本分钟」成功请求数（对齐 sub2api 账号页的 current_rpm）。
+ *
+ * 后端口径是渠道闸门的整分钟桶、只数成功（见 internal/relay/balancer/channel_gate.go）：
+ * 这是个「此刻读数」而不是统计汇总，分钟一翻就归零，所以失败/被拒的请求不会让它涨。
+ * 5 秒刷一次；refetchIntervalInBackground 显式保持 false——页面不可见时不轮询，
+ * 别为一个给人看的实时数字白刷后端。
+ */
+export function useChannelRPMs(ids: number[], enabled = true) {
+    const normalized = Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)))
+        .sort((a, b) => a - b);
+    const idParam = normalized.join(',');
+    return useQuery({
+        queryKey: ['channels', 'rpm', idParam],
+        queryFn: async () => {
+            return apiClient.get<ChannelRPMs>('/api/v1/channel/rpm', { ids: idParam });
+        },
+        enabled: enabled && normalized.length > 0,
+        refetchInterval: 5000,
+        refetchIntervalInBackground: false,
+        // 比轮询间隔略短：窗口重新聚焦时不必为了一个 5 秒前的数字再打一枪。
+        staleTime: 4000,
+    });
+}
+
+/** 从批量读数里取一个渠道的本分钟成功数（没拉到 / 值非法就是 0）。 */
+export function channelRPMOf(data: ChannelRPMs | undefined, channelId: number): number {
+    if (!data || !Number.isFinite(channelId) || channelId <= 0) return 0;
+    const value = data[String(channelId)];
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 /** 单渠道当日探测用量与最近探测历史。探测全局关着时也照常拉（页面要显示“已关闭”）。 */
 export function useChannelProbes(channelId: number, enabled = true) {
     return useQuery({

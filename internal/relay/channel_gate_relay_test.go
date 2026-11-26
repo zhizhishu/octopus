@@ -21,7 +21,8 @@ import (
 // 渠道级硬限流闸门（balancer.AdmitChannelGate）的 relay 级验收：走真实 Handler + httptest
 // 上游，不发任何真实外部请求。矩阵：
 //
-//	a. 同渠道两个不同模型，RPM=3：第 4 个请求不发该渠道上游，转另一渠道。
+//	a. 同渠道两个不同模型，RPM=3：3 次成功落地后，第 4 个请求不发该渠道上游，转另一渠道；
+//	   CurrentRPM 读到 3（整分钟桶、只数成功）。
 //	b. 并发=2，5 个慢请求并发：httptest 观察到的最大并发 ≤2。
 //	c. 全满：3s 内有空位则成功；否则 429 + code channel_rate_limited + Retry-After 头；
 //	   且等待总时长≈3s 不是 N×3s。
@@ -29,6 +30,12 @@ import (
 //	e. 竞速每个 contender 都占名额。
 //	f. 失败/取消后并发位释放（inFlight 回 0）。
 //	g. MaxConcurrent=0 且 RPMLimit=0 行为不变。
+//	h. QueueSize=0（不排队）立即 429。
+//	i. 排队时长按渠道 QueueTimeoutMs。
+//	j. 排队人数按渠道合计（跨模型/跨 key）。
+//	k. RPM 只数成功：上游失败不消耗名额，失败后同一分钟仍能继续准入（对齐 sub2api 在
+//	   Forward 成功后才计数）。
+//	l. CurrentRPM 是只读读数：未限流渠道也能读到本分钟成功数，且探测不影响准入。
 
 // gateUpstream 是带命中/在途计数的 httptest 上游，回非流式 chat.completion 成功形状；
 // status != 200 时回该状态的上游错误体；slow > 0 先睡再应答（制造在途窗口/慢请求）。
@@ -128,7 +135,7 @@ func doGateChatRequest(modelName string) (int, string, http.Header) {
 	return rec.Code, rec.Body.String(), rec.Header()
 }
 
-// —— a：同渠道两个不同模型，RPM=3：第 4 个请求不发该渠道上游，转另一渠道 ——
+// —— a：同渠道两个不同模型，RPM=3：3 次成功落地后，第 4 个请求不发该渠道上游 ——
 func TestChannelGateRPMSharedAcrossModelsOnSameChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayChannelGateDB(t)
@@ -161,7 +168,8 @@ func TestChannelGateRPMSharedAcrossModelsOnSameChannel(t *testing.T) {
 		t.Fatalf("create channel B: %v", err)
 	}
 
-	// 前 3 个请求（模型 a）：默认路由 fill_first，命中渠道 A，用掉 A 的 3 个 RPM 名额。
+	// 前 3 个请求（模型 a）：默认路由 fill_first，命中渠道 A，成功落地后把 A 的整分钟桶
+	// 推到 RPM 上限 3。
 	for i := 0; i < 3; i++ {
 		code, body, _ := doGateChatRequest("gate-model-a")
 		if code != http.StatusOK || !strings.Contains(body, `"chat.completion"`) {
@@ -173,6 +181,10 @@ func TestChannelGateRPMSharedAcrossModelsOnSameChannel(t *testing.T) {
 	}
 	if hits := upB.hitCount(); hits != 0 {
 		t.Fatalf("channel B should not be hit yet, got %d", hits)
+	}
+	// 当前分钟读数 = 3 次成功（整分钟桶、只数成功）。
+	if got := balancer.ChannelGateCurrentRPM(channelA.ID); got != 3 {
+		t.Fatalf("channel A current-minute rpm = %d, want 3 after 3 successes", got)
 	}
 
 	// 第 4 个请求（同渠道的另一个模型 b）：A 的 RPM 满了一律不发 A，转到 B。
@@ -813,5 +825,112 @@ func TestChannelGateQueueSharedAcrossModelsAndKeys(t *testing.T) {
 	}
 	if hits := upX.hitCount(); hits != 1 {
 		t.Fatalf("only the queued request may reach the upstream, hits = %d", hits)
+	}
+}
+
+// —— k：RPM 只数成功——上游失败不消耗名额，同一分钟内仍可继续准入 ——
+func TestChannelGateRPMCountsOnlySuccessesAcrossFailures(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayChannelGateDB(t)
+
+	upFail := newGateUpstream(t, http.StatusInternalServerError, 0)
+	upOK := newGateUpstream(t, http.StatusOK, 0)
+	channelX := dbmodel.Channel{
+		Name:     "gate-rpm-success-x",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "gate-model-rpm-success",
+		RPMLimit: 1,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upFail.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "x-key"}},
+		Priority: 1,
+	}
+	if err := op.ChannelCreate(&channelX, ctx); err != nil {
+		t.Fatalf("create channel X: %v", err)
+	}
+	channelY := dbmodel.Channel{
+		Name:     "gate-rpm-success-y",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "gate-model-rpm-success",
+		BaseUrls: []dbmodel.BaseUrl{{URL: upOK.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "y-key"}},
+		Priority: 2,
+	}
+	if err := op.ChannelCreate(&channelY, ctx); err != nil {
+		t.Fatalf("create channel Y: %v", err)
+	}
+
+	// 请求 1：X 被准入（本分钟还是 0 次成功），上游 500 → 失败转移，落到 Y 成功。
+	code, body, _ := doGateChatRequest("gate-model-rpm-success")
+	if code != http.StatusOK {
+		t.Fatalf("request 1 must fail over to channel Y with 200, got %d: %s", code, body)
+	}
+	if hits := upFail.hitCount(); hits != 1 {
+		t.Fatalf("request 1 should hit the failing upstream X once, got %d", hits)
+	}
+	if hits := upOK.hitCount(); hits != 1 {
+		t.Fatalf("request 1 must be served by channel Y, hits = %d", hits)
+	}
+	// 失败的尝试不计入 X 的本分钟成功数（对齐 sub2api：Forward 成功之后才计数）。
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 0 {
+		t.Fatalf("a failed upstream attempt must not count towards rpm, current rpm = %d", got)
+	}
+
+	// 请求 2：X 的名额没被失败吃掉，同一分钟内仍会被准入（并发位也早已归还）。
+	code, body, _ = doGateChatRequest("gate-model-rpm-success")
+	if code != http.StatusOK {
+		t.Fatalf("request 2 must be served (fail over to Y), got %d: %s", code, body)
+	}
+	if hits := upFail.hitCount(); hits != 2 {
+		t.Fatalf("request 2 must be admitted into channel X again (failures do not spend rpm), hits = %d", hits)
+	}
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 0 {
+		t.Fatalf("channel X still has no success this minute, current rpm = %d", got)
+	}
+}
+
+// —— l：CurrentRPM 是只读读数——不限流渠道也记本分钟成功数，探测不影响准入 ——
+func TestChannelGateCurrentRPMReflectsSuccessesOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayChannelGateDB(t)
+
+	upX := newGateUpstream(t, http.StatusOK, 0)
+	channelX := dbmodel.Channel{
+		Name:     "gate-current-rpm-x",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "gate-model-current-rpm",
+		BaseUrls: []dbmodel.BaseUrl{{URL: upX.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "x-key"}},
+		Priority: 1,
+	}
+	if err := op.ChannelCreate(&channelX, ctx); err != nil {
+		t.Fatalf("create channel X: %v", err)
+	}
+
+	// 没有任何成功之前读数是 0（渠道连闸门状态都还没有）。
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 0 {
+		t.Fatalf("current-minute rpm before any traffic = %d, want 0", got)
+	}
+	for i := 0; i < 4; i++ {
+		code, body, _ := doGateChatRequest("gate-model-current-rpm")
+		if code != http.StatusOK {
+			t.Fatalf("request %d must succeed on the unlimited channel, got %d: %s", i+1, code, body)
+		}
+	}
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 4 {
+		t.Fatalf("current-minute rpm = %d, want 4 (every success counts, even without an rpm cap)", got)
+	}
+	// 探测不占位、不消耗名额：下一个请求照旧命中 X 并让读数继续涨。
+	code, body, _ := doGateChatRequest("gate-model-current-rpm")
+	if code != http.StatusOK {
+		t.Fatalf("request after read-only probes must succeed, got %d: %s", code, body)
+	}
+	if hits := upX.hitCount(); hits != 5 {
+		t.Fatalf("read-only rpm probes must not consume slots, upstream hits = %d", hits)
+	}
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 5 {
+		t.Fatalf("current-minute rpm = %d, want 5", got)
 	}
 }

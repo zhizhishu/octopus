@@ -1246,6 +1246,11 @@ func (ra *relayAttempt) attempt() attemptResult {
 	if fwdErr == nil {
 		// ====== 成功 ======
 		ra.collectResponse()
+		// 渠道 RPM 口径：整分钟桶、只数成功（对齐 sub2api，见 balancer/channel_gate.go）。
+		// 失败/取消/被跳过的尝试不走这条分支，所以不计入 RPM。无论渠道有没有配
+		// RPMLimit 都记：渠道页要显示「本分钟 N」实时值，口径与 sub2api 的
+		// current_rpm 一致（那边也是所有转发成功都计数）；限流判定只在配了上限时读它。
+		balancer.RecordChannelRPMSuccess(ra.channel.ID)
 		costDelta := ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
 		op.ChannelKeyRecordUse(ra.usedKey, statusCode, usedAt, costDelta)
 

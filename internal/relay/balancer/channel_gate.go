@@ -12,11 +12,23 @@ import (
 // 到顶只在选路里排序靠后（见 spreadTier），该发的一次都没少。生产事故就是这条：
 // 渠道上配了 RPM 上限，上游那边看到 8 RPM。软降档挡不住同一请求的重试 / 竞速 /
 // 救援换家重发，于是上限形同虚设。这里改成硬准入：每一次真正发往上游的尝试，在
-// BeginRuntimeAttempt 之前先**原子地**占住「渠道并发位 + 渠道 RPM 滑动窗口名额」，
-// 占不到就不发。
+// BeginRuntimeAttempt 之前先**原子地**占住渠道并发位；RPM 则在发送前读一次当前分钟的
+// 成功计数，到顶就不发。
 //
 // 作用域是**渠道**，不是 (渠道, key, 模型)：上限本来就是渠道级配置，同一渠道上
 // 不同模型、不同 key 的尝试必须合计计数，否则换个模型名就能绕过上限。
+//
+// RPM 口径对齐 sub2api（_references/sub2api-learning/backend/internal/repository/
+// rpm_cache.go 的 rpm:{id}:{unix/60} 固定整分钟桶 + handler 在 Forward 成功之后才计数）：
+//   - **整分钟桶**：桶号 = now.Unix()/60，分钟一翻旧计数作废；不是 60 秒滑动窗口。
+//   - **只数成功**：失败/超时/取消/被跳过都不消耗名额，只有上游转发成功才 +1
+//     （见 RecordChannelRPMSuccess，relay 的 attempt 成功块调用）。
+//   - **发送前判定**：准入只读「当前分钟成功数 >= 上限则拒」，不预占名额。
+//     因此并发中的多个在途请求可能同时过准入，成功计数落地前有短暂超出——这是
+//     sub2api 同款口径（非原子预占），属预期行为，不是缺陷。
+//
+// 并发位（inFlight）仍是硬预占：占不到就不发，释放才归还。排队语义
+// （waiters / QueueSize / ChannelGateWaitAnyOpen）与并发位判定不变。
 const (
 	// ChannelGateQueueTimeoutDefault 是渠道没配排队时长（QueueTimeoutMs=0）时每个请求的
 	// 默认等待上限。
@@ -35,9 +47,9 @@ const channelGatePollInterval = 25 * time.Millisecond
 
 // channelGate 是单个渠道的闸门状态。
 //
-// 并发位与 RPM 窗口共用一把锁：两者必须在**同一次临界区**里判定并同时占上，否则会
-// 出现「并发位占到了、RPM 名额没占到」这种半占状态，而那正是这次要修的绕过上限的
-// 形态。锁的粒度是单渠道，热路径上就是一次加解锁，不碰任何 I/O。
+// 并发位与 RPM 计数共用一把锁：判定要在**同一次临界区**里做完（先看并发位、再看当前
+// 分钟成功数），否则两个维度各自的检查会互相插队、日志也说不清是谁挡的。锁的粒度是
+// 单渠道，热路径上就是一次加解锁，不碰任何 I/O。
 type channelGate struct {
 	mu sync.Mutex
 
@@ -48,13 +60,19 @@ type channelGate struct {
 	// ChannelGateWaitAnyOpen 占/还：排队人数达到渠道的 QueueSize 后新来的请求立即被拒。
 	waiters int
 
-	// reqWindow / reqBucketSec 是 60 个每秒桶的滑动窗口，口径与 telemetry.go 里
-	// runtimeEntry 的 reqWindow/reqBucketSec 一致：reqBucketSec 记每个槽位当前代表
-	// 哪一秒，过期槽位直接当空槽，不会把上一分钟的计数重复算进来。
-	// RPM 名额是**消耗品**：占上就不归还（它是速率，不是并发位），只能等窗口自己
-	// 滑过去。
-	reqWindow    [60]int32
-	reqBucketSec [60]int64
+	// rpmMinute / rpmCount 是**单个整分钟桶**的成功计数，口径对齐 sub2api 的
+	// rpm:{id}:{unix/60}（那边 TTL 120s 覆盖当前分钟）：rpmMinute 记这个桶代表哪一分钟
+	// （now.Unix()/60），rpmCount 记这一分钟内**成功**的上游尝试数。分钟一翻，桶号
+	// 对不上就当 0，不做 60 秒滑动汇总。
+	//
+	// 只数成功、发送前判定：失败的尝试不占名额；准入时读的是「当前分钟已成功几个」，
+	// 不预占。所以并发在途的多个请求可能一起过准入、成功计数落地前短暂超出上限，
+	// 这是 sub2api 同款口径，属预期。
+	//
+	// 注意：telemetry.go 里另有一套每秒桶（runtimeEntry.reqWindow/reqBucketSec，供
+	// spreadTier 软降档），与本闸门的硬准入是两套计数，互不影响。
+	rpmMinute int64
+	rpmCount  int32
 }
 
 // globalChannelGates 只按渠道 ID 分片：key 是 channelID(int) -> *channelGate。
@@ -72,32 +90,37 @@ func ResetChannelGates() {
 	globalChannelGates = sync.Map{}
 }
 
-// recordRequestLocked 把一个上游尝试记进最近 60 秒的窗口。调用者必须持有 g.mu。
-func (g *channelGate) recordRequestLocked(now time.Time) {
-	sec := now.Unix()
-	idx := sec % 60
-	if g.reqBucketSec[idx] != sec {
-		g.reqBucketSec[idx] = sec
-		g.reqWindow[idx] = 0
-	}
-	g.reqWindow[idx]++
+// channelGateMinuteOf 把一个时刻折算成整分钟桶号（unix/60），与 sub2api 的
+// rpm:{accountID}:{minuteTimestamp} 同一口径。
+func channelGateMinuteOf(now time.Time) int64 {
+	return now.Unix() / 60
 }
 
-// recentRequestCountLocked 汇总最近 60 秒内已经占掉的 RPM 名额。
+// recordRPMSuccessLocked 在当前分钟桶上 +1（分钟翻转时先归零）。
+// 调用者必须持有 g.mu。只在**上游转发成功**之后调用（见 RecordChannelRPMSuccess）。
+func (g *channelGate) recordRPMSuccessLocked(now time.Time) {
+	minute := channelGateMinuteOf(now)
+	if g.rpmMinute != minute {
+		g.rpmMinute = minute
+		g.rpmCount = 0
+	}
+	g.rpmCount++
+}
+
+// currentRPMCountLocked 读当前分钟桶里的成功计数；桶不是这一分钟（分钟已翻）就是 0。
 // 调用者必须持有 g.mu。
-func (g *channelGate) recentRequestCountLocked(now time.Time) int64 {
-	cutoff := now.Unix() - 59
-	var total int64
-	for i := 0; i < 60; i++ {
-		if g.reqBucketSec[i] >= cutoff {
-			total += int64(g.reqWindow[i])
-		}
+func (g *channelGate) currentRPMCountLocked(now time.Time) int64 {
+	if g.rpmMinute != channelGateMinuteOf(now) {
+		return 0
 	}
-	return total
+	return int64(g.rpmCount)
 }
 
-// tryAcquire 原子地同时占住并发位与 RPM 名额：要么两个维度都占上，要么一个都不占。
-// 失败返回 nil + 具体是哪个维度满了。成功返回的 release 幂等，可安全多次调用。
+// tryAcquire 在**同一次持锁**里判定两个维度并占住并发位：并发位满了或当前分钟成功数
+// 已到 RPM 上限就拒。失败返回 nil + 具体是哪个维度满了。成功返回的 release 幂等，
+// 可安全多次调用。
+//
+// RPM 是「只读判定」：准入不消耗名额，名额只由成功转发累加（RecordChannelRPMSuccess）。
 func (g *channelGate) tryAcquire(maxConcurrent, rpmLimit int, now time.Time) (func(), string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -105,13 +128,12 @@ func (g *channelGate) tryAcquire(maxConcurrent, rpmLimit int, now time.Time) (fu
 	if maxConcurrent > 0 && g.inFlight >= int64(maxConcurrent) {
 		return nil, ChannelGateReasonConcurrency
 	}
-	if rpmLimit > 0 && g.recentRequestCountLocked(now) >= int64(rpmLimit) {
+	if rpmLimit > 0 && g.currentRPMCountLocked(now) >= int64(rpmLimit) {
 		return nil, ChannelGateReasonRPM
 	}
 
-	// 两个维度都还有余量：在同一次持锁里一起占上，中间态不存在。
+	// 并发位在这一次持锁里占上；RPM 不预占（成功后才计数）。
 	g.inFlight++
-	g.recordRequestLocked(now)
 
 	// sync.Once 保证 release 幂等：defer 链、早退分支、panic 收尾都可能重复调用，
 	// 重复调用也绝不能把 inFlight 减穿。
@@ -225,10 +247,47 @@ func (g *channelGate) hasRoomLocked(maxConcurrent, rpmLimit int, now time.Time) 
 	if maxConcurrent > 0 && g.inFlight >= int64(maxConcurrent) {
 		return false
 	}
-	if rpmLimit > 0 && g.recentRequestCountLocked(now) >= int64(rpmLimit) {
+	if rpmLimit > 0 && g.currentRPMCountLocked(now) >= int64(rpmLimit) {
 		return false
 	}
 	return true
+}
+
+// RecordChannelRPMSuccess 记一次**成功**的上游转发：把该渠道当前分钟桶的成功计数 +1
+// （分钟翻转时从 0 重新开始）。
+//
+// 由 relay 的 attempt 成功块调用（internal/relay/relay.go 的 `if fwdErr == nil` 分支）；
+// 失败/被跳过/取消都不调用，所以 RPM 上限的语义是「每分钟最多成功几个请求」，与
+// sub2api 在 Forward 成功后才计数一致。
+func RecordChannelRPMSuccess(channelID int) {
+	if channelID <= 0 {
+		return
+	}
+	gate := channelGateFor(channelID)
+	gate.mu.Lock()
+	gate.recordRPMSuccessLocked(time.Now())
+	gate.mu.Unlock()
+}
+
+// ChannelGateCurrentRPM 只读返回该渠道「当前这分钟」的成功计数，供渠道列表/编辑页
+// 显示实时 RPM（对齐 sub2api 账号页的 current_rpm）。
+//
+// 不占位、不等待、不创建闸门状态（渠道还没有任何闸门记录时就是 0）。
+func ChannelGateCurrentRPM(channelID int) int {
+	if channelID <= 0 {
+		return 0
+	}
+	value, ok := globalChannelGates.Load(channelID)
+	if !ok {
+		return 0
+	}
+	gate, ok := value.(*channelGate)
+	if !ok || gate == nil {
+		return 0
+	}
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return int(gate.currentRPMCountLocked(time.Now()))
 }
 
 // reserveWaiter 占一个排队位：queueSize<=0（不排队）或队已满时返回 false。
@@ -255,9 +314,9 @@ func (g *channelGate) releaseWaiter() {
 	}
 }
 
-// ChannelGateHasRoom 只读探测：该渠道此刻是否还占得到「并发位 + RPM 名额」。不占位、
-// 不等待、不碰任何计数——调用方拿它决定「要不要为整轮被拒的候选再跑一轮」，真正的
-// 占用发生在重跑候选的 AdmitChannelGate 里。
+// ChannelGateHasRoom 只读探测：该渠道此刻是否还占得到「并发位 + 当前分钟的 RPM 余额」。
+// 不占位、不等待、不碰任何计数——调用方拿它决定「要不要为整轮被拒的候选再跑一轮」，
+// 真正的占用发生在重跑候选的 AdmitChannelGate 里。
 func ChannelGateHasRoom(channelID, maxConcurrent, rpmLimit int) bool {
 	if channelID <= 0 || (maxConcurrent <= 0 && rpmLimit <= 0) {
 		// 闸门不接管的维度（未配置/渠道 ID 无效）：永远视为有空位。

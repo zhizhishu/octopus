@@ -8,8 +8,9 @@ import (
 	"time"
 )
 
-// 渠道级硬限流闸门（channel_gate.go）的单元测试：tryAcquire 原子性、release 幂等、
-// RPM 滑动窗口（名额是消耗品）、只读探测（HasRoom）不占位、整轮排队探测
+// 渠道级硬限流闸门（channel_gate.go）的单元测试：tryAcquire 并发位原子性、release
+// 幂等、RPM 整分钟桶（只数成功、发送前判定、分钟翻转重置）、CurrentRPM 只读读数、
+// 只读探测（HasRoom）不占位、整轮排队探测
 //（WaitAnyOpen：按渠道排队人数上限、25ms 一拍、任一空位立刻成功、取消立刻停、
 // 每个候选只等自己的 QueueTimeoutMs）、以及「不占位」渠道（0/0）行为不变。
 //
@@ -112,45 +113,100 @@ func TestChannelGateHardCapsConcurrentAdmits(t *testing.T) {
 	}
 }
 
-// TestChannelGateRPMIsConsumableNotReturned：RPM 名额是速率不是并发位——释放并发位
-// 不归还 RPM 名额，只能等窗口自己滑过去。
-func TestChannelGateRPMIsConsumableNotReturned(t *testing.T) {
+// TestChannelGateRPMCountsOnlySuccesses：RPM 口径对齐 sub2api（rpm:{id}:{unix/60} +
+// Forward 成功后才计数）——准入本身不消耗名额（失败/取消/被跳过的尝试都不算），只有
+// 成功转发落地才 +1；到顶后同一个整分钟桶内的 admit 一律被拒。
+func TestChannelGateRPMCountsOnlySuccesses(t *testing.T) {
 	ResetChannelGates()
 	defer ResetChannelGates()
 
 	const channelID = 7701
-	var releases []func()
-	for i := 0; i < 3; i++ {
+	// 只占并发位、没有任何成功计数：RPM=3 时连占 5 次都不该被拒（失败尝试不消耗名额）。
+	for i := 0; i < 5; i++ {
 		release, reason := AdmitChannelGate(context.Background(), channelID, 0, 3, 0, nil)
 		if reason != "" {
-			t.Fatalf("admit %d should succeed under rpm=3, got %q", i, reason)
+			t.Fatalf("admit %d must not be rejected before any success is counted, got %q", i, reason)
 		}
-		releases = append(releases, release)
-	}
-	// 全部释放（并发位归零）后，同一 60s 窗口内的第 4 个 admit 仍被拒：名额不随 release 归还。
-	for _, release := range releases {
 		release()
 	}
+	if got := ChannelGateCurrentRPM(channelID); got != 0 {
+		t.Fatalf("admit alone must not raise the minute success count, got %d", got)
+	}
+
+	// 3 次成功落地后：当前分钟计数 3，RPM=3 到顶。
+	for i := 0; i < 3; i++ {
+		RecordChannelRPMSuccess(channelID)
+	}
+	if got := ChannelGateCurrentRPM(channelID); got != 3 {
+		t.Fatalf("after 3 recorded successes current rpm = %d, want 3", got)
+	}
 	if _, reason := AdmitChannelGate(context.Background(), channelID, 0, 3, 0, nil); reason != ChannelGateReasonRPM {
-		t.Fatalf("4th admit after releases must be rejected as rpm limit, got %q", reason)
+		t.Fatalf("admit must be rejected once this minute already has 3 successes, got %q", reason)
+	}
+	if ChannelGateHasRoom(channelID, 0, 3) {
+		t.Fatalf("HasRoom must report no room when the minute success count reached the cap")
+	}
+	// 被拒的准入不改计数（它不是一次成功）。
+	if got := ChannelGateCurrentRPM(channelID); got != 3 {
+		t.Fatalf("a rejected admit must not change the success count, got %d", got)
 	}
 }
 
-// TestChannelGateRPMWindowSlides：60 桶滑动窗口——恰好在 59 秒宽限之外（now-60 < cutoff）
-// 的记录不再计数。真实口径用现状时间戳；这里直接用注入的历史秒验证「滑出去 = 不计入」，
-// 免去等满 60 秒。
-func TestChannelGateRPMWindowSlides(t *testing.T) {
+// TestChannelGateRPMBucketResetsEachMinute：整分钟桶——上一分钟的计数在分钟翻转后一律
+// 不认（不像 60 秒滑动窗口那样还留着半分钟的账），准入与读数都从 0 重新开始。
+func TestChannelGateRPMBucketResetsEachMinute(t *testing.T) {
 	ResetChannelGates()
 	defer ResetChannelGates()
 
-	gate := channelGateFor(7702)
-	past := time.Now().Add(-60 * time.Second)
+	const channelID = 7702
+	RecordChannelRPMSuccess(channelID)
+	RecordChannelRPMSuccess(channelID)
+	if got := ChannelGateCurrentRPM(channelID); got != 2 {
+		t.Fatalf("current rpm after 2 successes = %d, want 2", got)
+	}
+
+	// 把这批成功算到上一分钟（等价于「时间跨过了分钟边界」）：当前分钟必须归零，
+	// 且 rpmLimit=1 的渠道又能准入（旧分钟的成功不占新分钟的额度）。
+	gate := channelGateFor(channelID)
 	gate.mu.Lock()
-	gate.recordRequestLocked(past)
-	count := gate.recentRequestCountLocked(time.Now())
+	gate.rpmMinute = channelGateMinuteOf(time.Now()) - 1
 	gate.mu.Unlock()
-	if count != 0 {
-		t.Fatalf("a request recorded 60s ago must have slid out of the window, got %d", count)
+	if got := ChannelGateCurrentRPM(channelID); got != 0 {
+		t.Fatalf("counts from the previous minute must not be visible, got %d", got)
+	}
+	release, reason := AdmitChannelGate(context.Background(), channelID, 0, 1, 0, nil)
+	if reason != "" {
+		t.Fatalf("the previous minute's successes must not block this minute, got %q", reason)
+	}
+	release()
+
+	// 新一分钟的第一次成功重新从 1 开始。
+	RecordChannelRPMSuccess(channelID)
+	if got := ChannelGateCurrentRPM(channelID); got != 1 {
+		t.Fatalf("the new minute must restart the counter at 1, got %d", got)
+	}
+}
+
+// TestChannelGateCurrentRPMIsReadOnly：CurrentRPM 只读——没记录的渠道（含非法 ID）
+// 一律 0，反复探测不占位、不涨计数。
+func TestChannelGateCurrentRPMIsReadOnly(t *testing.T) {
+	ResetChannelGates()
+	defer ResetChannelGates()
+
+	const channelID = 7720
+	if got := ChannelGateCurrentRPM(channelID); got != 0 {
+		t.Fatalf("a channel with no gate state must report 0, got %d", got)
+	}
+	if got := ChannelGateCurrentRPM(0); got != 0 {
+		t.Fatalf("channel 0 must report 0, got %d", got)
+	}
+	for i := 0; i < 5; i++ {
+		if got := ChannelGateCurrentRPM(channelID); got != 0 {
+			t.Fatalf("read-only probe %d changed the count: %d", i, got)
+		}
+	}
+	if !ChannelGateHasRoom(channelID, 1, 1) {
+		t.Fatalf("probing must not consume any slot/quota")
 	}
 }
 
@@ -202,30 +258,41 @@ func TestChannelGateUnlimitedNeverCreatesState(t *testing.T) {
 	}
 }
 
-// TestChannelGateAdmitIsAtomicAcrossDimensions：并发位与 RPM 名额必须在同一次持锁临界区
-// 里判定并同时占上——要么两个维度一起占，要么一个都不占（不存在「并发位占了、RPM 没
-// 占」的半占状态，那正是这次要修的绕过上限的形态）。
-func TestChannelGateAdmitIsAtomicAcrossDimensions(t *testing.T) {
+// TestChannelGateRejectsOnEitherDimension：两个维度各自独立挡人——并发位满了报
+// channel_concurrency_limit，当前分钟成功数到顶报 channel_rpm_limit；RPM 到顶不影响
+// 并发位归还（release 照旧把 inFlight 减回去，HasRoom(1,0) 仍为真）。
+func TestChannelGateRejectsOnEitherDimension(t *testing.T) {
 	ResetChannelGates()
 	defer ResetChannelGates()
 
 	const channelID = 7705
-	// 并发=1、RPM=1：占住唯一并发位后，下一次 admit 因为 RPM 满被拒（两个维度全满）。
+	// 并发=1：占住唯一并发位后，下一次 admit 被并发维度拒。
 	release, reason := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil)
 	if reason != "" {
 		t.Fatalf("first admit should succeed, got %q", reason)
 	}
 	if ChannelGateHasRoom(channelID, 1, 1) {
-		t.Fatalf("both dimensions are full (1/1 + 1/1 rpm), HasRoom must be false")
+		t.Fatalf("concurrency is full (1/1), HasRoom must be false")
 	}
-	if _, reason := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil); reason == "" {
-		t.Fatalf("second admit must be rejected (rpm dimension full)")
+	if _, reason := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil); reason != ChannelGateReasonConcurrency {
+		t.Fatalf("second admit must be rejected by the concurrency dimension, got %q", reason)
 	}
 	release()
-	// 归还后并发位空了，但 RPM 名额是速率、60 秒内不退：同一渠道仍被 RPM 拒，
-	// 且只看并发维度时已有空位。
-	if _, reason3 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil); reason3 != "channel_rpm_limit" {
-		t.Fatalf("after release the rpm quota is still spent, want channel_rpm_limit, got %q", reason3)
+
+	// 归还并发位后仍能准入：RPM 维度还没花（准入不预占名额）。
+	release2, reason2 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil)
+	if reason2 != "" {
+		t.Fatalf("after release the slot is free and no success was counted yet, got %q", reason2)
+	}
+	release2()
+
+	// 一次成功落地后：并发位是空的，但当前分钟成功数已到 rpm=1，于是被 RPM 维度拒。
+	RecordChannelRPMSuccess(channelID)
+	if _, reason3 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil); reason3 != ChannelGateReasonRPM {
+		t.Fatalf("after one success the rpm dimension is full, want channel_rpm_limit, got %q", reason3)
+	}
+	if ChannelGateHasRoom(channelID, 1, 1) {
+		t.Fatalf("rpm is full (1/1), HasRoom must be false")
 	}
 	if !ChannelGateHasRoom(channelID, 1, 0) {
 		t.Fatalf("after release the concurrency slot must be free again")

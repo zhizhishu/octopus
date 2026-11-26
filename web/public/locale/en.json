@@ -1461,7 +1461,10 @@
       "testNeedModel": "Add a model first",
       "enableSwitch": "Enable channel",
       "enabledTooltip": "On. Turn off to stop sending requests here.",
-      "disabledTooltip": "Off. Turn on to start sending requests here again."
+      "disabledTooltip": "Off. Turn on to start sending requests here again.",
+      "currentRpm": "This min {n}",
+      "currentRpmOfLimit": "This min {n}/{limit}",
+      "currentRpmTip": "Successful requests forwarded in this whole minute. Only successes count — failures, timeouts and rate-limit rejects do not; the counter restarts at 0 each new minute."
     },
     "detail": {
       "title": {
@@ -1520,8 +1523,11 @@
       "priorityHint": "Lower number = used first; channels with the same priority take turns.",
       "gateTitle": "Rate Limit",
       "gateMaxConcurrent": "Max concurrent requests",
-      "gateRpm": "Max requests per minute",
+      "gateRpm": "Max successful requests per minute (whole minutes)",
       "gateZeroUnlimited": "0 = unlimited",
+      "gateCurrentRpm": "{n} successes this minute",
+      "gateCurrentRpmOfLimit": "{n} / {limit} successes this minute",
+      "gateCurrentRpmTip": "Successes counted per whole minute: failed, timed-out and rejected requests do not spend the quota, and the counter restarts at 0 each new minute.",
       "gateWhenFull": "When everything is full",
       "gateFullReject": "Reject now (429)",
       "gateFullQueue": "Queue and wait",
@@ -1531,7 +1537,7 @@
       "gateQueueWaitHint": "0 = default 3 seconds",
       "gateUnlimited": "Unlimited",
       "gateMaxPhrase": "at most {n} at a time",
-      "gateRpmPhrase": "{n} per minute",
+      "gateRpmPhrase": "at most {n} successes per minute (whole minutes)",
       "gateSummaryLine": "{max}, {rpm}; {full}",
       "gateSummaryQueue": "when full, queue up to {size} and wait up to {wait} seconds, then 429",
       "gateSummaryReject": "when full, reject right away (429)",

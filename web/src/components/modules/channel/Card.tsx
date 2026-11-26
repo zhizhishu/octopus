@@ -22,7 +22,7 @@ import {
     getSelectedChannelModels,
 } from './channel-utils';
 
-export function Card({ channel, stats, layout = 'list' }: { channel: Channel; stats: StatsMetricsFormatted; layout?: 'grid' | 'list' }) {
+export function Card({ channel, stats, layout = 'list', currentRpm = 0 }: { channel: Channel; stats: StatsMetricsFormatted; layout?: 'grid' | 'list'; currentRpm?: number }) {
     const t = useTranslations('channel.card');
     const tMetrics = useTranslations('channel.detail.metrics');
     const enableChannel = useEnableChannel();
@@ -112,6 +112,25 @@ export function Card({ channel, stats, layout = 'list' }: { channel: Channel; st
                                 <span>P{channel.priority ?? 0}</span>
                                 <span>{family.shortLabel}</span>
                                 {primaryModel && <span className={cn('truncate', isGridLayout ? 'max-w-full' : 'max-w-[12rem]')}>{primaryModel}</span>}
+                                {/* 本分钟实时 RPM（对齐 sub2api 账号页的 current_rpm）：整分钟桶、只数成功，
+                                    由外层每 5 秒轮一次；有上限时直接给「n/上限」便于对账。 */}
+                                {(channel.rpm_limit > 0 || currentRpm > 0) && (
+                                    <Tooltip side="top" sideOffset={10} align="center">
+                                        <TooltipTrigger asChild>
+                                            <span className={cn(
+                                                'shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium tabular-nums',
+                                                channel.rpm_limit > 0 && currentRpm >= channel.rpm_limit
+                                                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                                                    : 'bg-muted text-muted-foreground'
+                                            )}>
+                                                {channel.rpm_limit > 0
+                                                    ? t('currentRpmOfLimit', { n: currentRpm, limit: channel.rpm_limit })
+                                                    : t('currentRpm', { n: currentRpm })}
+                                            </span>
+                                        </TooltipTrigger>
+                                        <TooltipContent>{t('currentRpmTip')}</TooltipContent>
+                                    </Tooltip>
+                                )}
                             </div>
                         </div>
                     </div>

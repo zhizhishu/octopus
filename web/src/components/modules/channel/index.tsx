@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { useChannelList } from '@/api/endpoints/channel';
+import { useChannelList, useChannelRPMs, channelRPMOf } from '@/api/endpoints/channel';
 import { Card } from './Card';
 import { useSearchStore, useToolbarViewOptionsStore } from '@/components/modules/toolbar';
 import { VirtualizedGrid } from '@/components/common/VirtualizedGrid';
@@ -62,6 +62,14 @@ export function Channel() {
         return visibleChannels.filter((item) => getChannelEndpointFamily(item.raw).id === endpointFilter);
     }, [visibleChannels, endpointFilter]);
 
+    // 「本分钟」实时 RPM（对齐 sub2api 账号页的 current_rpm）：整页一次批量拉，5 秒一轮，
+    // 页面不可见时不轮询。只给当前列表里的渠道，列表外的不白拉。
+    const channelIds = useMemo(
+        () => endpointFilteredChannels.map((item) => item.raw.id),
+        [endpointFilteredChannels]
+    );
+    const { data: rpmData } = useChannelRPMs(channelIds);
+
     return (
         <div className="flex h-full min-h-0 flex-col gap-3">
             <div className="shrink-0 overflow-x-auto pb-1">
@@ -105,7 +113,14 @@ export function Channel() {
                         columns={{ default: 1, md: 2, xl: 3 }}
                         estimateItemHeight={layout === 'list' ? 96 : 248}
                         getItemKey={(item) => `channel-${item.raw.id}`}
-                        renderItem={(item) => <Card channel={item.raw} stats={item.formatted} layout={layout} />}
+                        renderItem={(item) => (
+                            <Card
+                                channel={item.raw}
+                                stats={item.formatted}
+                                layout={layout}
+                                currentRpm={channelRPMOf(rpmData, item.raw.id)}
+                            />
+                        )}
                     />
                 )}
             </div>

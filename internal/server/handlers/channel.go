@@ -56,6 +56,10 @@ func init() {
 				Handle(listChannelCircuits),
 		).
 		AddRoute(
+			router.NewRoute("/rpm", http.MethodGet).
+				Handle(channelCurrentRPM),
+		).
+		AddRoute(
 			router.NewRoute("/delete/:id", http.MethodDelete).
 				Handle(deleteChannel),
 		).
@@ -314,6 +318,42 @@ func listChannelCircuits(c *gin.Context) {
 		return
 	}
 	resp.Success(c, channelCircuitsWithProbe(id))
+}
+
+// channelRPMMaxIDs 是一次 /channel/rpm 最多接受的渠道 ID 个数。这是给渠道页轮询用的
+// 轻量只读接口，超过这个数说明调用方用错了，直接拒掉而不是替它扫一遍。
+const channelRPMMaxIDs = 500
+
+// channelCurrentRPM 只读返回若干渠道「当前这分钟」的成功请求数（对齐 sub2api 账号页的
+// current_rpm）：GET /api/v1/channel/rpm?ids=1,2,3 → data = {"1":12,"2":0}。
+//
+// 数字来自渠道闸门的整分钟桶（balancer.ChannelGateCurrentRPM）：不查库、不占并发位、
+// 不消耗名额；只数**成功**的转发，没配 RPMLimit 的渠道也照实给本分钟成功数。
+func channelCurrentRPM(c *gin.Context) {
+	raw := strings.TrimSpace(c.Query("ids"))
+	if raw == "" {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > channelRPMMaxIDs {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
+	result := make(map[string]int, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.Atoi(part)
+		if err != nil || id <= 0 {
+			resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+			return
+		}
+		result[strconv.Itoa(id)] = balancer.ChannelGateCurrentRPM(id)
+	}
+	resp.Success(c, result)
 }
 
 func deleteChannel(c *gin.Context) {

@@ -1461,7 +1461,10 @@
       "testNeedModel": "请先添加模型",
       "enableSwitch": "启用渠道",
       "enabledTooltip": "已启用。关掉后不再给它转发请求。",
-      "disabledTooltip": "已停用。打开后恢复转发请求。"
+      "disabledTooltip": "已停用。打开后恢复转发请求。",
+      "currentRpm": "本分钟 {n}",
+      "currentRpmOfLimit": "本分钟 {n}/{limit}",
+      "currentRpmTip": "本分钟（整分钟计）已成功转发的请求数。只数成功：失败、超时、被限流拒掉的都不算；每到整分钟从 0 重新算。"
     },
     "detail": {
       "title": {
@@ -1520,8 +1523,11 @@
       "priorityHint": "数字越小越优先；同一优先级轮流使用。",
       "gateTitle": "限流",
       "gateMaxConcurrent": "同时最多几个请求",
-      "gateRpm": "每分钟最多几个请求",
+      "gateRpm": "每分钟最多成功几个请求（按整分钟计）",
       "gateZeroUnlimited": "0 = 不限",
+      "gateCurrentRpm": "本分钟已成功 {n} 次",
+      "gateCurrentRpmOfLimit": "本分钟已成功 {n} / {limit} 次",
+      "gateCurrentRpmTip": "整分钟计的成功数：失败、超时、被拒的请求都不占额度，每到整分钟从 0 重新算。和上面的上限比就是这一分钟还剩多少。",
       "gateWhenFull": "都满了怎么办",
       "gateFullReject": "立刻回错 (429)",
       "gateFullQueue": "排队等一会儿",
@@ -1531,7 +1537,7 @@
       "gateQueueWaitHint": "0 = 默认 3 秒",
       "gateUnlimited": "不限",
       "gateMaxPhrase": "最多同时 {n} 个",
-      "gateRpmPhrase": "每分钟 {n} 个",
+      "gateRpmPhrase": "每分钟最多成功 {n} 个（按整分钟计）",
       "gateSummaryLine": "{max}、{rpm}；{full}",
       "gateSummaryQueue": "都满了排最多 {size} 个、等 {wait} 秒，还等不到回 429",
       "gateSummaryReject": "都满了立刻回错 (429)",

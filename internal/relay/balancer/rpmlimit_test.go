@@ -52,3 +52,33 @@ func TestRuntimeRecentRequestCount(t *testing.T) {
 		t.Fatalf("expected RecentRequestCount=3 after 3 attempts, got %d", snap.RecentRequestCount)
 	}
 }
+
+// TestChannelGateRPMSuccessDoesNotFeedSoftTierCounters pins that the hard gate's
+// minute-bucket success counter (channel_gate.go) and the telemetry trailing-60s
+// counter (telemetry.go, feeding the spreadTier soft demote) are two independent
+// counters: a forwarded success recorded for the hard gate must not silently
+// inflate the soft-tier figure, and a BeginRuntimeAttempt must not spend the hard
+// gate's RPM budget.
+func TestChannelGateRPMSuccessDoesNotFeedSoftTierCounters(t *testing.T) {
+	ResetChannelGates()
+	defer ResetChannelGates()
+	ResetRuntimeTelemetry()
+	defer ResetRuntimeTelemetry()
+
+	const channelID = 4322
+	const modelName = "rpm-model-split"
+
+	RecordChannelRPMSuccess(channelID)
+	RecordChannelRPMSuccess(channelID)
+	snap := SnapshotRoutingRuntime(channelID, modelName,
+		[]model.ChannelKey{{ID: 8, Enabled: true, ChannelKey: "k"}}, false)
+	if snap.RecentRequestCount != 0 {
+		t.Fatalf("hard-gate successes must not feed the telemetry window, got %d", snap.RecentRequestCount)
+	}
+
+	done := BeginRuntimeAttempt(channelID, 8, modelName)
+	done()
+	if got := ChannelGateCurrentRPM(channelID); got != 2 {
+		t.Fatalf("an attempt start must not spend the hard gate's rpm budget, current rpm = %d", got)
+	}
+}
