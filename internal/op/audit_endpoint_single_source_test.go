@@ -60,7 +60,7 @@ func TestAuditEndpointBothEntriesShareOneSource(t *testing.T) {
 		entryCalls += assertFilePathUsesSharedEndpoint(t, filepath.Join(root, rel))
 	}
 	if entryCalls < 3 {
-		t.Fatalf("审计入口里调用 modeltest.NewProbeSender 的次数 = %d, want >= 3（手动 handler / 手动队列 worker / 定时检测各一处）", entryCalls)
+		t.Fatalf("审计入口里调用 modeltest.NewProbeSender/NewRelaySender 的次数 = %d, want >= 3（手动 handler / 手动队列 worker / 定时检测各一处）", entryCalls)
 	}
 
 	// 两个包的非测试代码里都不许再出现端点字面量：出现就说明又写了一份映射。
@@ -107,7 +107,7 @@ func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel == nil || sel.Sel.Name != "NewProbeSender" {
+		if !ok || sel.Sel == nil || (sel.Sel.Name != "NewProbeSender" && sel.Sel.Name != "NewRelaySender") {
 			return true
 		}
 		if len(call.Args) < 3 {

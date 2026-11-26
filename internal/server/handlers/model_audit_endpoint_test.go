@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/db/migrate"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
@@ -31,6 +32,10 @@ func TestManualAuditEntryUsesSharedEndpoint(t *testing.T) {
 			t.Fatalf("close db: %v", err)
 		}
 	})
+	// 同 setupV6HandlerTest：进程内非首个测试库要手动补 032 的系统 Key。
+	if err := migrate.MigrateSystemAPIKeyForTest(db.GetDB()); err != nil {
+		t.Fatalf("seed system api key: %v", err)
+	}
 	if err := op.InitCache(); err != nil {
 		t.Fatalf("init cache: %v", err)
 	}
@@ -91,8 +96,8 @@ func TestManualAuditEntryUsesSharedEndpoint(t *testing.T) {
 			// 而不是端点名错了。
 			if rec.Code != http.StatusOK {
 				if tc.typ == outbound.OutboundType(4) {
-					if !bytes.Contains(rec.Body.Bytes(), []byte("不支持探针校验")) {
-						t.Fatalf("未知类型的拒绝理由应当来自探针准入，实际：%d %s", rec.Code, rec.Body.String())
+					if !bytes.Contains(rec.Body.Bytes(), []byte("不支持 relay 检测")) {
+						t.Fatalf("未知类型的拒绝理由应当来自 relay 检测准入，实际：%d %s", rec.Code, rec.Body.String())
 					}
 					return
 				}
