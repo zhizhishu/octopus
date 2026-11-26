@@ -83,6 +83,12 @@ type racerResult struct {
 	// winnerRA 的话还原全跳过, 占位符直接漏给客户端 (审计 2026-09-25 抓出的 race 泄漏)。
 	redactSession *redact.Session
 	redactApplied bool
+
+	// gateSkipped / gateReason：这个 racer 被渠道级硬限流闸门（balancer.AdmitChannelGate）
+	// 拦住了，一个字节都没发往上游。它不是失败（不计熔断/健康分/渠道失败统计），主线程
+	// 只记一条 AttemptSkipped 审计；一整波全是这种结果时，竞速整体返回 Skipped。
+	gateSkipped bool
+	gateReason  string
 }
 
 // canChannelRace reports whether the channel and request qualify for multi-key racing.
@@ -437,8 +443,44 @@ func runRaceContenders(
 			cancels[idx] = racerCancel
 			cancelsMu.Unlock()
 
+			// 渠道级硬限流闸门（见 balancer/channel_gate.go）：真正发往上游之前，先原子地
+			// 占住本渠道的「并发位 + RPM 名额」。racer 跑在自己的 goroutine 里，不能碰
+			// iter（主线程独占），所以拒了只把事实经 resultsChan 交回主线程记账，然后
+			// 照下面 winnerFound 早退的样式 return（不跑任何上游代码，不发结果给竞速判定）。
+			// 等待预算给 0：竞速本身就是并发多路试探，卡在闸门上只会拉长整波延迟，
+			// 同波其它 contender / 后续 wave 还有机会。
+			// 注：下面「注册窗口」早退的 racer 已经占掉了一个 RPM 名额（RPM 是消耗品，
+			// release 不归还），窗口很窄，且只会多算不会少算——往严的一侧偏，不会绕过上限。
+			releaseGate, gateReason := balancer.AdmitChannelGate(racerCtx, contender.channel.ID, contender.channel.MaxConcurrent, contender.channel.RPMLimit, 0, func() bool { return racerCtx.Err() != nil })
+			if gateReason != "" {
+				if releaseGate != nil {
+					releaseGate()
+				}
+				racerCancel()
+				resultsChan <- racerResult{
+					keyIndex:       idx,
+					channel:        contender.channel,
+					key:            contender.key,
+					gateSkipped:    true,
+					gateReason:     gateReason,
+					runtimeModel:   contender.runtimeModel,
+					capabilityKey:  contender.capabilityKey,
+					promptSnapshot: contender.promptSnapshot,
+				}
+				return
+			}
+
 			startTime := time.Now()
-			finishAttempt := balancer.BeginRuntimeAttempt(contender.channel.ID, contender.key.ID, contender.runtimeModel)
+			finishRuntimeAttempt := balancer.BeginRuntimeAttempt(contender.channel.ID, contender.key.ID, contender.runtimeModel)
+			// 闸门位与 runtime 在途位包成同一个幂等收尾：现有每一条 finishAttempt() 调用
+			// （包括赢家把 finishAttempt 交给主线程、输家/早退的各种分支）都会顺带释放
+			// 闸门，不需要在那个已经跑了很久的资源回收链上再插一遍、也就没漏释放的口。
+			finishAttempt := func() {
+				finishRuntimeAttempt()
+				if releaseGate != nil {
+					releaseGate()
+				}
+			}
 
 			// Registration window: a winner may have CAS'd and swept the cancels slice BEFORE
 			// our entry landed, in which case our cancel is never invoked. Re-check and bail
@@ -915,6 +957,35 @@ func runRaceContenders(
 
 	lastErr = recordLoserResults(parentReq, endpoint, loserResults, &bestFailStatus)
 
+	// 整波都被渠道级硬限流闸门拒了（每个 contender 一个字节都没发出去）：
+	// 把「没发」如实传回上层，让它记 skipped 而不是当失败——否则一个正常排队中的
+	// 突发会被写成上游错误并且噼里啪啦地救一手。这里要求「所有拿到的结果都是
+	// gate-skipped」，只要有一个真失败（lastErr != nil）就照旧走失败口径。
+	// GateSkippedChannels 携带被拒的渠道（含上限配置），供上层整轮排队探测用。
+	gateSkipped, gateReason := 0, ""
+	gateCandidates := map[int]balancer.GateCandidate{}
+	for _, res := range loserResults {
+		if !res.gateSkipped || res.channel == nil {
+			continue
+		}
+		gateSkipped++
+		if gateReason == "" {
+			gateReason = res.gateReason
+		}
+		gateCandidates[res.channel.ID] = balancer.GateCandidate{
+			ChannelID:     res.channel.ID,
+			MaxConcurrent: res.channel.MaxConcurrent,
+			RPMLimit:      res.channel.RPMLimit,
+		}
+	}
+	if lastErr == nil && gateSkipped > 0 && gateSkipped == len(loserResults) {
+		skippedChannels := make([]balancer.GateCandidate, 0, len(gateCandidates))
+		for _, candidate := range gateCandidates {
+			skippedChannels = append(skippedChannels, candidate)
+		}
+		return attemptResult{Skipped: true, SkipReason: gateReason, GateSkippedChannels: skippedChannels}, nil
+	}
+
 	// All raced contenders failed
 	if lastErr == nil {
 		lastErr = fmt.Errorf("%d raced contenders failed", len(contenders))
@@ -1115,6 +1186,14 @@ func recordLoserResults(
 		// excluded from total_attempts (see retryAttemptCount: a race loss is not a retry).
 		if res.canceled {
 			span.End(dbmodel.AttemptFailed, res.statusCode, dbmodel.AttemptMsgRacedOut)
+			continue
+		}
+
+		// 渠道级硬限流闸门拒了：一个字节都没发出去，所以同样不是上游失败 —— 不记 key
+		// 使用、不碰熔断器/健康分、不计渠道失败统计，也不设 lastErr（否则一整波都被
+		// 闸门挡住会被当成“上游全挂”去救）。只留一条 skipped 审计，把维度说清。
+		if res.gateSkipped {
+			span.End(dbmodel.AttemptSkipped, 0, res.gateReason)
 			continue
 		}
 

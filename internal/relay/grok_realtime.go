@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -164,6 +165,13 @@ func GrokRealtimeHandler(c *gin.Context) {
 		lastErr          error
 		allAttempts      []model.ChannelAttempt
 		triedReturnGroup bool
+		// 渠道级硬限流闸门（见 balancer/channel_gate.go）整轮排队状态：gateSkippedCount/
+		// gateSkipReason 汇总被拒事实，gateSkippedChannels 收集被拒渠道（含上限配置）供
+		// 整轮排队探测，gateRequeued 保证整轮排队只发生一次。语义与 relay.go Handler 一致。
+		gateSkippedCount    int
+		gateSkipReason      string
+		gateSkippedChannels []balancer.GateCandidate
+		gateRequeued        bool
 	)
 
 runIterator:
@@ -202,9 +210,40 @@ runIterator:
 			if iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
 				continue
 			}
+
+			// 渠道级硬限流闸门（见 balancer/channel_gate.go）：真正发往上游之前，先原子地占住本渠道的
+			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
+			// 只记一条 skipped 审计。闸门只按渠道计数，同渠道剩下的 key 命中的是同一道闸，直接换渠道。
+			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+			if gateReason != "" {
+				if releaseGate != nil {
+					releaseGate()
+				}
+				iter.Skip(channel.ID, 0, channel.Name, gateReason)
+				gateSkippedCount++
+				gateSkipReason = gateReason
+				gateSkippedChannels = appendGateCandidates(gateSkippedChannels, []balancer.GateCandidate{{
+					ChannelID:     channel.ID,
+					MaxConcurrent: channel.MaxConcurrent,
+					RPMLimit:      channel.RPMLimit,
+				}})
+				break
+			}
+
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
 			recordAttemptProxy(span, channel)
-			finishRuntimeAttempt := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
+			finishRuntime := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
+			// 闸门位与在途位包成同一个幂等收尾：本文件在每个出口都显式调一次它。
+			finishRuntimeAttempt := func() {
+				finishRuntime()
+				if releaseGate != nil {
+					releaseGate()
+				}
+			}
+			// 兜底：panic 会绕过上面那些显式调用。两个闭包都幂等，正常路径上这一行是空操作；
+			// 不挂它的话，一次 panic 会把渠道的并发位永久占死（比在途计数漏减严重得多）。
+			defer finishRuntimeAttempt()
 			upstream, statusCode, dialErr := dialGrokRealtimeUpstream(ctx, c, channel, usedKey.ChannelKey, item.ModelName)
 			if dialErr != nil {
 				finishRuntimeAttempt()
@@ -292,12 +331,35 @@ runIterator:
 		}
 	}
 
+	// 渠道级硬限流闸门：一整轮候选跑完仍全被拒、且本请求还没排过队时，先排队——最多
+	// ChannelGateWaitBudget(3s) 总时长，每 25ms 探一遍被跳过的渠道是否有任一空位；有就
+	// 重跑一轮候选（只重跑一次）。3s 后仍满或客户端断开，走下面的 429 终态。实时连接按
+	// 当前请求的 ctx 探（升级前先看够不够第一份），终态同 relay.go。
+	if !gateRequeued && lastErr == nil && gateSkippedCount > 0 && !c.Writer.Written() {
+		gateRequeued = true
+		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateWaitBudget, func() bool { return ctx.Err() != nil }) {
+			iter = balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSession.Key, stickyEnabled)
+			metrics.debug.route("gate-requeue", group, iter, stickyEnabled)
+			goto runIterator
+		}
+	}
+
 	finalErr := lastErr
+	// 整轮候选全被闸门拒（一次真实发送都没有）：终态同 relay.go——429 channel_rate_limited。
+	gateExhausted := lastErr == nil && gateSkippedCount > 0 && !c.Writer.Written()
 	if finalErr == nil {
-		finalErr = routeSelectionErrorFromAttempts(allAttempts)
+		if gateExhausted {
+			finalErr = fmt.Errorf("channel gate: all candidates busy (%s), no upstream attempt was sent", gateSkipReason)
+		} else {
+			finalErr = routeSelectionErrorFromAttempts(allAttempts)
+		}
 	}
 	metrics.Save(ctx, false, finalErr, allAttempts)
 	errStatus, errCode, errMessage := relayErrorResponse(finalErr)
+	if gateExhausted {
+		c.Header("Retry-After", strconv.Itoa(channelRateLimitedRetryAfterSeconds))
+		errStatus, errCode, errMessage = http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage
+	}
 	resp.ErrorWithCode(c, errStatus, errCode, errMessage)
 }
 

@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -166,6 +167,17 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		fatalClientErr     error // 确定性客户端错误(上下文超长/请求体非法): 停止遍历与救援, 原样透传真实 4xx
 		requestSucceeded   bool  // 重试前的 lastErr 可能仍非 nil，终态需按真实成功结果判断
 		machineRescueRan   bool  // startRecovery 首次 pin 成功即置真: 预算耗尽/机器终止都据此压制同名消息
+
+		// 渠道级硬限流闸门（见 balancer.AdmitChannelGate）的汇总：整轮候选全被闸门拒、
+		// 一次真实发送都没有时，终态要回 429 channel_rate_limited（渠道此刻满），而不是
+		// 5xx / 救援超时——调用方据此按限流节奏排队重试，而不是当上游坏了去重试。
+		// gateSkipReason 只保留最近一次的维度，供日志与终态文案使用。
+		gateSkippedCount int
+		gateSkipReason   string
+		// gateSkippedChannels 汇总第一次尝试里被闸门拒掉的渠道（含上限配置），供整轮
+		// 候选全拒后的排队探测用；gateRequeued 保证整轮排队最多发生一次。见收尾 requeue 块。
+		gateSkippedChannels []balancer.GateCandidate
+		gateRequeued        bool
 
 		// Intervention state lifted above runIterator to ensure exactly one pending ID,
 		// one context/cancel, one keepalive goroutine, and single cleanup across the full request lifecycle.
@@ -483,6 +495,18 @@ attemptChannels:
 			if !result.Success {
 				req.internalRequest = internalRequest
 			}
+			// 渠道级硬限流闸门：这一波竞速的所有 contender 都被闸门拒了（一次真实发送都没有）。
+			// 这不是失败：不 pin 救援窗口、不释放救援死线、不留 lastErr、不计错误统计，
+			// 直接换下一个候选。operator 的救援点不会被吞：requestState.rescueRequested
+			// 是 latch 标志，这里不 consume，下一轮照旧读到（连续换候选本就是它要的）。
+			// 每个 contender 自己的 skipped 审计由 race 主线程记在各自渠道上。
+			if result.Skipped {
+				gateSkippedCount++
+				gateSkipReason = result.SkipReason
+				gateSkippedChannels = appendGateCandidates(gateSkippedChannels, result.GateSkippedChannels)
+				requestState.finishRound(result.SkipReason, time.Since(raceStartedAt).Milliseconds())
+				continue
+			}
 			recoveryStartedAt = startRecovery(recoveryStartedAt, result.Err)
 			if result.Err == nil {
 				req.releaseRescueDeadline()
@@ -576,6 +600,19 @@ attemptChannels:
 			endAttempt := beginControlledAttempt()
 			result := ra.attempt()
 			endAttempt()
+			// 渠道级硬限流闸门拒绝：不是失败，是「此刻发不出去」。
+			// 不进入任何失败分支：不 pin 救援窗口、不释放救援死线、不计 lastErr、
+			// 不碰熔断器/健康分/渠道失败统计（attempt() 里什么都没记）。这里只补一条
+			// skipped 审计（AttemptSkipped + 具体维度），然后换下一个候选渠道。
+			// 闸门只按渠道计数，所以同渠道剩下的 key 命中的是同一道闸——再等一轮没有意义。
+			if result.Skipped {
+				iter.Skip(channel.ID, 0, channel.Name, result.SkipReason)
+				gateSkippedCount++
+				gateSkipReason = result.SkipReason
+				gateSkippedChannels = appendGateCandidates(gateSkippedChannels, result.GateSkippedChannels)
+				requestState.finishRound(result.SkipReason, time.Since(attemptStartTime).Milliseconds())
+				break
+			}
 			recoveryStartedAt = startRecovery(recoveryStartedAt, result.Err)
 			if result.Err == nil {
 				req.releaseRescueDeadline()
@@ -675,6 +712,23 @@ attemptChannels:
 					}
 				}
 			}
+		}
+	}
+	// 渠道级硬限流闸门：一整轮候选跑完仍全被拒（lastErr==nil、gateSkippedCount>0、没写
+	// 业务数据），且本请求还没排过队时，先排队——最多 ChannelGateWaitBudget(3s) 总时长，
+	// 每 25ms 探一遍被跳过的渠道是否有任一空位；有就重跑一轮候选（只重跑一次）。3s 内
+	// 没空位或客户端断开，就落到下面的 429 channel_rate_limited 终态（救援轮态后自会照旧）。
+	if !gateRequeued && lastErr == nil && gateSkippedCount > 0 && !req.wroteBusinessData {
+		gateRequeued = true
+		if balancer.ChannelGateWaitAnyOpen(originalRequest.Context(), gateSkippedChannels, balancer.ChannelGateWaitBudget, func() bool {
+			return originalRequest.Context().Err() != nil
+		}) {
+			requeueSticky := routeStickyEnabled(group.Mode, clientSession.Source)
+			iter = balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSessionKey, requeueSticky)
+			iter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, group.Items))
+			req.stickyEnabled = requeueSticky
+			metrics.debugRoute("gate-requeue", group, iter, requeueSticky)
+			goto runIterator
 		}
 	}
 	finalErr := lastErr
@@ -906,18 +960,31 @@ attemptChannels:
 	}
 
 	finalErr = lastErr
+	// 渠道级硬限流闸门的终态（见 balancer.AdmitChannelGate）：整轮候选都被闸门拒、
+	// 一次真实发送都没有（lastErr 因此还是 nil）。这不是上游失败也不是网关故障，
+	// 而是「渠道此刻满」，终态必须是 429 channel_rate_limited + Retry-After，
+	// 否则调用方会把“排不上队”读成“上游坏了”，反而更猛烈地重试。
+	gateExhausted := lastErr == nil && gateSkippedCount > 0 && !req.wroteBusinessData
 	// R18 belt-and-suspenders: a rescue timeout may only override the final error when
 	// no business data reached the client. Every current Written exit returns before this
 	// line, so the override is unreachable for committed bodies today; the gate keeps any
 	// future path from ever relabeling a delivered response as rescue_timeout.
-	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil && !req.wroteBusinessData && !carriesUpstreamStatus(lastErr) {
+	// gateExhausted 同样优先：救援超时标签盖不掉一条“一次都没发出去”的限流终态。
+	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil && !req.wroteBusinessData && !carriesUpstreamStatus(lastErr) && !gateExhausted {
 		// 救援超时标签只许覆盖"没有真实上游错误可报"的情况。每一次尝试都回了 429/5xx 时, 调用方
 		// 必须看到那个真实状态码 —— 用 504 octopus_rescue_timeout 盖掉它, 等于把"上游在限流"
 		// 这件事藏成一个笼统的网关超时。
 		finalErr = stopErr
 	}
 	if finalErr == nil {
-		finalErr = routeSelectionErrorFromAttempts(allAttempts)
+		if gateExhausted {
+			// 给指标/日志一个可读的真实原因；面对调用方的状态码与文案在下面写出口统一换成
+			// 429 + channel_rate_limited（不能让它落到 routeSelectionErrorFromAttempts 的
+			// 「选路失败 / 没渠道」语气上）。
+			finalErr = fmt.Errorf("channel gate: all candidates busy (%s), no upstream attempt was sent", gateSkipReason)
+		} else {
+			finalErr = routeSelectionErrorFromAttempts(allAttempts)
+		}
 	}
 	if stopInterventionKeepalive != nil {
 		stopInterventionKeepalive()
@@ -925,6 +992,9 @@ attemptChannels:
 	}
 	metrics.Save(originalRequest.Context(), false, finalErr, allAttempts)
 	status, code, message := relayErrorResponse(finalErr)
+	if gateExhausted {
+		status, code, message = http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage
+	}
 	if c.Writer.Written() {
 		// Deferred-commit kept the stream warm with heartbeats while we failed over
 		// across every channel, so HTTP 200 is already committed and no content ever
@@ -947,9 +1017,27 @@ attemptChannels:
 		}
 		return
 	}
+	errType := "api_error"
+	if gateExhausted {
+		// 头部还没提交，才写得出节奏提示（写入后写头是无效的）。写在这里而不是靠
+		// writeFinalRetryAfterHint，是因为后者的 429 提示源自上游 Retry-After，
+		// 本终态根本没有上游，固定 1s 就是我们的口径。
+		c.Header("Retry-After", strconv.Itoa(channelRateLimitedRetryAfterSeconds))
+		errType = channelRateLimitedType
+	}
 	writeFinalRetryAfterHint(c, status, finalErr, iter.Attempts())
-	writeRelayErrorPreStream(c, inboundType, status, "api_error", code, message)
+	writeRelayErrorPreStream(c, inboundType, status, errType, code, message)
 }
+
+// 渠道级硬限流闸门的终态常量（见 balancer.AdmitChannelGate 与 Handler 收尾路径）。
+// channel_rate_limited 是“本次请求一次都没发出去，因为渠道并发位/RPM 名额满了”的
+// 唯一口径：调用方据此按限流节奏排队重试，而不是把渠道当成坏上游。
+const (
+	channelRateLimitedCode              = "channel_rate_limited"
+	channelRateLimitedMessage           = "all channels busy (rpm/concurrency limit), please retry shortly"
+	channelRateLimitedType              = "rate_limit_error"
+	channelRateLimitedRetryAfterSeconds = 1
+)
 
 // writeNonStreamJSONError appends a JSON error body to a non-stream (application/json)
 // response whose head was already committed by blank-line keepalives. Written after the
@@ -986,6 +1074,39 @@ func recordAttemptProxy(span *balancer.AttemptSpan, channel *dbmodel.Channel) {
 	span.SetProxy(info.Used, info.Source, info.Scheme, info.Host)
 }
 
+// attemptGateContext 返回「这次尝试还该不该继续等」所依据的上下文。
+//
+// 它就是本轮的 c.Request，因此同时携带客户端断开与救援/总钟取消：闸门排队期间
+// 只要它被取消，就立刻停止等待（绝不把一个已经走掉的调用端的位子继续排队占着）。
+func (ra *relayAttempt) attemptGateContext() context.Context {
+	if ra == nil || ra.c == nil || ra.c.Request == nil {
+		return context.Background()
+	}
+	return ra.c.Request.Context()
+}
+
+// appendGateCandidates 把这一波被闸门拒掉的渠道并进整轮排队候选集：按渠道 ID 去重，
+// 上限配置以最后一次看到的为准（同一渠道不会重复探测）。dst 原切片不 shorten。
+func appendGateCandidates(dst, src []balancer.GateCandidate) []balancer.GateCandidate {
+	for _, candidate := range src {
+		if candidate.ChannelID <= 0 {
+			continue
+		}
+		merged := false
+		for i := range dst {
+			if dst[i].ChannelID == candidate.ChannelID {
+				dst[i] = candidate
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			dst = append(dst, candidate)
+		}
+	}
+	return dst
+}
+
 func (ra *relayAttempt) resolveRuntimeModel() string {
 	if ra == nil {
 		return ""
@@ -1005,6 +1126,37 @@ func (ra *relayAttempt) resolveRuntimeModel() string {
 // attempt 统一管理一次通道尝试的完整生命周期
 func (ra *relayAttempt) attempt() attemptResult {
 	runtimeModel := ra.resolveRuntimeModel()
+
+	// 渠道级硬限流闸门（见 balancer/channel_gate.go）：真正发往上游之前，先原子地占住
+	// 本渠道的「并发位 + RPM 滑动窗口名额」。占不到就不是「失败」，是「此刻发不出去」——
+	// 先于 StartAttempt 返回，所以不会留下半个 span，也不会记任何错误统计/熔断/健康分。
+	// 闸门只按渠道计数，所以它用的是 BeginRuntimeAttempt 的同一个 channel。
+	// maxWait=0：占不到位立即退，排队语义统一在 Handler 收尾做（整轮被拒后探到空位
+	// 才重跑一轮），绝不在单个候选内部各等 ChannelGateWaitBudget（N 个候选 × 3s）。
+	gateCtx := ra.attemptGateContext()
+	clientGone := func() bool { return gateCtx.Err() != nil }
+	releaseGate, gateReason := balancer.AdmitChannelGate(gateCtx, ra.channel.ID, ra.channel.MaxConcurrent, ra.channel.RPMLimit, 0, clientGone)
+	if gateReason != "" {
+		if releaseGate != nil {
+			releaseGate()
+		}
+		// 审计留给主循环（iter.Skip），这里把「没发，为什么没发」连渠道一起交回去。
+		return attemptResult{
+			Skipped:    true,
+			SkipReason: gateReason,
+			GateSkippedChannels: []balancer.GateCandidate{{
+				ChannelID:     ra.channel.ID,
+				MaxConcurrent: ra.channel.MaxConcurrent,
+				RPMLimit:      ra.channel.RPMLimit,
+			}},
+		}
+	}
+	// 第一层释放保险：成功/失败/客户端断开/流中断/panic 都会经过这个 defer。
+	// releaseGate 幂等，和后面 BeginRuntimeAttempt 自己的 finish closure 互不依赖。
+	if releaseGate != nil {
+		defer releaseGate()
+	}
+
 	span := ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
 	span.SetRouteScope(ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
 	recordAttemptProxy(span, ra.channel)

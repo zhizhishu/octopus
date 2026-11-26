@@ -485,4 +485,20 @@ type attemptResult struct {
 	// RetryAfter 是上游给的 Retry-After 提示（限流/过载时要求多久后再来），
 	// 缺省为 0 表示上游没给。转发层用它给下游定节奏，重试轮次用它避免自己打自己。
 	RetryAfter time.Duration
+
+	// Skipped 表示这次「尝试」根本没发出去：渠道级硬限流闸门（见
+	// balancer.AdmitChannelGate）没占到「渠道并发位 + 渠道 RPM 名额」。
+	//
+	// 它刻意不是一种失败：没有字节能到达上游，所以不计入 attempt 错误统计、不碰
+	// 熔断器、不扣渠道健康分、也不 pin 救援窗口。主循环看到它只记一条 skipped
+	// 审计（AttemptSkipped，带 SkipReason）然后换下一个候选；整轮候选全被拒时，
+	// 终态是 429 channel_rate_limited（渠道此刻满），不是 5xx（上游坏）。
+	Skipped    bool
+	SkipReason string // 被拒的维度：channel_concurrency_limit / channel_rpm_limit
+
+	// GateSkippedChannels 是这一波（单次尝试或一段竞速 wave）被闸门拒掉的渠道快照
+	// （ChannelID + 该渠道的上限配置），只在 Skipped=true 时有值。主循环把它并进
+	// gateSkippedChannels，在整轮候选全拒后的排队探测（balancer.ChannelGateWaitAnyOpen）
+	// 里回答「被跳过的渠道是否有任一能占到位」。
+	GateSkippedChannels []balancer.GateCandidate
 }

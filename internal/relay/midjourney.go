@@ -723,6 +723,13 @@ func midjourneySubmitRouted(c *gin.Context, ctx context.Context, plan midjourney
 		lastErr          error
 		allAttempts      []model.ChannelAttempt
 		triedReturnGroup bool
+		// 渠道级硬限流闸门（见 balancer/channel_gate.go）整轮排队状态：gateSkippedCount/
+		// gateSkipReason 汇总被拒事实，gateSkippedChannels 收集被拒渠道（含上限配置）供
+		// 整轮排队探测，gateRequeued 保证整轮排队只发生一次。语义与 relay.go Handler 一致。
+		gateSkippedCount    int
+		gateSkipReason      string
+		gateSkippedChannels []balancer.GateCandidate
+		gateRequeued        bool
 	)
 runIterator:
 	for iter.Next() {
@@ -768,12 +775,37 @@ runIterator:
 			}
 			log.Infof("midjourney %s model %s, forwarding to channel: %s model: %s (attempt %d/%d, key %d/%d)",
 				plan.action, plan.model, channel.Name, item.ModelName, iter.Index()+1, iter.Len(), keyIndex+1, len(availableKeys))
+
+			// 渠道级硬限流闸门（见 balancer/channel_gate.go）：真正发往上游之前，先原子地占住本渠道的
+			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
+			// 只记一条 skipped 审计。闸门只按渠道计数，同渠道剩下的 key 命中的是同一道闸，直接换渠道。
+			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+			if gateReason != "" {
+				if releaseGate != nil {
+					releaseGate()
+				}
+				iter.Skip(channel.ID, 0, channel.Name, gateReason)
+				gateSkippedCount++
+				gateSkipReason = gateReason
+				gateSkippedChannels = appendGateCandidates(gateSkippedChannels, []balancer.GateCandidate{{
+					ChannelID:     channel.ID,
+					MaxConcurrent: channel.MaxConcurrent,
+					RPMLimit:      channel.RPMLimit,
+				}})
+				break
+			}
+
 			span := iter.StartAttempt(channel.ID, usedKey.ID, channel.Name)
 			recordAttemptProxy(span, channel)
 			metrics.debug.target(channel, usedKey.ID)
 			statusCode, respBody, upstreamCT, fwdErr := func() (int, []byte, string, error) {
 				finish := balancer.BeginRuntimeAttempt(channel.ID, usedKey.ID, item.ModelName)
 				defer finish()
+				// 闸门位与在途位分开释放（两者都幂等）：成功/失败/panic 都会经这里。
+				if releaseGate != nil {
+					defer releaseGate()
+				}
 				return midjourneyForward(ctx, c, http.MethodPost, upstreamPath, body, channel, usedKey.ChannelKey)
 			}()
 			usedAt := time.Now().Unix()
@@ -846,12 +878,37 @@ runIterator:
 		}
 	}
 
+	// 渠道级硬限流闸门：一整轮候选跑完仍全被拒、且本请求还没排过队时，先排队——最多
+	// ChannelGateWaitBudget(3s) 总时长，每 25ms 探一遍被跳过的渠道是否有任一空位；有就
+	// 重跑一轮候选（只重跑一次）。3s 后仍满或客户端断开，走下面的 429 终态（与 relay.go
+	// Handler 的 channel_rate_limited 同口径）。
+	if !gateRequeued && lastErr == nil && gateSkippedCount > 0 && !c.Writer.Written() {
+		gateRequeued = true
+		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateWaitBudget, func() bool { return ctx.Err() != nil }) {
+			iter = balancer.NewIteratorWithSession(group, apiKeyID, plan.model, "", false)
+			metrics.debug.route("gate-requeue", group, iter, false)
+			goto runIterator
+		}
+	}
+
 	finalErr := lastErr
+	// 整轮候选全被闸门拒（一次真实发送都没有）：终态同 relay.go——429 channel_rate_limited。
+	gateExhausted := lastErr == nil && gateSkippedCount > 0 && !c.Writer.Written()
 	if finalErr == nil {
-		finalErr = routeSelectionErrorFromAttempts(allAttempts)
+		if gateExhausted {
+			finalErr = fmt.Errorf("channel gate: all candidates busy (%s), no upstream attempt was sent", gateSkipReason)
+		} else {
+			finalErr = routeSelectionErrorFromAttempts(allAttempts)
+		}
 	}
 	metrics.Save(ctx, false, finalErr, allAttempts)
 	status, _, message = relayErrorResponse(finalErr)
+	if gateExhausted {
+		// 头部未提交时才写得出节奏提示：Retry-After 口径与 relay.go 相同（固定 1s）。
+		c.Header("Retry-After", strconv.Itoa(channelRateLimitedRetryAfterSeconds))
+		status = http.StatusTooManyRequests
+		message = channelRateLimitedMessage
+	}
 	writeMidjourneyError(c, status, message)
 }
 
