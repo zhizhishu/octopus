@@ -488,6 +488,9 @@ export function ChannelForm({
 
     const testModel = inputValue.trim() || autoModels[0] || '';
     const buildChannelTestConfig = () => ({
+        // 已保存渠道必须带上 id：后端按 id 钉住被测渠道（internal pin 对 id<=0 空转、
+        // relay 检测入口直接拒），其余字段仍用表单当前值覆盖，测的就是操作者看到的配置。
+        id: channelId ?? 0,
         name: formData.name.trim() || 'current channel',
         type: formData.type,
         enabled: formData.enabled,
@@ -1336,17 +1339,19 @@ export function ChannelForm({
                 <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-card-foreground">{t('model')}</label>
                     <div className="flex items-center gap-1">
-                        <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleTestCurrentChannel}
-                            disabled={!formData.base_urls?.[0]?.url || !effectiveKey || !testModel || channelTest.isPending}
-                            className="h-6 px-2 text-xs text-muted-foreground/60 hover:text-muted-foreground hover:bg-transparent"
-                        >
-                            {channelTest.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Play className="h-3 w-3 mr-1" />}
-                            {t('modelTest')}
-                        </Button>
+                        <span title={!channelId || channelId <= 0 ? '先保存再测试' : undefined} className="inline-flex">
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={handleTestCurrentChannel}
+                                disabled={!channelId || channelId <= 0 || !formData.base_urls?.[0]?.url || !effectiveKey || !testModel || channelTest.isPending}
+                                className="h-6 px-2 text-xs text-muted-foreground/60 hover:text-muted-foreground hover:bg-transparent"
+                            >
+                                {channelTest.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Play className="h-3 w-3 mr-1" />}
+                                {t('modelTest')}
+                            </Button>
+                        </span>
                         <Button
                             type="button"
                             variant="ghost"
