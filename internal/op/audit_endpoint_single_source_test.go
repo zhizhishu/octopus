@@ -60,7 +60,7 @@ func TestAuditEndpointBothEntriesShareOneSource(t *testing.T) {
 		entryCalls += assertFilePathUsesSharedEndpoint(t, filepath.Join(root, rel))
 	}
 	if entryCalls < 2 {
-		t.Fatalf("审计入口里调用 modeltest.NewRelaySender 的次数 = %d, want >= 2（手动 handler / 检测队列 worker 各一处；定时检测生产路径走同一个 worker，task/audit.go 里残留的就地探针只是 wiring 测试的接线，不算入口）", entryCalls)
+		t.Fatalf("审计入口里调用 modeltest.NewRelaySender 的次数 = %d, want >= 2（手动 handler / 检测队列 worker 各一处；定时检测生产路径走同一个 worker）", entryCalls)
 	}
 
 	// 两个包的非测试代码里都不许再出现端点字面量：出现就说明又写了一份映射。
@@ -75,9 +75,9 @@ func TestAuditEndpointBothEntriesShareOneSource(t *testing.T) {
 // assertFilePathUsesSharedEndpoint 断言一个入口文件：
 //  1. 没有留下任何一个端点映射函数（旧名字或新的同义 switch）；
 //  2. 每一处 modeltest.NewRelaySender 的端点实参，最终都只可能来自
-//     op.AuditEndpointForChannel。检测在 26dca17 之后只走 relay 发送器；
-//     NewProbeSender 仅剩断路器/红队/hlwy 与 wiring 测试的探针接线，
-//     那些不是审计入口，不在本判据范围内。
+//     op.AuditEndpointForChannel；
+//  3. 一处 modeltest.NewProbeSender 都不许有——审计检测只走 relay 发送器，
+//     探针发送器留给断路器/红队/hlwy 那些非审计入口的调用面。
 //
 // 返回该文件里 NewRelaySender 的调用次数。
 func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
@@ -109,7 +109,15 @@ func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel == nil || sel.Sel.Name != "NewRelaySender" {
+		if !ok || sel.Sel == nil {
+			return true
+		}
+		if sel.Sel.Name == "NewProbeSender" {
+			t.Errorf("%s: 审计入口不许再调 modeltest.NewProbeSender——检测只走 NewRelaySender（红队/hlwy/断路器的探针调用面不在入口文件里）",
+				fset.Position(call.Pos()).String())
+			return true
+		}
+		if sel.Sel.Name != "NewRelaySender" {
 			return true
 		}
 		if len(call.Args) < 3 {

@@ -4,15 +4,34 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
+
+// setupScheduledAuditTestDB 起一个临时库：渠道检测链路会读设置缓存与渠道/密钥状态，
+// 没有库就会在初始化处 panic，那会掩盖用例真正要断言的东西。
+func setupScheduledAuditTestDB(t *testing.T) {
+	t.Helper()
+	if err := db.InitDB("sqlite", filepath.Join(t.TempDir(), "octopus.db"), false); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close db: %v", err)
+		}
+	})
+	if err := op.InitCache(); err != nil {
+		t.Fatalf("init cache: %v", err)
+	}
+}
 
 func TestScheduledTargetKeyKeepsChannelAndModelApart(t *testing.T) {
 	left := scheduledTargetKey(1, "claude-opus-4-8")

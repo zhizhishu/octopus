@@ -2,7 +2,6 @@ package task
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/zhizhishu/octopus/internal/model"
-	"github.com/zhizhishu/octopus/internal/modeltest"
 	"github.com/zhizhishu/octopus/internal/modelverify/behavior"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
@@ -34,11 +32,6 @@ const (
 
 	// scheduledAuditMaxTargets 一轮最多处理几个渠道/模型。
 	scheduledAuditMaxTargets = 8
-
-	// scheduledAuditProbeBudget 就地跑单目标时的单目标超时。
-	// 只给 runScheduledAuditTarget（仅测试与历史调用面在用）——生产抽检走队列，
-	// 超时按请求量放大，见 enqueueScheduledAuditTarget 的注释。
-	scheduledAuditProbeBudget = 45 * time.Second
 
 	// scheduledAuditTaskBudget 整轮定时抽检的预算（现在只包含读渠道/入队，不含探测）。
 	scheduledAuditTaskBudget = 20 * time.Minute
@@ -357,61 +350,6 @@ func auditProbeProtocol(t outbound.OutboundType) string {
 	default:
 		return "openai-chat"
 	}
-}
-
-// runScheduledAuditTarget 就地跑一个目标并返回结论。
-//
-// 生产路径已经不再调它（抽检改走队列，见 enqueueScheduledAuditTarget）：45 秒的单目标
-// 预算装不下认模型的题目。保留它是因为 audit_probe_wiring_test.go 用它证明
-// 「题目→发送器」这段接线是通的，而那段断言与本函数共用同一套题目和同一个发送器。
-func runScheduledAuditTarget(ctx context.Context, target scheduledAuditTarget) model.ScheduledAuditResult {
-	item := model.ScheduledAuditResult{
-		ChannelID:   target.channel.ID,
-		ChannelName: target.channel.Name,
-		Model:       target.model,
-		Trigger:     target.trigger,
-		LogID:       target.logID,
-	}
-	upstreamModel := target.model
-	if mapped, ok := target.channel.ModelMapping[upstreamModel]; ok && mapped != "" {
-		upstreamModel = mapped
-	}
-	sender, err := modeltest.NewProbeSender(target.channel, upstreamModel, op.AuditEndpointForChannel(target.channel))
-	if err != nil {
-		item.Skipped = true
-		item.SkipReason = err.Error()
-		return item
-	}
-	probes, _ := auditPlanForChannel(target.channel, target.model)
-	if len(probes) == 0 {
-		item.Skipped = true
-		item.SkipReason = "没有可用的抽检题目"
-		return item
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, scheduledAuditProbeBudget)
-	defer cancel()
-	started := time.Now()
-	results := behavior.Run(probeCtx, probes, sender, upstreamModel)
-	report := behavior.ToView(behavior.BuildReport(results, target.model))
-	item.DurationMs = int(time.Since(started).Milliseconds())
-	item.Verdict = string(report.Verdict)
-	item.Score = report.Score
-	item.FindingN = behavior.CountScoredViewFindings(report.Findings)
-	item.ErrorN = len(report.Errors)
-
-	// 结论落库: 钉回触发它的那行日志, 先到先得(空 verdict 才写), 重启不再丢。
-	if target.logID > 0 {
-		trigger := target.trigger
-		if trigger == "" {
-			trigger = "schedule"
-		}
-		if reportJSON, err := json.Marshal(report); err == nil {
-			if err := op.RelayLogMarkAudited(ctx, target.logID, string(report.Verdict), report.Score, behavior.CountScoredViewFindings(report.Findings), trigger, string(reportJSON)); err != nil {
-				log.Warnf("model audit persist for log %d failed: %v", target.logID, err)
-			}
-		}
-	}
-	return item
 }
 
 func scheduledTargetKey(channelID int, modelName string) string {
