@@ -64,6 +64,11 @@ const (
 	imageTaskPollPathPrefix = "/v1/images/tasks/"
 )
 
+// ErrImageTaskChannelGateBusy 表示异步图片任务执行时渠道闸门（并发位/RPM 名额）
+// 占不到。它不是上游失败：轮询方（image_task_poll.go）用 errors.Is 认出它后
+// 把任务留在队列里下一轮重试，不判终态、不退款。
+var ErrImageTaskChannelGateBusy = errors.New("image task channel gate busy")
+
 // ImageTaskAsyncEnabled 报告图片异步任务开关是否打开。
 //
 // 开关读不到（settingCache 里没有这一行）一律当**关闭**：这个功能会因为配置不当
@@ -670,7 +675,9 @@ func ImageTaskRunUpstream(
 		if releaseGate != nil {
 			releaseGate()
 		}
-		return 0, nil, "", fmt.Errorf("channel gate rejected: %s", gateReason)
+		// 闸门满不是上游失败：返回哨兵错误，轮询方据此把任务留在队列里
+		// 下一轮重试（image_task_poll.go），不判终态、不退款。
+		return 0, nil, "", fmt.Errorf("%w: %s", ErrImageTaskChannelGateBusy, gateReason)
 	}
 	defer func() {
 		if releaseGate != nil {
@@ -683,8 +690,6 @@ func ImageTaskRunUpstream(
 	if derr != nil {
 		return 0, nil, "", fmt.Errorf("failed to send upstream image request: %w", derr)
 	}
-	// 上游给了响应即计一次 RPM 成功（整分钟桶、只数成功，口径与 chat 一致）。
-	balancer.RecordChannelRPMSuccess(channel.ID)
 	defer func() {
 		if cerr := respUp.Body.Close(); cerr != nil {
 			log.Debugf("image task upstream: close response body failed: %v", cerr)
@@ -706,5 +711,8 @@ func ImageTaskRunUpstream(
 	if readErr != nil {
 		return respUp.StatusCode, respBody, "", fmt.Errorf("failed to read upstream image response: %w", readErr)
 	}
+	// 只有 2xx 才计 RPM 成功（整分钟桶，口径与 chat 一致）：非 2xx 在上面已经
+	// 按失败返回，不算成功流量。
+	balancer.RecordChannelRPMSuccess(channel.ID)
 	return respUp.StatusCode, respBody, "", nil
 }

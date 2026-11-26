@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -197,6 +198,12 @@ func executeOneImageTask(ctx context.Context, task model.ImageTask) {
 	)
 	taskLog.EndUpstream()
 	if runErr != nil {
+		if errors.Is(runErr, relay.ErrImageTaskChannelGateBusy) {
+			// 渠道闸门满（并发位/RPM 名额占不到）：任务留在 processing，
+			// 下一轮 ImageTaskListExecutable 会重新捞到它再走完整挑选+闸门。
+			// 不判终态、不退款——一次上游请求都没发出去，没有东西可退。
+			return
+		}
 		// 上游没给结论（网络/超时/读失败）。这类"问不出结果"不重试：
 		// 任务已经离开客户端视野很久，重试只会在同一个坏渠道上反复花钱；
 		// 判失败并退款，让用户重新发一次。
