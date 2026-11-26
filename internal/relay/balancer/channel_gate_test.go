@@ -179,12 +179,14 @@ func TestChannelGateAdmitIsAtomicAcrossDimensions(t *testing.T) {
 		t.Fatalf("second admit must be rejected (rpm dimension full)")
 	}
 	release()
-	// 归还后两个维度都空，重新可占。
-	release3, reason3 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil)
-	if reason3 != "" {
-		t.Fatalf("admit after full release must succeed again, got %q", reason3)
+	// 归还后并发位空了，但 RPM 名额是速率、60 秒内不退：同一渠道仍被 RPM 拒，
+	// 且只看并发维度时已有空位。
+	if _, reason3 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil); reason3 != "channel_rpm_limit" {
+		t.Fatalf("after release the rpm quota is still spent, want channel_rpm_limit, got %q", reason3)
 	}
-	release3()
+	if !ChannelGateHasRoom(channelID, 1, 0) {
+		t.Fatalf("after release the concurrency slot must be free again")
+	}
 }
 
 // TestChannelGateWaitAnyOpenBudgetExhausts：整轮排队探测的总预算用尽必须返回 false，
