@@ -481,3 +481,79 @@ func TestImageTestRecorderRejectsOversizedResponse(t *testing.T) {
 		t.Fatalf("chunked writes totalling over the limit must set overflow")
 	}
 }
+
+// 用户拍板：已保存渠道的测试带 id，但用**表单当前值**覆盖配置——入库后改掉
+// 入参的 base_url/key 再测，请求必须打到新值上，而不是库里的旧值。
+func TestRunChannelImageEndpointUsesFormValuesOverStored(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	stored, storedHits := imageTestUpstream(t)
+	form, formHits := imageTestUpstream(t)
+
+	channel := dbmodel.Channel{
+		Name:     "image-form-override-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "gpt-image-1",
+		BaseUrls: []dbmodel.BaseUrl{{URL: stored.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "stored-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	// 表单当前值：用户在编辑页改了 base_url 和 key 还没保存，测的必须是这份。
+	channel.BaseUrls = []dbmodel.BaseUrl{{URL: form.URL}}
+	channel.Keys[0].ChannelKey = "form-key"
+
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "gpt-image-1",
+		Endpoint: imageGenerationTestEndpointName,
+	})
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("表单值测试必须成功, got %#v / %#v", response.Summary, response.Results)
+	}
+	if hits := storedHits(); len(hits) != 0 {
+		t.Fatalf("请求打到库里旧 base_url 了（%d 条）：表单当前值没有覆盖存储值", len(hits))
+	}
+	hits := formHits()
+	if len(hits) != 1 {
+		t.Fatalf("表单新 base_url 必须恰好收到 1 条请求, got %d", len(hits))
+	}
+	if hits[0].authorization != "Bearer form-key" {
+		t.Fatalf("上游 Authorization = %q, want 表单当前 key（Bearer form-key）", hits[0].authorization)
+	}
+}
+
+// 用户拍板：没保存的渠道不给测。图片端点与 relay_sender 同一口径：
+// ID<=0 直接拒「渠道未保存，请先保存再测试」，一次上游请求都不许发。
+func TestRunChannelImageEndpointRejectsUnsavedChannel(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	upstream, hits := imageTestUpstream(t)
+	response, err := RunChannel(ctx, dbmodel.Channel{
+		Name:     "image-unsaved-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "image-key"}},
+	}, dbmodel.ModelTestRequest{
+		Model:    "gpt-image-1",
+		Endpoint: imageGenerationTestEndpointName,
+	})
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	if response.Summary.Success != 0 || response.Summary.Failed != 1 {
+		t.Fatalf("未保存渠道必须失败收尾, got summary %#v", response.Summary)
+	}
+	result := response.Results[0]
+	if !strings.Contains(result.Error, "渠道未保存") {
+		t.Fatalf("error = %q, want 含「渠道未保存，请先保存再测试」", result.Error)
+	}
+	if got := hits(); len(got) != 0 {
+		t.Fatalf("被拒后上游必须一次请求都没收到, got %d", len(got))
+	}
+}
