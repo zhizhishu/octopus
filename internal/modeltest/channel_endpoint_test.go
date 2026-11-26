@@ -366,10 +366,10 @@ func TestChannelTestCustomChannelDerivesSameOriginStandardEndpoints(t *testing.T
 				BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL + "/other/stored/base"}},
 				// 绝对 chat 路径覆盖优先于 BaseUrls（与真实转发一致），派生的同源根
 				// 必须来自它，而覆盖本身不许泄漏进派生端点。
-				OpenAIChatPath: storedPath,
+				OpenAIChatPath:   storedPath,
 				OpenAIImagesPath: "https://cdn.example/openai/images",
-				Keys:           []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
-				Cloak:          dbmodel.ChannelCloak{Mode: "never"},
+				Keys:             []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+				Cloak:            dbmodel.ChannelCloak{Mode: "never"},
 			}
 
 			result, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
@@ -393,7 +393,15 @@ func TestChannelTestCustomChannelDerivesSameOriginStandardEndpoints(t *testing.T
 			if values := got.query["api-version"]; len(values) != 1 || values[0] != "v9" {
 				t.Fatalf("base query lost: api-version = %v", got.query)
 			}
-			if got.authorization != "Bearer test-key" {
+			if tc.endpoint == "gemini_generate_content" {
+				// Gemini 适配器把 key 放进 query，不发 Authorization 头。
+				if values := got.query["key"]; len(values) != 1 || values[0] != "test-key" {
+					t.Fatalf("gemini query key = %v, want exactly one test-key", values)
+				}
+				if got.authorization != "" {
+					t.Fatalf("gemini authorization = %q, want empty", got.authorization)
+				}
+			} else if got.authorization != "Bearer test-key" {
 				t.Fatalf("authorization = %q, want the channel key", got.authorization)
 			}
 			for _, key := range tc.wantBody {
