@@ -61,9 +61,21 @@ export function routeIdsForRole(role?: string | null) {
     return role === 'admin' ? ADMIN_ROUTE_IDS : USER_ROUTE_IDS;
 }
 
+// 按角色出路由，**顺序以 routeIdsForRole 为准**（不是 ROUTES 的声明顺序）：
+// ROUTES 是「有哪些路由」的注册表，18bd520f 为了管理员侧栏分组重排过它（mcp 排到了 log
+// 前面），但普通用户手机底栏的顺序是 USER_ROUTE_IDS 定的——home,usage,key,log,mcp。
+// 直接用 ROUTES.filter 会把底栏变成 home,usage,key,mcp,log（日志和 MCP 被对调）。
+// 管理员侧栏不受影响：navbar 的 navGroupsForRole 分组渲染按 ADMIN_NAV_GROUPS 里各组的
+// routeIds 逐个取，只把本结果当 id -> 路由的查表用。
 export function routesForRole(role?: string | null) {
-    const ids = new Set<string>(routeIdsForRole(role));
-    return ROUTES.filter((route) => ids.has(route.id));
+    const byId = new Map<string, RouteConfig>();
+    for (const route of ROUTES) byId.set(route.id, route);
+    const ordered: RouteConfig[] = [];
+    for (const id of routeIdsForRole(role)) {
+        const route = byId.get(id);
+        if (route) ordered.push(route);
+    }
+    return ordered;
 }
 
 // 管理员侧栏按业务分组渲染：组序即 ADMIN_ROUTE_IDS 的分组重排，

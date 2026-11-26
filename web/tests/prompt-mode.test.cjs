@@ -114,7 +114,8 @@ test('提示词页主屏只留短句，细节放进 ? 里', () => {
     assert.ok(!src.includes('方案层 · ') && !src.includes('路由层 · '), '不再有「方案层 · …」「路由层 · …」这种长小标题');
     // 新主屏：规则卡片列表 + 右侧编辑区；筛选是一排短 chip（「全部 N」+ 范围 chip + 「只看开着的」）。
     assert.ok(src.includes('<RuleList') && src.includes('<RuleEditor'), '规则页是左列表右编辑');
-    assert.ok(/lg:grid-cols-\[minmax\(0,4fr\)_minmax\(0,7fr\)\]/.test(src), '宽屏左窄右宽，列表在左、编辑在右');
+    // 宽屏布局：左边列表固定 360px、右边编辑区自适应（a9789da3 排版重做后的形态）。
+    assert.ok(/md:grid-cols-\[360px_minmax\(0,1fr\)\]/.test(src), '宽屏列表 360px 在左、编辑区在右');
     assert.ok(list.includes('全部 {rules.length}') && list.includes('只看开着的'), '筛选是一排短 chip');
     // 叠加顺序只在合并预览里讲，并逐段标注「前面 / 后面 / 客户端」。
     const preview = read('src/components/modules/prompt/merge-preview.tsx');
