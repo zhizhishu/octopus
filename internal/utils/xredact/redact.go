@@ -90,6 +90,9 @@ var secretPatterns = []*regexp.Regexp{
 	// 不排除会把相邻参数一起吞掉（fix-ui1127b-r2，errSafeMessage 统一打码后暴露）。
 	regexp.MustCompile(`(?i)((?:api[_-]?key|apikey|token|secret)\s*[:=]\s*)([^\s"',;{}\[\]&]+)`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9._-]{3,}\b`),
+	// Google API key 固定 39 位：AIza 前缀 + 35 位 URL-safe 字符。裸文本形态也要打，
+	// 不能只靠 URL query 规则（fix-ui1127m）。
+	regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{35}\b`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`),
 	regexp.MustCompile(`\b[A-Fa-f0-9]{32,}\b`),
 }

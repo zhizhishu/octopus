@@ -42,6 +42,26 @@ func TestSecretsRedactsSKAndBearer(t *testing.T) {
 	}
 }
 
+// TestSecretsRedactsBareGoogleAPIKey pins the 39-character AIza shape outside URLs.
+func TestSecretsRedactsBareGoogleAPIKey(t *testing.T) {
+	key := "AIza" + strings.Repeat("a", 35)
+	got := Secrets("upstream echoed key " + key + " bare")
+	if strings.Contains(got, key) {
+		t.Fatalf("bare Google API key leaked: %s", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("expected redacted marker, got %s", got)
+	}
+}
+
+// TestSecretsKeepsNonGoogleAIZAText pins that the prefix alone or a short id is not enough.
+func TestSecretsKeepsNonGoogleAIZAText(t *testing.T) {
+	in := "AIzaShort stays"
+	if got := Secrets(in); got != in {
+		t.Fatalf("over-redacted short AIza-looking text: %s", got)
+	}
+}
+
 // TestSecretsKeepsShortHex pins that short hex ids are not over-redacted.
 func TestSecretsKeepsShortHex(t *testing.T) {
 	in := "request id abcdef0123456789 done"
