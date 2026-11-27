@@ -662,10 +662,18 @@ func runRaceContenders(
 					cleanedUp = true
 					finishAttempt()
 					racerCancel()
+					// 上游已回 2xx、只是被赢家取消：带上响应对象，让主线程按「上游成功
+					// 一次」补计渠道 RPM（recordLoserRPMSuccess）。未被取消的探测失败
+					// （空 200/内容超时/错误事件）是真失败，不计 RPM。
+					loserResponse := resp
+					if !isCanceled {
+						loserResponse = nil
+					}
 					resultsChan <- racerResult{
 						keyIndex:       idx,
 						channel:        contender.channel,
 						key:            contender.key,
+						response:       loserResponse,
 						statusCode:     resp.StatusCode,
 						err:            probeErr,
 						upstreamPaths:  upstreamPaths,
@@ -725,10 +733,13 @@ func runRaceContenders(
 				cleanedUp = true
 				finishAttempt()
 				racerCancel()
+				// 上游已经成功回了 2xx、只是被赢家取消：把响应对象一并带上，主线程
+				// 靠它给这个输家补计渠道 RPM（recordLoserRPMSuccess）。
 				resultsChan <- racerResult{
 					keyIndex:       idx,
 					channel:        contender.channel,
 					key:            contender.key,
+					response:       resp,
 					statusCode:     resp.StatusCode,
 					err:            context.Canceled,
 					upstreamPaths:  upstreamPaths,
@@ -786,8 +797,10 @@ func runRaceContenders(
 
 	// Process results as they arrive. If a winner arrives, immediately begin response
 	// handling rather than blocking indefinitely on slow or non-responsive losers.
+	// res.err == nil 是赢家的唯一指纹：2xx 输家（raced out）现在也带 response，但它
+	// 必带 err=context.Canceled，绝不会误当赢家处理。
 	for res := range resultsChan {
-		if res.response != nil && winner == nil {
+		if res.response != nil && res.err == nil && winner == nil {
 			w := res
 			winner = &w
 			break
@@ -881,6 +894,9 @@ func runRaceContenders(
 		}
 
 		// Record loser spans sequentially on main goroutine
+		// 2xx 输家补计渠道 RPM（recordLoserRPMSuccess）放在 loser 结果收集完之后、
+		// 失败记账之前；赢家不在此处重复计（见 recordLoserRPMSuccess 注释）。
+		recordLoserRPMSuccess(loserResults)
 		recordLoserResults(parentReq, endpoint, loserResults, &bestFailStatus)
 
 		if handleErr == nil {
@@ -961,6 +977,9 @@ func runRaceContenders(
 		loserResults = append(loserResults, res)
 	}
 
+	// 2xx 输家补计渠道 RPM 后再做失败记账；赢家不在此处重复计（见
+	// recordLoserRPMSuccess 注释）。
+	recordLoserRPMSuccess(loserResults)
 	lastErr = recordLoserResults(parentReq, endpoint, loserResults, &bestFailStatus)
 
 	// 整波都被渠道级硬限流闸门拒了（每个 contender 一个字节都没发出去）：
@@ -1166,6 +1185,24 @@ func maxLoserRetryAfter(results []racerResult) time.Duration {
 		}
 	}
 	return max
+}
+
+// recordLoserRPMSuccess 给「上游已成功返回、只是被竞速取消」的 2xx 输家补计渠道 RPM。
+//
+// 口径与赢家一致（整分钟桶、只数成功，见 balancer/channel_gate.go）：这些输家的上游
+// 请求已经真实打到上游并拿到 2xx，上游看到的是一次成功请求，不补计的话竞速渠道的
+// RPM 计数会比上游真实看到的低。只有真正拿到 2xx 响应对象（res.response != nil 且
+// 状态码 2xx）的输家才计；赢家从不进 loserResults，不会重复计。
+func recordLoserRPMSuccess(results []racerResult) {
+	for _, res := range results {
+		if res.channel == nil || res.response == nil {
+			continue
+		}
+		if res.statusCode < http.StatusOK || res.statusCode >= http.StatusMultipleChoices {
+			continue
+		}
+		balancer.RecordChannelRPMSuccess(res.channel.ID)
+	}
 }
 
 func recordLoserResults(
