@@ -1531,6 +1531,7 @@
       "gateWhenFull": "When everything is full",
       "gateFullReject": "Reject now (429)",
       "gateFullQueue": "Queue and wait",
+      "gateNoQueueHint": "No queueing means a full channel returns 429 immediately.",
       "gateQueueNeedsLimit": "Set a concurrency limit first, or there is nothing to queue for.",
       "gateQueueSize": "Max queued",
       "gateQueueWait": "Max wait (s)",

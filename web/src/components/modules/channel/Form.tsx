@@ -1035,6 +1035,7 @@ export function ChannelForm({
                         {t('gateFullQueue')}
                     </button>
                 </div>
+                <p className="text-xs text-muted-foreground">{t('gateNoQueueHint')}</p>
                 {gateMaxConcurrent <= 0 && (
                     <p className="text-xs text-muted-foreground">{t('gateQueueNeedsLimit')}</p>
                 )}

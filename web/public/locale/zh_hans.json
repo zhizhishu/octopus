@@ -1531,6 +1531,7 @@
       "gateWhenFull": "都满了怎么办",
       "gateFullReject": "立刻回错 (429)",
       "gateFullQueue": "排队等一会儿",
+      "gateNoQueueHint": "不配排队＝渠道满了立刻返回 429",
       "gateQueueNeedsLimit": "先设同时请求上限，才会有排队",
       "gateQueueSize": "最多排几个",
       "gateQueueWait": "最多等几秒",

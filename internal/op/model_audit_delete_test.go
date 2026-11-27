@@ -3,6 +3,7 @@ package op
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
@@ -134,5 +135,37 @@ func TestAuditJobsClearFinishedKeepsActive(t *testing.T) {
 		if j, r := countJobRows(t, id); j != 0 || r != 0 {
 			t.Fatalf("job %d should be gone: job=%d results=%d", id, j, r)
 		}
+	}
+}
+
+func TestModelAuditResultPurgeSkipsBusyRows(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "定期清理渠道")
+
+	clean := enqueueTestJob(t, ch.ID, "old-clean")
+	setJobStatus(t, clean, model.AuditJobDone, model.AuditResultDone)
+	busyTail := enqueueTestJob(t, ch.ID, "old-tail")
+	setJobStatus(t, busyTail, model.AuditJobCanceled, model.AuditResultRunning)
+	recent := enqueueTestJob(t, ch.ID, "recent-clean")
+	setJobStatus(t, recent, model.AuditJobDone, model.AuditResultDone)
+
+	oldCreatedAt := time.Now().Add(-91 * 24 * time.Hour)
+	for _, id := range []int64{clean, busyTail} {
+		if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", id).Update("created_at", oldCreatedAt).Error; err != nil {
+			t.Fatalf("age job %d: %v", id, err)
+		}
+	}
+
+	if err := ModelAuditResultPurge(ctx); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if jobs, results := countJobRows(t, clean); jobs != 0 || results != 0 {
+		t.Fatalf("expired finished job was not purged: jobs=%d results=%d", jobs, results)
+	}
+	if jobs, results := countJobRows(t, busyTail); jobs != 1 || results != 1 {
+		t.Fatalf("purge touched a canceled job still settling a running row: jobs=%d results=%d", jobs, results)
+	}
+	if jobs, results := countJobRows(t, recent); jobs != 1 || results != 1 {
+		t.Fatalf("purge touched a recent job: jobs=%d results=%d", jobs, results)
 	}
 }

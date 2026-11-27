@@ -1531,6 +1531,7 @@
       "gateWhenFull": "都滿了怎麼辦",
       "gateFullReject": "立刻回錯 (429)",
       "gateFullQueue": "排隊等一會兒",
+      "gateNoQueueHint": "不配排隊＝渠道滿了立刻返回 429",
       "gateQueueNeedsLimit": "先設同時請求上限，才會有排隊",
       "gateQueueSize": "最多排幾個",
       "gateQueueWait": "最多等幾秒",

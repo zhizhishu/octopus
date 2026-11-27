@@ -457,21 +457,35 @@ func ModelAuditJobDetail(ctx context.Context, jobID int64) (model.ModelAuditJob,
 func ModelAuditResultPurge(ctx context.Context) error {
 	cutoff := time.Now().Add(-auditResultRetention)
 
-	var oldJobIDs []int64
-	if err := db.GetDB().WithContext(ctx).Model(&model.ModelAuditJob{}).
-		Where("created_at < ? AND status IN ?", cutoff, []string{model.AuditJobDone, model.AuditJobCanceled}).
-		Limit(200).Pluck("id", &oldJobIDs).Error; err != nil {
-		return err
-	}
-	if len(oldJobIDs) == 0 {
-		return nil
-	}
-	if err := db.GetDB().WithContext(ctx).
-		Where("job_id IN ?", oldJobIDs).Delete(&model.ModelAuditResult{}).Error; err != nil {
-		return err
-	}
-	return db.GetDB().WithContext(ctx).
-		Where("id IN ?", oldJobIDs).Delete(&model.ModelAuditJob{}).Error
+	return db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var oldJobIDs []int64
+		if err := tx.Model(&model.ModelAuditJob{}).
+			Where("created_at < ? AND status IN ?", cutoff, []string{model.AuditJobDone, model.AuditJobCanceled}).
+			Order("id").Limit(200).Pluck("id", &oldJobIDs).Error; err != nil {
+			return err
+		}
+		if len(oldJobIDs) == 0 {
+			return nil
+		}
+		busy, err := auditBusyJobIDs(tx, oldJobIDs)
+		if err != nil {
+			return err
+		}
+		deleteIDs := make([]int64, 0, len(oldJobIDs))
+		for _, id := range oldJobIDs {
+			if _, skip := busy[id]; skip {
+				continue
+			}
+			deleteIDs = append(deleteIDs, id)
+		}
+		if len(deleteIDs) == 0 {
+			return nil
+		}
+		if err := tx.Where("job_id IN ?", deleteIDs).Delete(&model.ModelAuditResult{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", deleteIDs).Delete(&model.ModelAuditJob{}).Error
+	})
 }
 
 // ModelAuditJobProgress 重算任务的完成数与状态。
