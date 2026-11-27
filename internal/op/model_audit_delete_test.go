@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -167,5 +168,34 @@ func TestModelAuditResultPurgeSkipsBusyRows(t *testing.T) {
 	}
 	if jobs, results := countJobRows(t, recent); jobs != 1 || results != 1 {
 		t.Fatalf("purge touched a recent job: jobs=%d results=%d", jobs, results)
+	}
+}
+
+// fix-1127 返工第 9 条：最老 200 条全是 busy（结果行卡 running）时，清理不能空转——
+// busy 在查询时就排除，较新的可清理任务照样进得了候选。205 条 busy 占满窗口，
+// 第 206 条干净的到期任务必须被清掉（修复前：它永远排不进 Limit 200）。
+func TestModelAuditResultPurgeBusyRowsDoNotEatTheWindow(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "清理窗口渠道")
+
+	oldCreatedAt := time.Now().Add(-91 * 24 * time.Hour)
+	for i := 0; i < 205; i++ {
+		id := enqueueTestJob(t, ch.ID, "busy-model-"+strconv.Itoa(i))
+		setJobStatus(t, id, model.AuditJobCanceled, model.AuditResultRunning)
+		if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", id).Update("created_at", oldCreatedAt).Error; err != nil {
+			t.Fatalf("age busy job: %v", err)
+		}
+	}
+	clean := enqueueTestJob(t, ch.ID, "clean-model")
+	setJobStatus(t, clean, model.AuditJobDone, model.AuditResultDone)
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", clean).Update("created_at", oldCreatedAt).Error; err != nil {
+		t.Fatalf("age clean job: %v", err)
+	}
+
+	if err := ModelAuditResultPurge(ctx); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if jobs, _ := countJobRows(t, clean); jobs != 0 {
+		t.Fatalf("clean job beyond a busy-only window was not purged (busy rows ate the limit): jobs=%d", jobs)
 	}
 }

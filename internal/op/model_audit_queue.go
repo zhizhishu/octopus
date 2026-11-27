@@ -459,8 +459,16 @@ func ModelAuditResultPurge(ctx context.Context) error {
 
 	return db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var oldJobIDs []int64
+		// busy（结果行仍 pending/running）的任务在**查询时**就排除，而不是捞回来再过滤：
+		// 卡住的 busy 行不会随时间自己消失，先捞后滤会让最老 200 条全 busy 时
+		// 清理永远空转（fix-1127 返工第 9 条）。后面的 auditBusyJobIDs 仍保留，
+		// 挡住查询与删除之间新跑进 running 的竞态。
+		busySub := tx.Model(&model.ModelAuditResult{}).
+			Select("DISTINCT job_id").
+			Where("status IN ?", []string{model.AuditResultPending, model.AuditResultRunning})
 		if err := tx.Model(&model.ModelAuditJob{}).
 			Where("created_at < ? AND status IN ?", cutoff, []string{model.AuditJobDone, model.AuditJobCanceled}).
+			Where("id NOT IN (?)", busySub).
 			Order("id").Limit(200).Pluck("id", &oldJobIDs).Error; err != nil {
 			return err
 		}
