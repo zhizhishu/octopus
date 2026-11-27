@@ -15,6 +15,7 @@ import (
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modelverify"
 	"github.com/zhizhishu/octopus/internal/relay"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	geminiInbound "github.com/zhizhishu/octopus/internal/transformer/inbound/gemini"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
@@ -392,6 +393,54 @@ func relayAnthropicTurnMessage(turn modelverify.Turn) map[string]any {
 		blocks = append(blocks, map[string]any{"type": "text", "text": " "})
 	}
 	return map[string]any{"role": "assistant", "content": blocks}
+}
+
+// ChannelGateTierWait 是闸门忙后的分档等待时长源：RPM 满才需要等整分钟桶滚动
+// （ChannelGateBusyWait），只是并发位满时名额随时可能空出来，按闸门自己的
+// Retry-After（1s）短退避。包级变量只为测试能换成短等待；hlwy 与红队共用。
+var ChannelGateTierWait = func(channelID, rpmLimit int) time.Duration {
+	if rpmLimit > 0 && balancer.ChannelGateCurrentRPM(channelID) >= rpmLimit {
+		return ChannelGateBusyWait()
+	}
+	return time.Second
+}
+
+// WaitChannelGateRoom 在本地渠道闸门忙之后按分档时长等待：RPM 满等整分钟桶滚动、
+// 只是并发位满按 1s 短退避（与 hlwyGateBusyWait 现行分档完全一致）。返回 false =
+// 被取消或 ctx 结束，调用方不要再发；等待结束后也会查一次 canceled，取消就别发。
+func WaitChannelGateRoom(ctx context.Context, channelID, rpmLimit int, canceled func() bool) bool {
+	return waitChannelGateRoom(ctx, ChannelGateTierWait(channelID, rpmLimit), canceled)
+}
+
+// WaitChannelGateRoomFor 是等待循环本体：等待时长由调用方按档算好传入
+// （hlwy 的分档变量 hlwyGateBusyWait 从这里注入）。每 200ms 一小步，逐步查
+// canceled 与 ctx，取消/到点分别返回 false/true；等待结束时最后查一次 canceled。
+func WaitChannelGateRoomFor(ctx context.Context, wait time.Duration, canceled func() bool) bool {
+	return waitChannelGateRoom(ctx, wait, canceled)
+}
+
+func waitChannelGateRoom(ctx context.Context, wait time.Duration, canceled func() bool) bool {
+	if canceled == nil {
+		canceled = func() bool { return false }
+	}
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if canceled() {
+			return false
+		}
+		step := 200 * time.Millisecond
+		if remaining := time.Until(deadline); remaining < step {
+			step = remaining
+		}
+		timer := time.NewTimer(step)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+	return !canceled() && (ctx == nil || ctx.Err() == nil)
 }
 
 // Send 经 relay 链路发一次题，返回 (HTTP 状态码, 最终内部响应, 错误)。

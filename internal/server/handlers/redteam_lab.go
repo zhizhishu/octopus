@@ -115,16 +115,15 @@ var redTeamLabSend redTeamLabSender = func(ctx context.Context, channel model.Ch
 		return modelverify.Response{}, err
 	}
 	outcome, err := sender.Ask(ctx, ask)
-	// 本地渠道闸门忙（RPM/并发满，一次都没打到上游）：等名额空出来再试一次
-	// （fix-1127 返工，用户拍板）。仍忙则原样返回闸门忙错误，归因见调用方。
-	if err != nil && modeltest.IsChannelGateBusy(err) {
-		timer := time.NewTimer(modeltest.ChannelGateBusyWait())
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
-			outcome, err = sender.Ask(ctx, ask)
+	// 本地渠道闸门忙（RPM/并发满，一次都没打到上游）：不再一枪定胜负，而是用与
+	// hlwy 同一条共享分档等待（fix-1128 件3）——RPM 满等分钟桶、并发满短退避，
+	// ctx 结束或用户取消立刻退（WaitChannelGateRoom 内部逐拍查 ctx/canceled），
+	// 到点仍忙才按现在的「渠道限流（本地）」文案失败。
+	for err != nil && modeltest.IsChannelGateBusy(err) {
+		if !modeltest.WaitChannelGateRoom(ctx, channel.ID, channel.RPMLimit, func() bool { return ctx.Err() != nil }) {
+			break
 		}
+		outcome, err = sender.Ask(ctx, ask)
 	}
 	return outcome, err
 }

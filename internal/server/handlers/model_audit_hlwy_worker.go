@@ -470,6 +470,10 @@ var hlwyGateBusyWait = func(channelID, rpmLimit int) time.Duration {
 // ctx 不一定随之结束（取消传播走的是 HlwyReserveSlot 的任务行判定），所以
 // 等待循环周期性用同一个谓词（op.HlwyJobCanceled）查；分钟翻转后、再发请求
 // 前还要最后查一次——取消后绝不再发上游请求（fix-1127 返工 r2 第 2 条）。
+//
+// fix-1128 件3：等待循环本体（200ms 小步、逐步查取消与 ctx、等完再查一次取消）
+// 统一走 modeltest.WaitChannelGateRoomFor；分档时长仍从本包的 hlwyGateBusyWait
+// 取（测试替身继续可用），与红队同走一条等待实现。
 func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender, jobID int64, channelID, rpmLimit int) (modelverify.Response, error) {
 	for {
 		sampleCtx, cancel := context.WithTimeout(ctx, op.HlwySampleTimeout)
@@ -478,27 +482,10 @@ func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender, jobID 
 		if err == nil || !modeltest.IsChannelGateBusy(err) {
 			return resp, err
 		}
-		// 闸门忙时这一格什么都没发：不算样本、不算失败。等待期间小步轮询，
-		// 每一步都看整轮取消与用户取消，任一发生立刻退出。
-		deadline := time.Now().Add(hlwyGateBusyWait(channelID, rpmLimit))
-		for time.Now().Before(deadline) {
-			if op.HlwyJobCanceled(jobID) {
-				return modelverify.Response{}, err
-			}
-			step := 200 * time.Millisecond
-			if remaining := time.Until(deadline); remaining < step {
-				step = remaining
-			}
-			timer := time.NewTimer(step)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return modelverify.Response{}, err
-			case <-timer.C:
-			}
-		}
-		// 等待结束、再发之前最后查一次取消。
-		if op.HlwyJobCanceled(jobID) {
+		// 闸门忙时这一格什么都没发：不算样本、不算失败。等待循环（分档时长、
+		// 200ms 小步、逐步查取消与 ctx、等完再查一次取消）统一走 modeltest 的共享
+		// 实现；分档时长仍从 hlwyGateBusyWait 取（测试替身继续可用）。
+		if !modeltest.WaitChannelGateRoomFor(ctx, hlwyGateBusyWait(channelID, rpmLimit), func() bool { return op.HlwyJobCanceled(jobID) }) {
 			return modelverify.Response{}, err
 		}
 	}
