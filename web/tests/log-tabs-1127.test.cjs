@@ -1,5 +1,5 @@
-// fix-ui1127a 日志页三标签的前端测试：media-task 端点的真实模块行为（缓存作用域、
-// 筛选参数、轮询）+ 实时标签/合并任务面板的接线断言。
+// fix-ui1127a 日志页三标签的前端测试（含 r1 小修）：media-task 端点真实模块行为
+// + 实时标签/合并任务面板/整页面板的接线断言。
 // Run from web/: node --test tests/log-tabs-1127.test.cjs
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -75,14 +75,24 @@ test('media-task list: kind/status/model/time filters land in the query string a
 
 test('media-task list: queryFn forwards every filter to the backend', async () => {
     const h = harness();
-    const options = h.options({ kind: 'video', status: 'in_progress', model: 'veo', startTime: 100, endTime: 200 });
+    const options = h.options({ kind: 'video', status: 'in_progress,processing', model: 'veo', startTime: 100, endTime: 200 });
     await options.queryFn();
     const url = h.requests[0].url;
-    assert.match(url, /type=video/);
     assert.match(url, /status=in_progress/);
     assert.match(url, /model=veo/);
     assert.match(url, /start_time=100/);
     assert.match(url, /end_time=200/);
+    assert.match(url, /type=video/);
+});
+
+test('media-task endpoint: user_id forwards for admin narrowing and keys the cache', async () => {
+    const h = harness();
+    const options = h.options({ userId: 8 });
+    await options.queryFn();
+    assert.match(h.requests[0].url, /user_id=8/);
+    const keyed = h.options({ userId: 8 });
+    const unkeyed = h.options({ userId: 0 });
+    assert.notDeepEqual(keyed.queryKey, unkeyed.queryKey, 'user filter is part of the cache key');
 });
 
 test('media-task polling: non-terminal rows keep a 5s refetch, terminal rows stop it', () => {
@@ -100,8 +110,6 @@ test('media-task polling: non-terminal rows keep a 5s refetch, terminal rows sto
 });
 
 test('media-task terminal vocabulary covers both image and video statuses', () => {
-    const h = harness();
-    const endpoint = h.options ? null : null;
     const mod = load('src/api/endpoints/media-task.ts', {
         '@tanstack/react-query': { useQuery: () => ({}) },
         '../client': { apiClient: { get: async () => ({}) } },
@@ -115,33 +123,33 @@ test('media-task terminal vocabulary covers both image and video statuses', () =
     }
 });
 
-test('live tab: full-page panel, filters, in-flight count, elapsed-desc ordering, virtualization', () => {
+test('live tab: dropdown filters from live set, count, elapsed-desc ordering, virtualization', () => {
     const tab = readFileSync(path.join(__dirname, '..', 'src', 'components', 'modules', 'log', 'LiveTab.tsx'), 'utf8');
-    // SSE 常开（不再跟「实时模式」开关走——实时标签本身就是实时）。
+    // SSE 常开——实时标签本身就是实时。
     assert.match(tab, /useRequestStateStream\(true\)/);
     // 只放在途（running）请求；结束的从列表移走。
-    assert.match(tab, /state\.status !== 'running'\) return false/);
-    // 筛选一排：用户/Key（仅管理员）、渠道、模型、端点。
+    assert.match(tab, /state\.status === 'running'/);
+    // fix-ui1127a-r1 第 2 条：下拉框不是文本框，选项取当前在途集合里出现过的值。
+    assert.doesNotMatch(tab, /type="text"/);
+    const selectCount = (tab.match(/<select/g) || []).length;
+    assert.ok(selectCount >= 4, `expected >= 4 filter selects, got ${selectCount}`);
+    assert.match(tab, /uniq\(running\.map/);
+    assert.match(tab, /userKeyOptions/);
+    // 用户/Key 下拉仅管理员。
     assert.match(tab, /isAdmin && \(/);
-    assert.match(tab, /filterUserKey/);
-    assert.match(tab, /filterChannel/);
-    assert.match(tab, /filterModel/);
-    assert.match(tab, /filterEndpoint/);
     // 在途总数。
-    assert.match(tab, /inFlight', \{ count: sorted\.length \}/);
+    assert.match(tab, /inFlight', \{ count: sorted\.length \}\)/);
     // 默认按已耗时倒序 = 开始最早的在最前。
     assert.match(tab, /return ta - tb/);
-    // 面板整页形态。
     assert.match(tab, /fullPage/);
 });
 
-test('live panel fullPage: no collapse, no height cap, rows virtualized', () => {
+test('live panel fullPage: no collapse header at all, rows virtualized', () => {
     const panel = readFileSync(path.join(__dirname, '..', 'src', 'components', 'modules', 'log', 'LiveActivityPanel.tsx'), 'utf8');
+    // fix-ui1127a-r1 第 1 条：整页形态根本没有可折叠表头（计数已在筛选排）。
+    assert.match(panel, /\{!fullPage && \(/);
     assert.match(panel, /useVirtualizer/);
     assert.match(panel, /const collapsed = fullPage \? false : collapsedStateValue/);
-    assert.match(panel, /rowVirtualizer\.measureElement/);
-    // fullPage 分支不戴 max-h 帽子。
-    assert.match(panel, /fullPage \? "h-full /);
 });
 
 test('log page: three tabs in order, requests tab strips live insertion', () => {
@@ -151,24 +159,34 @@ test('log page: three tabs in order, requests tab strips live insertion', () => 
     const taskIdx = page.indexOf("id: 'tasks'");
     assert.ok(liveIdx !== -1 && reqIdx !== -1 && taskIdx !== -1, 'all three tabs exist');
     assert.ok(liveIdx < reqIdx && reqIdx < taskIdx, 'order: live, requests, tasks');
-    // 合并任务面板取代原视频任务面板。
     assert.match(page, /<MediaTaskPanel \/>/);
     assert.doesNotMatch(page, /<VideoTaskPanel/);
-    // 请求日志不再自动插入/实时按钮/实时插入中。
     assert.doesNotMatch(page, /<AutoRefreshControl/);
     assert.doesNotMatch(page, /<PendingLogsPill/);
 });
 
-test('media task panel: type/status/model/time filters and video-task-aligned fields', () => {
+test('media task panel: unified status buckets, fail-reason gating, copy size, user filter', () => {
     const panel = readFileSync(path.join(__dirname, '..', 'src', 'components', 'modules', 'log', 'MediaTaskPanel.tsx'), 'utf8');
     assert.match(panel, /typeFilter/);
-    assert.match(panel, /typeAll/);
-    assert.match(panel, /typeImage/);
-    assert.match(panel, /typeVideo/);
     assert.match(panel, /statusFilter/);
     assert.match(panel, /modelFilter/);
     assert.match(panel, /useMediaTaskList/);
-    // 字段词表与视频任务一致：task_id/model/status/progress/fail_reason/result_url/时间。
+    // fix-ui1127a-r1 第 3 条：状态显示统一五桶，后端原始状态只在前端映射。
+    assert.match(panel, /not_start: 'queued'/);
+    assert.match(panel, /completed: 'success'/);
+    assert.match(panel, /failure: 'failed'/);
+    assert.match(panel, /processing: 'in_progress'/);
+    // 筛选按桶发逗号分隔的原始状态集（后端 IN 过滤）。
+    assert.match(panel, /'not_start,submitted,queued'/);
+    assert.match(panel, /'in_progress,processing'/);
+    // 第 4 条：失败原因只在失败/未知态显示。
+    assert.match(panel, /statusBucket\(task\.status\) === 'failed' \|\| statusBucket\(task\.status\) === 'unknown'/);
+    // 第 5 条：复制图标小尺寸，与徽章对齐。
+    assert.match(panel, /copyIconClassName="size-3"/);
+    // 第 6 条：管理员多一个「用户」下拉。
+    assert.match(panel, /userFilter/);
+    assert.match(panel, /useUserList\(\{ enabled: isAdmin \}\)/);
+    // 字段词表与视频任务一致。
     for (const field of ['task_id', 'model', 'status', 'progress', 'fail_reason', 'result_url']) {
         assert.match(panel, new RegExp(field), `${field} rendered`);
     }
@@ -178,14 +196,14 @@ test('all three locales carry every new log key the components render', () => {
     const locales = ['zh_hans.json', 'zh_hant.json', 'en.json'].map((name) =>
         JSON.parse(readFileSync(path.join(__dirname, '..', 'public', 'locale', name), 'utf8')));
     const tabsKeys = ['live', 'requests', 'tasks'];
-    const liveTabKeys = ['filterUserKey', 'filterChannel', 'filterModel', 'filterEndpoint', 'inFlight'];
+    const liveTabKeys = ['filterUserKey', 'filterChannel', 'filterModel', 'filterEndpoint', 'inFlight', 'userPrefix'];
     const mediaKeys = [
         'typeFilter', 'typeAll', 'typeImage', 'typeVideo', 'statusFilter', 'statusAll', 'modelFilter', 'dateFilter',
         'total', 'refresh', 'updating', 'loading', 'empty', 'emptyFiltered', 'emptyHint', 'loadFailed', 'retry',
         'submit', 'progress', 'finish', 'submitTime', 'finishTime', 'preview', 'resultLoadFailed', 'resultLoadFailedHint',
         'download', 'duration', 'prevPage', 'nextPage', 'pageOf',
-        'statusNotStart', 'statusSubmitted', 'statusQueued', 'statusInProgress', 'statusProcessing',
-        'statusSuccess', 'statusCompleted', 'statusFailure', 'statusFailed', 'statusUnknown',
+        'statusQueued', 'statusInProgress', 'statusSuccess', 'statusFailed', 'statusUnknown',
+        'userFilter', 'userAll',
     ];
     for (const locale of locales) {
         for (const key of tabsKeys) assert.ok(locale.log.tabs[key], `tabs.${key}`);

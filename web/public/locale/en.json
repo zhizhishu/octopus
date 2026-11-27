@@ -1440,7 +1440,8 @@
       "filterChannel": "Channel",
       "filterModel": "Model",
       "filterEndpoint": "Endpoint",
-      "inFlight": "{count} in flight"
+      "inFlight": "{count} in flight",
+      "userPrefix": "User"
     },
     "mediaTasks": {
       "typeFilter": "Type",
@@ -1473,16 +1474,13 @@
       "prevPage": "Previous",
       "nextPage": "Next",
       "pageOf": "Page {page} / {totalPages}",
-      "statusNotStart": "Not started",
-      "statusSubmitted": "Submitted",
       "statusQueued": "Queued",
       "statusInProgress": "In progress",
-      "statusProcessing": "Processing",
       "statusSuccess": "Success",
-      "statusCompleted": "Completed",
-      "statusFailure": "Failure",
       "statusFailed": "Failed",
-      "statusUnknown": "Unknown"
+      "statusUnknown": "Unknown",
+      "userFilter": "User",
+      "userAll": "All users"
     }
   },
   "channel": {

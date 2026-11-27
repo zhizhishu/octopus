@@ -1440,7 +1440,8 @@
       "filterChannel": "渠道",
       "filterModel": "模型",
       "filterEndpoint": "端點",
-      "inFlight": "在途 {count} 條"
+      "inFlight": "在途 {count} 條",
+      "userPrefix": "使用者"
     },
     "mediaTasks": {
       "typeFilter": "類型",
@@ -1473,16 +1474,13 @@
       "prevPage": "上一頁",
       "nextPage": "下一頁",
       "pageOf": "第 {page} / {totalPages} 頁",
-      "statusNotStart": "未開始",
-      "statusSubmitted": "已提交",
       "statusQueued": "排隊中",
       "statusInProgress": "進行中",
-      "statusProcessing": "處理中",
       "statusSuccess": "成功",
-      "statusCompleted": "已完成",
-      "statusFailure": "失敗",
       "statusFailed": "失敗",
-      "statusUnknown": "未知"
+      "statusUnknown": "未知",
+      "userFilter": "使用者",
+      "userAll": "全部使用者"
     }
   },
   "channel": {
