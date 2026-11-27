@@ -634,6 +634,26 @@ func TestCircuitProbeDailyCapsApplyToBothScopes(t *testing.T) {
 	}
 }
 
+func TestCircuitProbeNegativeDailyCapsAreUnlimited(t *testing.T) {
+	env := newProbeTestEnv(t)
+	env.cfg.GlobalDailyCap = -1
+	env.cfg.ChannelDailyCap = -1
+	for _, keyID := range []int{1, 2, 3} {
+		env.routeText(25, keyID, "m")
+		env.openEntry(25, keyID, "m", "chat", "", 1, 0)
+	}
+	env.refresh()
+
+	for want := 1; want <= 3; want++ {
+		if _, ok := env.runOnce(CircuitProbeReport{Recovered: true, Outcome: "ok"}); !ok {
+			t.Fatalf("probe %d must run: negative daily caps mean unlimited", want)
+		}
+	}
+	if got := SnapshotCircuitProbeGlobal().Totals.Used; got != 3 {
+		t.Fatalf("global used = %d, want 3", got)
+	}
+}
+
 func TestCircuitProbeDailyCountersRollOverAtUTC8Midnight(t *testing.T) {
 	env := newProbeTestEnv(t)
 	env.clock.now = time.Date(2026, 3, 1, 15, 30, 0, 0, time.UTC) // 2026-03-01 23:30 UTC+8
