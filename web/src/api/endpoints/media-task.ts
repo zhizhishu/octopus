@@ -11,6 +11,7 @@ import { useAuthStore } from './user';
 export type MediaTaskKind = 'image' | 'video';
 
 export interface MediaTaskItem {
+    user_id: number;
     kind: MediaTaskKind;
     task_id: string;
     model: string;
@@ -39,8 +40,8 @@ function useMediaTaskCacheScope(): string | null {
 
 const MEDIA_TASK_SCOPE_SLOT = 2;
 
-function mediaTaskListQueryKey(scope: string | null, page: number, pageSize: number, kind: MediaTaskKind | '', status: string, model: string, startTime: number, endTime: number) {
-    return ['media-tasks', 'list', scope, page, pageSize, kind, status, model, startTime, endTime] as const;
+function mediaTaskListQueryKey(scope: string | null, page: number, pageSize: number, kind: MediaTaskKind | '', status: string, model: string, startTime: number, endTime: number, userId: number) {
+    return ['media-tasks', 'list', scope, page, pageSize, kind, status, model, startTime, endTime, userId] as const;
 }
 
 /** 终态判定（合并词表）：success/failure（视频）+ completed/failed（图片）。unknown 不是终态。 */
@@ -57,12 +58,14 @@ export function useMediaTaskList(options: {
     startTime?: number;
     endTime?: number;
     enabled?: boolean;
+    // 管理员收窄到指定用户（0/缺省=按权限默认：管理员全部、普通用户自己）。后端做权限收口。
+    userId?: number;
 } = {}) {
-    const { page = 1, pageSize = 20, kind = '', status = '', model = '', startTime = 0, endTime = 0, enabled = true } = options;
+    const { page = 1, pageSize = 20, kind = '', status = '', model = '', startTime = 0, endTime = 0, enabled = true, userId = 0 } = options;
     const scope = useMediaTaskCacheScope();
 
     return useQuery({
-        queryKey: mediaTaskListQueryKey(scope, page, pageSize, kind, status, model, startTime, endTime),
+        queryKey: mediaTaskListQueryKey(scope, page, pageSize, kind, status, model, startTime, endTime, userId),
         queryFn: async () => {
             const params = new URLSearchParams();
             params.set('page', String(page));
@@ -72,6 +75,7 @@ export function useMediaTaskList(options: {
             if (model) params.set('model', model);
             if (startTime) params.set('start_time', String(startTime));
             if (endTime) params.set('end_time', String(endTime));
+            if (userId) params.set('user_id', String(userId));
             return apiClient.get<MediaTaskListPage>(`/api/v1/media-task/list?${params.toString()}`);
         },
         enabled: enabled && scope !== null,

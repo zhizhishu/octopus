@@ -24,6 +24,7 @@ import {
     type MediaTaskItem,
     type MediaTaskKind,
 } from '@/api/endpoints/media-task';
+import { useAuthStore, useUserList } from '@/api/endpoints/user';
 
 /**
  * 「图片/视频任务」合并视图（fix-ui1127a）：日志页的第三个标签。
@@ -34,31 +35,51 @@ import {
  */
 const MEDIA_TASK_PAGE_SIZE = 20;
 
-/** 状态徽标配色：视频词表 + 图片词表共用语义色，不造新词。 */
-const STATUS_BADGE_CLASS: Record<string, string> = {
-    not_start: 'border-border bg-muted text-muted-foreground',
-    submitted: 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300',
+// fix-ui1127a-r1 第 3 条：状态显示统一一套词（排队中/进行中/成功/失败/未知），
+// 后端原始状态不改，只在前端映射——image 的 processing/completed/failed 与
+// video 的 not_start…failure 全部归入这五桶，不再出现两套词并存。
+type StatusBucket = 'queued' | 'in_progress' | 'success' | 'failed' | 'unknown';
+
+const STATUS_BUCKET: Record<string, StatusBucket> = {
+    not_start: 'queued',
+    submitted: 'queued',
+    queued: 'queued',
+    in_progress: 'in_progress',
+    processing: 'in_progress',
+    success: 'success',
+    completed: 'success',
+    failure: 'failed',
+    failed: 'failed',
+    unknown: 'unknown',
+};
+
+function statusBucket(status: string): StatusBucket {
+    return STATUS_BUCKET[status] ?? 'unknown';
+}
+
+const BUCKET_LABEL_KEYS: Record<StatusBucket, string> = {
+    queued: 'statusQueued',
+    in_progress: 'statusInProgress',
+    success: 'statusSuccess',
+    failed: 'statusFailed',
+    unknown: 'statusUnknown',
+};
+
+const BUCKET_BADGE_CLASS: Record<StatusBucket, string> = {
     queued: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
     in_progress: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
-    processing: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
     success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-    completed: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-    failure: 'border-destructive/40 bg-destructive/10 text-destructive',
     failed: 'border-destructive/40 bg-destructive/10 text-destructive',
     unknown: 'border-border bg-muted text-muted-foreground',
 };
 
-const STATUS_LABEL_KEYS: Record<string, string> = {
-    not_start: 'statusNotStart',
-    submitted: 'statusSubmitted',
-    queued: 'statusQueued',
-    in_progress: 'statusInProgress',
-    processing: 'statusProcessing',
-    success: 'statusSuccess',
-    completed: 'statusCompleted',
-    failure: 'statusFailure',
-    failed: 'statusFailed',
-    unknown: 'statusUnknown',
+// 筛选桶 → 后端原始状态集合（逗号分隔，后端按 IN 过滤）。
+const BUCKET_FILTER_STATUSES: Record<StatusBucket, string> = {
+    queued: 'not_start,submitted,queued',
+    in_progress: 'in_progress,processing',
+    success: 'success,completed',
+    failed: 'failure,failed',
+    unknown: 'unknown',
 };
 
 function formatUnixSeconds(seconds: number): string {
@@ -87,13 +108,13 @@ function parseProgressPercent(progress: string): number | undefined {
 
 function StatusBadge({ status }: { status: string }) {
     const t = useTranslations('log.mediaTasks');
-    const key = STATUS_LABEL_KEYS[status];
+    const bucket = statusBucket(status);
     return (
         <Badge
             variant="outline"
-            className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium', STATUS_BADGE_CLASS[status] ?? STATUS_BADGE_CLASS.unknown)}
+            className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium', BUCKET_BADGE_CLASS[bucket])}
         >
-            {key ? t(key as never) : status}
+            {t(BUCKET_LABEL_KEYS[bucket] as never)}
         </Badge>
     );
 }
@@ -173,7 +194,7 @@ function MediaTaskCard({ task }: { task: MediaTaskItem }) {
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={task.task_id}>
                     {task.task_id || '—'}
                 </span>
-                {task.task_id && <CopyIconButton text={task.task_id} />}
+                {task.task_id && <CopyIconButton text={task.task_id} className="size-5" copyIconClassName="size-3" checkIconClassName="size-3" />}
                 <StatusBadge status={task.status} />
             </div>
 
@@ -207,7 +228,8 @@ function MediaTaskCard({ task }: { task: MediaTaskItem }) {
                 </div>
             )}
 
-            {task.fail_reason && (
+            {/* 失败原因只在失败/未知态显示：成功行挂了错误文本只会误导（fix-ui1127a-r1 第 4 条）。 */}
+            {task.fail_reason && (statusBucket(task.status) === 'failed' || statusBucket(task.status) === 'unknown') && (
                 <p className="flex items-start gap-1.5 rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
                     <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
                     <span className="min-w-0 break-words whitespace-pre-wrap">{task.fail_reason}</span>
@@ -240,14 +262,19 @@ function MediaTaskCard({ task }: { task: MediaTaskItem }) {
 
 export function MediaTaskPanel() {
     const t = useTranslations('log.mediaTasks');
+    const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
     const [page, setPage] = useState(1);
+    const [filterUserId, setFilterUserId] = useState(0);
     const [kind, setKind] = useState<MediaTaskKind | ''>('');
     const [status, setStatus] = useState('');
     const [model, setModel] = useState('');
     const [date, setDate] = useState('');
     const startTime = date ? Math.floor(new Date(`${date}T00:00:00`).getTime() / 1000) : 0;
     const endTime = date ? Math.floor(new Date(`${date}T23:59:59`).getTime() / 1000) : 0;
-    const query = useMediaTaskList({ page, pageSize: MEDIA_TASK_PAGE_SIZE, kind, status, model, startTime, endTime });
+    const query = useMediaTaskList({ page, pageSize: MEDIA_TASK_PAGE_SIZE, kind, status, model, startTime, endTime, userId: isAdmin ? filterUserId : 0 });
+    // 管理员的「用户」下拉：全量用户列表（fix-ui1127a-r1 第 6 条，普通用户不渲染）。
+    const usersQuery = useUserList({ enabled: isAdmin });
+    const userOptions = usersQuery.data ?? [];
     const items = query.data?.items ?? [];
     const total = query.data?.total ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / MEDIA_TASK_PAGE_SIZE));
@@ -276,6 +303,24 @@ export function MediaTaskPanel() {
                     <option value="image">{t('typeImage')}</option>
                     <option value="video">{t('typeVideo')}</option>
                 </select>
+                {isAdmin && (
+                    <select
+                        aria-label={t('userFilter')}
+                        value={filterUserId}
+                        onChange={(event) => {
+                            setFilterUserId(Number(event.target.value));
+                            resetPage();
+                        }}
+                        className="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
+                    >
+                        <option value={0}>{t('userAll')}</option>
+                        {userOptions.map((user) => (
+                            <option key={user.id} value={user.id}>
+                                {user.username ?? user.id}
+                            </option>
+                        ))}
+                    </select>
+                )}
                 <select
                     aria-label={t('statusFilter')}
                     value={status}
@@ -286,9 +331,9 @@ export function MediaTaskPanel() {
                     className="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none sm:px-3"
                 >
                     <option value="">{t('statusAll')}</option>
-                    {(['processing', 'in_progress', 'queued', 'submitted', 'completed', 'success', 'failed', 'failure', 'unknown'] as const).map((value) => (
-                        <option key={value} value={value}>
-                            {t(STATUS_LABEL_KEYS[value] as never)}
+                    {(['queued', 'in_progress', 'success', 'failed', 'unknown'] as const).map((bucket) => (
+                        <option key={bucket} value={BUCKET_FILTER_STATUSES[bucket]}>
+                            {t(BUCKET_LABEL_KEYS[bucket] as never)}
                         </option>
                     ))}
                 </select>

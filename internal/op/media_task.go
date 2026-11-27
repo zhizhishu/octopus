@@ -94,8 +94,14 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, error) {
 					// MJ 行恒定 unknown：过滤 unknown 时 image_tasks 段整段排除。
 					seg1 += " AND 1=0"
 				} else {
-					seg1 += " AND status = ?"
-					seg1Args = append(seg1Args, filter.Status)
+					statuses := strings.Split(filter.Status, ",")
+					placeholders := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
+					args := make([]any, 0, len(statuses))
+					for _, st := range statuses {
+						args = append(args, strings.TrimSpace(st))
+					}
+					seg1 += " AND status IN (" + placeholders + ")"
+					seg1Args = append(seg1Args, args...)
 					seg2 += " AND 1=0"
 				}
 			}
@@ -112,8 +118,12 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, error) {
 			seg := `SELECT owner_user_id, 'video' AS kind, upstream_task_id AS task_id, model, status, progress, fail_reason, result_url, submit_time, start_time, finish_time, created_at FROM video_tasks WHERE ` + ownerCond
 			segArgs := append([]any{}, ownerArgs...)
 			if filter.Status != "" {
-				seg += " AND status = ?"
-				segArgs = append(segArgs, filter.Status)
+				statuses := strings.Split(filter.Status, ",")
+				placeholders := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
+				seg += " AND status IN (" + placeholders + ")"
+				for _, st := range statuses {
+					segArgs = append(segArgs, strings.TrimSpace(st))
+				}
 			}
 			if filter.Model != "" {
 				seg += " AND model LIKE ?"
