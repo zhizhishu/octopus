@@ -25,8 +25,8 @@ import (
 // 不再用 modeltest 自建探针出站，也不需要任何 API Key）。
 //
 // 与 ProbeSender 的分工：
-//   - ProbeSender 仍服务断路器定时探测与红队（探针契约不动，shape 由 testChannelKey
-//     那套负责）；
+//   - ProbeSender 仍服务断路器定时探测（探针契约不动，shape 由 testChannelKey
+//     那套负责）；红队实验自 fix-1127 起也走 RelaySender。
 //   - RelaySender 是渠道测试/模型检测的出站：进程内合成一个 gin 请求（不带任何
 //     身份），直接调 relay.HandlerForChannelTest——被测渠道以参数直指定。上游
 //     指纹/形状/cloak/闸门/attempts/转发日志全部走生产同一条链路——对上游而言，
