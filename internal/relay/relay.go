@@ -58,7 +58,8 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 //     派生副本），不跳渠道、无兜底分组、无救援回合；
 //   - 不占用户额度、不受用户/分组限额（计费闸门整段跳过，费用仍照记进转发日志）；
 //   - 不注入提示词规则（检测题目必须原样到达上游）；
-//   - 不计渠道 RPM（测试不是真实流量，见 balancer/channel_gate.go 口径）；
+//   - 渠道 RPM 照计（fix-1127 用户拍板「层层约束」：测试花的是渠道真实名额，
+//     与正常请求同一计数点，见 balancer/channel_gate.go 口径）；
 //   - 渠道停用不拦（测一条停用渠道是合法操作）；
 //   - 转发日志标记 request_source=model_test。
 //
@@ -1271,10 +1272,9 @@ func (ra *relayAttempt) attempt() attemptResult {
 		// 失败/取消/被跳过的尝试不走这条分支，所以不计入 RPM。无论渠道有没有配
 		// RPMLimit 都记：渠道页要显示「本分钟 N」实时值，口径与 sub2api 的
 		// current_rpm 一致（那边也是所有转发成功都计数）；限流判定只在配了上限时读它。
-		// 渠道测试/模型检测不计：测试不是真实流量（照 new-api，用户 2026-11-26 拍板）。
-		if !ra.metrics.internalTest {
-			balancer.RecordChannelRPMSuccess(ra.channel.ID)
-		}
+		// 渠道测试/模型检测也计（用户 2026-11-27 拍板，fix-1127）：测试走的就是
+		// 真实转发链路、花的是渠道真实名额，「层层约束」口径下与正常请求同一计数点。
+		balancer.RecordChannelRPMSuccess(ra.channel.ID)
 		costDelta := ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
 		op.ChannelKeyRecordUse(ra.usedKey, statusCode, usedAt, costDelta)
 

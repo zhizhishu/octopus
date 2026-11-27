@@ -34,7 +34,8 @@ import (
 //     看到这次检测的 attempts、耗时、费用，request_source=model_test。
 //
 // 测试语义（relay/channel_test_entry.go）：候选只有被测渠道，不跳渠道、无兜底、
-// 无救援、不占用户额度、不注入提示词规则、不计渠道 RPM。渠道停用不拦（测一条
+// 无救援、不占用户额度、不注入提示词规则。渠道 RPM 照计（fix-1127 用户拍板，与正常
+// 请求同一计数点）。渠道停用不拦（测一条
 // 停用渠道是合法操作）。没保存（ID<=0）的渠道不许测——准入直接拒，见下。
 type RelaySender struct {
 	channel      dbmodel.Channel

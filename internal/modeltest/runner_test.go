@@ -16,6 +16,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/db"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
@@ -1744,5 +1745,104 @@ func TestTransformModelTestStreamEnvelopeIsSideChannelOnly(t *testing.T) {
 	}
 	if env.ResponseID != "msg_bdrk_01ABC" || env.FirstToolCallID != "toolu_bdrk_01XYZ" || env.DeclaredModel != "claude-opus-4-8" {
 		t.Fatalf("envelope = %+v, want the upstream ids and model", env)
+	}
+}
+
+func rpmTestChannel(t *testing.T, ctx context.Context, name, upstreamURL string, rpmLimit int) dbmodel.Channel {
+	t.Helper()
+	channel := dbmodel.Channel{
+		Name:     name,
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  false,
+		RPMLimit: rpmLimit,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstreamURL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	return channel
+}
+
+func rpmOKUpstream(t *testing.T, hits *atomic.Int64) *httptest.Server {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-rpm",
+			"object":"chat.completion",
+			"created":123,
+			"model":"gpt-rpm",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+func TestRunChannelSuccessCountsTowardChannelRPM(t *testing.T) {
+	// fix-1127 用户拍板「层层约束」：测试/检测与正常请求同一计数点，成功后
+	// 渠道当分钟 RPM +1。
+	ctx := setupModelTestDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	var hits atomic.Int64
+	upstream := rpmOKUpstream(t, &hits)
+	channel := rpmTestChannel(t, ctx, "rpm-count-channel", upstream.URL, 0)
+
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "gpt-rpm",
+		Endpoint: "openai_chat",
+	})
+	if err != nil {
+		t.Fatalf("run channel test: %v", err)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("channel test must succeed, got %#v", response)
+	}
+	if got := balancer.ChannelGateCurrentRPM(channel.ID); got != 1 {
+		t.Fatalf("channel rpm after one successful test = %d, want 1", got)
+	}
+}
+
+func TestRunChannelBlockedWhenChannelRPMFull(t *testing.T) {
+	// 渠道 RPM 已满时，测试请求与正常请求一样被闸门挡住：不再打到上游。
+	ctx := setupModelTestDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	var hits atomic.Int64
+	upstream := rpmOKUpstream(t, &hits)
+	channel := rpmTestChannel(t, ctx, "rpm-full-channel", upstream.URL, 1)
+
+	first, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "gpt-rpm",
+		Endpoint: "openai_chat",
+	})
+	if err != nil {
+		t.Fatalf("run channel test: %v", err)
+	}
+	if first.Summary.Success != 1 {
+		t.Fatalf("first test must succeed, got %#v", first)
+	}
+	if got := balancer.ChannelGateCurrentRPM(channel.ID); got != 1 {
+		t.Fatalf("channel rpm after first success = %d, want 1", got)
+	}
+
+	second, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "gpt-rpm",
+		Endpoint: "openai_chat",
+	})
+	if err != nil {
+		t.Fatalf("run channel test: %v", err)
+	}
+	if second.Summary.Success != 0 {
+		t.Fatalf("second test must be gated, got %#v", second)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (gated test must not reach upstream)", hits.Load())
 	}
 }
