@@ -34,6 +34,8 @@ func init() {
 }
 
 type mediaTaskListItem struct {
+	// UserID 是归属用户（管理员看全部用户的任务时一清二楚；普通用户只看自己，字段无害）。
+	UserID     int64  `json:"user_id"`
 	Kind       string `json:"kind"`
 	TaskID     string `json:"task_id"`
 	Model      string `json:"model"`
@@ -54,13 +56,31 @@ type mediaTaskListResponse struct {
 	PageSize int                 `json:"page_size"`
 }
 
-// listMediaTasks 返回当前调用者自己的图片/视频合并任务列表。
+// listMediaTasks 返回图片/视频合并任务列表。权限口径（fix-ui1127a-r1 第 6 条）：
+// 普通用户只看自己的任务；管理员看全部用户的任务，可用 user_id 参数收窄到具体用户
+// ——octopus 作为中间层，管理员对下游谁跑了什么任务要一清二楚。
 func listMediaTasks(c *gin.Context) {
 	userID := middleware.CurrentUserID(c)
 	if userID <= 0 {
 		// Fail-closed 与视频任务一致：没有身份就没有「自己的任务」。
 		resp.Error(c, http.StatusForbidden, "media task owner is required")
 		return
+	}
+	isAdmin := middleware.CurrentUserIsAdmin(c)
+	ownerID := userID
+	allUsers := false
+	if isAdmin {
+		allUsers = true
+		if raw := strings.TrimSpace(c.Query("user_id")); raw != "" {
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || parsed <= 0 {
+				resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+				return
+			}
+			ownerID = int(parsed)
+		} else {
+			ownerID = 0
+		}
 	}
 
 	kind := op.MediaTaskKind(strings.TrimSpace(c.Query("type")))
@@ -83,7 +103,8 @@ func listMediaTasks(c *gin.Context) {
 	endTime, _ := strconv.ParseInt(c.DefaultQuery("end_time", "0"), 10, 64)
 
 	rows, total, err := op.MediaTaskListByOwner(c.Request.Context(), op.MediaTaskListFilter{
-		OwnerUserID: userID,
+		OwnerUserID: ownerID,
+		AllUsers:    allUsers,
 		Kind:        kind,
 		Status:      strings.TrimSpace(c.Query("status")),
 		Model:       strings.TrimSpace(c.Query("model")),
@@ -107,6 +128,7 @@ func listMediaTasks(c *gin.Context) {
 			resultURL = urls[row.TaskID]
 		}
 		items = append(items, mediaTaskListItem{
+			UserID:     row.OwnerUserID,
 			Kind:       row.Kind,
 			TaskID:     row.TaskID,
 			Model:      row.Model,

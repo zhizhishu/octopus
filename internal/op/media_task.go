@@ -31,29 +31,33 @@ const (
 
 // MediaTaskRow 是 UNION 出来的一行（字段名与 video_tasks 对齐）。
 type MediaTaskRow struct {
-	Kind       string
-	TaskID     string
-	Model      string
-	Status     string
-	Progress   string
-	FailReason string
-	ResultURL  string
-	SubmitTime int64
-	StartTime  int64
-	FinishTime int64
-	CreatedAt  int64
+	OwnerUserID int64
+	Kind        string
+	TaskID      string
+	Model       string
+	Status      string
+	Progress    string
+	FailReason  string
+	ResultURL   string
+	SubmitTime  int64
+	StartTime   int64
+	FinishTime  int64
+	CreatedAt   int64
 }
 
 // MediaTaskListFilter 是合并列表的过滤条件。归属只认 OwnerUserID（同视频任务口径）。
 type MediaTaskListFilter struct {
 	OwnerUserID int
-	Kind        MediaTaskKind // 空 = 全部
-	Status      string        // 空 = 全部；按行自身 status 精确匹配
-	Model       string        // 空 = 全部；子串匹配
-	StartTime   int64         // created_at 下界（unix 秒），0 = 不限
-	EndTime     int64         // created_at 上界（unix 秒），0 = 不限
-	Page        int
-	PageSize    int
+	// AllUsers=true 时 owner 约束整体放开（管理员看全部用户的任务，fix-ui1127a-r1 第 6 条）；
+	// 此时 OwnerUserID>0 仍按该用户过滤（筛选排「用户」下拉），=0 才是真全部。
+	AllUsers  bool
+	Kind      MediaTaskKind // 空 = 全部
+	Status    string        // 空 = 全部；按行自身 status 精确匹配
+	Model     string        // 空 = 全部；子串匹配
+	StartTime int64         // created_at 下界（unix 秒），0 = 不限
+	EndTime   int64         // created_at 上界（unix 秒），0 = 不限
+	Page      int
+	PageSize  int
 }
 
 // mediaTaskBuildQuery 拼出 UNION 子查询 + 参数。status/model 过滤逐段应用（包进子查询里，
@@ -61,6 +65,12 @@ type MediaTaskListFilter struct {
 // 出现顺序追加——image 分支是两段 SELECT（image_tasks 在前、midjourney_tasks 在后），
 // 各自的过滤参数必须跟在自己那段后面。
 func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, error) {
+	ownerCond := `owner_user_id = ?`
+	ownerArgs := []any{filter.OwnerUserID}
+	if filter.AllUsers && filter.OwnerUserID <= 0 {
+		ownerCond = `1 = 1`
+		ownerArgs = nil
+	}
 	branches := []MediaTaskKind{}
 	switch filter.Kind {
 	case "":
@@ -75,10 +85,10 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, error) {
 	parts := []string{}
 	for _, kind := range branches {
 		if kind == MediaTaskKindImage {
-			seg1 := `SELECT 'image' AS kind, task_id, model, status, '' AS progress, error_message AS fail_reason, '' AS result_url, 0 AS submit_time, 0 AS start_time, completed_at AS finish_time, created_at FROM image_tasks WHERE owner_user_id = ?`
-			seg1Args := []any{filter.OwnerUserID}
-			seg2 := `SELECT 'image' AS kind, upstream_task_id AS task_id, model, 'unknown' AS status, '' AS progress, '' AS fail_reason, '' AS result_url, 0 AS submit_time, 0 AS start_time, 0 AS finish_time, created_at FROM midjourney_tasks WHERE owner_user_id = ?`
-			seg2Args := []any{filter.OwnerUserID}
+			seg1 := `SELECT owner_user_id, 'image' AS kind, task_id, model, status, '' AS progress, error_message AS fail_reason, '' AS result_url, 0 AS submit_time, 0 AS start_time, completed_at AS finish_time, created_at FROM image_tasks WHERE ` + ownerCond
+			seg1Args := append([]any{}, ownerArgs...)
+			seg2 := `SELECT owner_user_id, 'image' AS kind, upstream_task_id AS task_id, model, 'unknown' AS status, '' AS progress, '' AS fail_reason, '' AS result_url, 0 AS submit_time, 0 AS start_time, 0 AS finish_time, created_at FROM midjourney_tasks WHERE ` + ownerCond
+			seg2Args := append([]any{}, ownerArgs...)
 			if filter.Status != "" {
 				if filter.Status == "unknown" {
 					// MJ 行恒定 unknown：过滤 unknown 时 image_tasks 段整段排除。
@@ -99,8 +109,8 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, error) {
 			args = append(args, seg1Args...)
 			args = append(args, seg2Args...)
 		} else {
-			seg := `SELECT 'video' AS kind, upstream_task_id AS task_id, model, status, progress, fail_reason, result_url, submit_time, start_time, finish_time, created_at FROM video_tasks WHERE owner_user_id = ?`
-			segArgs := []any{filter.OwnerUserID}
+			seg := `SELECT owner_user_id, 'video' AS kind, upstream_task_id AS task_id, model, status, progress, fail_reason, result_url, submit_time, start_time, finish_time, created_at FROM video_tasks WHERE ` + ownerCond
+			segArgs := append([]any{}, ownerArgs...)
 			if filter.Status != "" {
 				seg += " AND status = ?"
 				segArgs = append(segArgs, filter.Status)

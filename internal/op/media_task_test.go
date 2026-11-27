@@ -114,5 +114,39 @@ func TestMediaTaskListByOwnerMergesAndFilters(t *testing.T) {
 	rows, total, err = MediaTaskListByOwner(ctx, MediaTaskListFilter{OwnerUserID: 7, Page: 2, PageSize: 2})
 	if err != nil || total != 3 || len(rows) != 1 || rows[0].TaskID != "img-a" {
 		t.Fatalf("pagination: total=%d rows=%v err=%v", total, rows, err)
+
+		// fix-ui1127a-r1 第 6 条：管理员视角。AllUsers+OwnerUserID=0 看全部用户的任务；
+		// AllUsers+OwnerUserID=8 收窄到指定用户；行里带归属用户 id（一清二楚）。
+		rows, total, err = MediaTaskListByOwner(ctx, MediaTaskListFilter{OwnerUserID: 0, AllUsers: true, Page: 1, PageSize: 20})
+		if err != nil || total != 4 || len(rows) != 4 {
+			t.Fatalf("all-users: total=%d len=%d err=%v, want 4/4", total, len(rows), err)
+		}
+		seenOwner := map[int64]bool{}
+		seenB := false
+		for _, row := range rows {
+			seenOwner[row.OwnerUserID] = true
+			if row.TaskID == "img-b" {
+				seenB = true
+			}
+			if row.OwnerUserID == 0 {
+				t.Fatalf("row %s missing owner user id", row.TaskID)
+			}
+		}
+		if !seenB {
+			t.Fatalf("all-users view missing other owner's img-b")
+		}
+		if !seenOwner[7] || !seenOwner[8] {
+			t.Fatalf("owner ids missing: %v", seenOwner)
+		}
+		// 管理员收窄到 user 8：只有 img-b。
+		rows, total, err = MediaTaskListByOwner(ctx, MediaTaskListFilter{OwnerUserID: 8, AllUsers: true, Page: 1, PageSize: 20})
+		if err != nil || total != 1 || len(rows) != 1 || rows[0].TaskID != "img-b" {
+			t.Fatalf("admin user filter: total=%d rows=%v err=%v", total, rows, err)
+		}
+		// 非管理员语义不变：AllUsers=false 时 owner 0 什么都看不到（fail-closed）。
+		rows, total, err = MediaTaskListByOwner(ctx, MediaTaskListFilter{OwnerUserID: 0, AllUsers: false, Page: 1, PageSize: 20})
+		if err != nil || total != 0 {
+			t.Fatalf("non-admin owner-0 must stay empty: total=%d err=%v", total, err)
+		}
 	}
 }
