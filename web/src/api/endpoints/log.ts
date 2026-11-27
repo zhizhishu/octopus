@@ -730,6 +730,7 @@ export function useLogs(options: {
      * live 推来的新日志多久合并插入一次（毫秒）。0=来一条插一条（默认，等同旧「实时动态」）。
      * >0 时先进缓冲，按节奏批量插到第 1 页顶部。
      */
+    enabled?: boolean;
     liveFlushMs?: number;
     /** 为 true 时新日志只进缓冲不插列表（用户在看详情 / 往下翻 / 选文字 / 切后台）。 */
     livePaused?: boolean;
@@ -738,7 +739,7 @@ export function useLogs(options: {
     /** 自动刷新真的往列表里插了新行时回调（插入的 id，新的在前），用来给新行一个淡淡的高亮。 */
     onLiveInserted?: (ids: number[]) => void;
 } = {}) {
-    const { pageSize = 20, userID, apiKeyID, endpoint, provider, model, startTime, endTime, live = false, page, severity, search, retried, hideModelTest, upstreamModelMismatch, liveFlushMs = 0, livePaused = false, livePollFallbackMs, onLiveInserted } = options;
+    const { enabled = true, pageSize = 20, userID, apiKeyID, endpoint, provider, model, startTime, endTime, live = false, page, severity, search, retried, hideModelTest, upstreamModelMismatch, liveFlushMs = 0, livePaused = false, livePollFallbackMs, onLiveInserted } = options;
 
     const [isConnected, setIsConnected] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -799,6 +800,7 @@ export function useLogs(options: {
     const publishLiveRef = useRef(publishLive);
 
     const logsQuery = useInfiniteQuery({
+        enabled,
         queryKey,
         initialPageParam: page ?? 1,
         queryFn: async ({ pageParam }) => {

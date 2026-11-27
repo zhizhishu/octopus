@@ -378,6 +378,7 @@ export function Log() {
         freeze: freezeLiveInsert,
         resume: resumeLiveInsert,
     } = useLogs({
+        enabled: logPanel === 'requests',
         pageSize: LOG_PAGE_SIZE,
         // 始终分页；实时刷新只是往第 1 页实时插入新日志，分页导航永远保留。
         page: currentPage,
