@@ -66,12 +66,51 @@ type RelaySender struct {
 	// suppressRelayLog：批量采样（hlwy）要求逐请求不写转发日志行（fix-1127
 	// 第 3 项：一轮采样只落一条汇总日志，不刷 100–200 条）。
 	suppressRelayLog bool
+	// creativeThinking：鹈鹕（creative）专用——按真实 CLI 默认给请求带上思考
+	// 配置（fix-1127 返工第 10 条）。只作用于 creative，其他检测题不设。
+	creativeThinking bool
 }
 
 // SetSuppressRelayLog 让之后每次 Send 都不落逐请求转发日志行（汇总行由调用方
 // 在整轮结束时自落）。单次的渠道测试/检测不要用——那条日志正是运营要的观测。
 func (s *RelaySender) SetSuppressRelayLog(v bool) {
 	s.suppressRelayLog = v
+}
+
+// SetCreativeThinkingDefaults 开启鹈鹕专用的真实 CLI 默认思考注入（fix-1127
+// 返工第 10 条）：
+//   - OpenAI：reasoning effort=medium。出处：openai/codex docs/config.md
+//     （rust-v0.77.0 等版本）model_reasoning_effort 标注 `"medium" (default)`；
+//     developers.openai.com/codex/config-basic 示例同值。（新版文档说默认跟模型
+//     自身 default_reasoning_level 走——此处按 Hark 拍板取 medium。）
+//   - Gemini：按模型代际——2.5 系 thinkingBudget=8192（google-gemini/gemini-cli
+//     packages/core/src/config/defaultModelConfigs.ts / models.ts
+//     DEFAULT_THINKING_MODE，注释 "Cap the thinking at 8192 to prevent run-away
+//     thinking loops"），3.x 系 thinkingLevel=HIGH；均 includeThoughts=true。
+//     2.5 flash-lite 这类默认不思考的模型 includeThoughts 必须与 budget 同发
+//     （gemini-cli PR #3033），否则 400——所以 budget 永远成对出现；不认识
+//     代际的模型不注入（瞎填比不填更糟）。
+//   - Anthropic：保持现状（relay 出站补 adaptive+effort，见 claude_shape 那套），
+//     这里什么都不加。
+//
+// 注入的是入站请求体里的「调用方取值」：渠道 shape（codex 形状那套）下游照走，
+// 它只在调用方没表达时才填充——正好满足「shape 已有则以 shape 为准，不重复塞」。
+func (s *RelaySender) SetCreativeThinkingDefaults(v bool) {
+	s.creativeThinking = v
+}
+
+// pelicanGeminiThinkingConfig 按模型代际返回 Gemini CLI 默认思考配置；
+// 认不出代际返回 nil（不注入）。
+func pelicanGeminiThinkingConfig(model string) map[string]any {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(m, "gemini-3"):
+		return map[string]any{"thinkingLevel": "HIGH", "includeThoughts": true}
+	case strings.Contains(m, "gemini-2.5"):
+		return map[string]any{"thinkingBudget": 8192, "includeThoughts": true}
+	default:
+		return nil
+	}
 }
 
 // relayAnthropicMaxTokens 是 Anthropic 入站必须携带的输出预算。
@@ -210,6 +249,9 @@ func (s *RelaySender) buildRelayRequest(ask modelverify.Ask) (relayRequestSpec, 
 		if ask.MaxTokens != nil && *ask.MaxTokens > 0 {
 			body["max_tokens"] = *ask.MaxTokens
 		}
+		if s.creativeThinking {
+			body["reasoning_effort"] = "medium"
+		}
 		spec = relayRequestSpec{method: http.MethodPost, path: "/v1/chat/completions"}
 		spec.body, err = json.Marshal(body)
 		if err != nil {
@@ -228,6 +270,9 @@ func (s *RelaySender) buildRelayRequest(ask modelverify.Ask) (relayRequestSpec, 
 		}
 		if ask.MaxTokens != nil && *ask.MaxTokens > 0 {
 			body["max_output_tokens"] = *ask.MaxTokens
+		}
+		if s.creativeThinking {
+			body["reasoning"] = map[string]any{"effort": "medium"}
 		}
 		spec = relayRequestSpec{method: http.MethodPost, path: "/v1/responses"}
 		spec.body, err = json.Marshal(body)
@@ -281,6 +326,17 @@ func (s *RelaySender) buildRelayRequest(ask modelverify.Ask) (relayRequestSpec, 
 		}
 		if ask.MaxTokens != nil && *ask.MaxTokens > 0 {
 			body["generationConfig"] = map[string]any{"maxOutputTokens": *ask.MaxTokens}
+		}
+		if s.creativeThinking {
+			if thinking := pelicanGeminiThinkingConfig(model); thinking != nil {
+				gc, _ := body["generationConfig"].(map[string]any)
+				if gc == nil {
+					gc = map[string]any{}
+				}
+				// 嵌套位置与 Gemini API/gemini-cli 一致：generationConfig.thinkingConfig。
+				gc["thinkingConfig"] = thinking
+				body["generationConfig"] = gc
+			}
 		}
 		spec = relayRequestSpec{
 			method: http.MethodPost,

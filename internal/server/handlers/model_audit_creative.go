@@ -264,6 +264,8 @@ func runOneCreative(ctx context.Context, row *model.ModelAuditCreative) {
 		finish(op.CreativeOutcome{Status: model.CreativeFailed, Error: err.Error()})
 		return
 	}
+	// 鹈鹕专用：按真实 CLI 默认开思考（fix-1127 返工第 10 条），只作用于此路。
+	sender.SetCreativeThinkingDefaults(true)
 
 	// 同一 (渠道, 上游模型) 有检测在跑时等它一会儿，等不到就放弃（不发请求）。
 	deadline := time.Now().Add(creativeSlotWait)
