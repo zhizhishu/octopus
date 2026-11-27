@@ -395,10 +395,6 @@ func hlwyWriteRoundSummaryLog(ctx context.Context, res *model.ModelAuditResult, 
 		return
 	}
 	src := "model_test"
-	severity := 1
-	if state.execution != model.HlwyExecutionComplete {
-		severity = 3
-	}
 	row := model.RelayLog{
 		RequestEndpoint:  "hlwy_sampling",
 		RequestSource:    &src,
@@ -406,12 +402,18 @@ func hlwyWriteRoundSummaryLog(ctx context.Context, res *model.ModelAuditResult, 
 		ActualModelName:  upstreamModel,
 		ChannelId:        res.ChannelID,
 		ChannelName:      res.ChannelName,
-		Severity:         severity,
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
 		UseTime:          int(time.Since(startedAt).Milliseconds()),
-		TotalAttempts:    slots,
-		RequestContent:   "hlwy 采样汇总：整轮 " + strconv.Itoa(slots) + " 格",
+		// TotalAttempts 语义是一次 relay 请求内的重试次数，hlwy 的槽位数不是那个
+		// 概念（塞进来会被 ClassifyRelayLogSeverity 误判成 warn）。槽数写进
+		// RequestContent 供读；severity 走统一分类器：失败轮 Error 非空 → 稳定
+		// 标红（fix-1127 返工第 6 条），成功轮无错误 → 绿。
+		TotalAttempts:  1,
+		RequestContent: "hlwy 采样汇总：整轮 " + strconv.Itoa(slots) + " 格",
+	}
+	if state.execution != model.HlwyExecutionComplete {
+		row.Error = "hlwy 采样未完成：" + string(state.execution)
 	}
 	if err := op.RelayLogAdd(ctx, row); err != nil {
 		log.Warnf("hlwy result %d summary log failed: %v", res.ID, err)
