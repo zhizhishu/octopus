@@ -886,6 +886,9 @@ func runRaceContenders(
 		if handleErr == nil {
 			winnerRA.collectResponse()
 			winnerRA.metrics.ChannelKeyRemark = winnerRA.usedKey.Remark
+			// 渠道 RPM 口径与串行路径一致（整分钟桶、只数成功，见 balancer/channel_gate.go）：
+			// 胜出 racer 花的是渠道真实名额，与 relay.go 成功分支同一计数点。
+			balancer.RecordChannelRPMSuccess(winner.channel.ID)
 			costDelta := winnerRA.metrics.Stats.InputCost + winnerRA.metrics.Stats.OutputCost
 			op.ChannelKeyRecordUse(winnerRA.usedKey, winner.statusCode, usedAt, costDelta)
 

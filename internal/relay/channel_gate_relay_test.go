@@ -934,3 +934,38 @@ func TestChannelGateCurrentRPMReflectsSuccessesOnly(t *testing.T) {
 		t.Fatalf("current-minute rpm = %d, want 5", got)
 	}
 }
+
+// fix-1127 返工第 3 条：竞速胜出路径与串行同一计数点——一次成功的竞速请求，
+// 胜出渠道当分钟 RPM +1（输家被 raced_out 取消，不成功不计）。
+func TestChannelGateRaceWinnerCountsTowardChannelRPM(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayChannelGateDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	upX := newGateUpstream(t, http.StatusOK, 0)
+	channelX := dbmodel.Channel{
+		Name:     "gate-race-rpm-x",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "gate-model-race-rpm",
+		RaceMode: true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upX.URL}},
+		Keys: []dbmodel.ChannelKey{
+			{Enabled: true, ChannelKey: "race-rpm-key-1"},
+			{Enabled: true, ChannelKey: "race-rpm-key-2"},
+		},
+		Priority: 1,
+	}
+	if err := op.ChannelCreate(&channelX, ctx); err != nil {
+		t.Fatalf("create channel X: %v", err)
+	}
+
+	code, body, _ := doGateChatRequest("gate-model-race-rpm")
+	if code != http.StatusOK {
+		t.Fatalf("race request must succeed, got %d: %s", code, body)
+	}
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 1 {
+		t.Fatalf("winner channel rpm after one successful race = %d, want 1 (winner counted, loser not)", got)
+	}
+}
