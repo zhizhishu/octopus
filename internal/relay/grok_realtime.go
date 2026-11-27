@@ -530,7 +530,7 @@ func (s *grokRealtimeSession) logContent() string {
 		AudioObserved:   s.AudioObserved,
 		ClosedBy:        s.CloseSide,
 		CloseCode:       s.CloseCode,
-		CloseReason:     truncateString(s.CloseText, 256),
+		CloseReason:     truncateString(redactUpstreamFreeText(s.CloseText), 256), // 上游关闭帧文本统一打码（fix-ui1127b-r2 N2）
 		Note:            "realtime events and audio omitted for storage",
 	}
 	if s.UsageSeen {
