@@ -292,6 +292,10 @@ runIterator:
 				// op.UserRecordUsage 第一行 `if cost <= 0 return nil` 直接返回 ——
 				// 余额、月卡、单 key 的 MaxCost 三个口子全都不动，持任意 key 可无限刷。
 				applyVideoCallCost(metrics, item.ModelName)
+				// 渠道 RPM 与串行路径同一计数点（整分钟桶、只数成功，见
+				// balancer/channel_gate.go）：视频创建是真实上游成功请求，必须占名额，
+				// 否则上游真实看到的 RPM 会比计数高（fix-1128 件2）。
+				balancer.RecordChannelRPMSuccess(channel.ID)
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, 0)
 				span.End(model.AttemptSuccess, statusCode, "")
 				balancer.RecordRuntimeSuccess(channel.ID, usedKey.ID, item.ModelName, balancer.AttemptRuntimeMetrics{
