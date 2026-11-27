@@ -1,6 +1,34 @@
 package model
 
-import "time"
+import (
+	"database/sql"
+	"database/sql/driver"
+	"time"
+)
+
+// CreativePNGSize 是 png_size 的读库类型：老库里可能已经有这一列但存量行是 NULL
+//（nullable 加列在不同方言/版本上的回填行为不一致），扫描时一律按「还没有 PNG」的 0
+// 读出来；写库仍是普通整数。这样列表/排队等整行扫描不会被一行 NULL 卡死，不需要
+// 为这次加列再占用一个编号迁移。
+type CreativePNGSize int
+
+// Scan 实现 sql.Scanner：NULL 归零，其余按数据库整数读。
+func (n *CreativePNGSize) Scan(src any) error {
+	var v sql.NullInt64
+	if err := v.Scan(src); err != nil {
+		return err
+	}
+	*n = 0
+	if v.Valid {
+		*n = CreativePNGSize(v.Int64)
+	}
+	return nil
+}
+
+// Value 实现 driver.Valuer：写库始终写确定整数，不写 NULL。
+func (n CreativePNGSize) Value() (driver.Value, error) {
+	return int64(n), nil
+}
 
 // ModelAuditCreative 是「鹈鹕测试」的一张图：同一道创作题发给几个模型，各自交一份
 // SVG/HTML，并排看谁画得像样。
@@ -58,7 +86,7 @@ type ModelAuditCreative struct {
 	PNGData []byte `json:"-" gorm:"column:png_data"`
 	// PNGSize 已存 PNG 的字节数（0 = 还没有）。列表只带这一列，前端靠它判断要不要
 	// 再上传（防重复）和能不能下载。
-	PNGSize int `json:"png_size" gorm:"column:png_size;default:0"`
+	PNGSize CreativePNGSize `json:"png_size" gorm:"column:png_size;default:0"`
 
 	CreatedAt  time.Time  `json:"created_at" gorm:"index"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`

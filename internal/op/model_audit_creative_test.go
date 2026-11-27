@@ -318,6 +318,59 @@ func creativePNGBytes(n int) []byte {
 	return data
 }
 
+// 老库遗留 png_size=NULL 的行：列表整行扫描按 0 读，自动清理/清空未收藏不受阻，
+// 防重复上传守卫也把 NULL 当「还没有 PNG」。不占编号迁移，所以这个兼容必须在代码里。
+func TestCreativePNGSizeNullLegacyRows(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	now := time.Now()
+	upload := seedCreative(t, model.CreativeDone, true, now)
+	clearMe := seedCreativeInRound(t, "r-clear-null", model.CreativeDone, false, now)
+	purgeMe := seedCreativeInRound(t, "r-purge-null", model.CreativeDone, false, now.Add(-8*24*time.Hour))
+	ids := []int64{upload, clearMe, purgeMe}
+	if err := db.GetDB().Exec("UPDATE model_audit_creatives SET png_size = NULL WHERE id IN ?", ids).Error; err != nil {
+		t.Fatalf("make legacy null rows: %v", err)
+	}
+
+	items, err := ModelAuditCreativeList(ctx, "r-test")
+	if err != nil {
+		t.Fatalf("list with legacy NULL png_size: %v", err)
+	}
+	found := false
+	for _, item := range items {
+		if item.ID == upload {
+			found = true
+			if item.PNGSize != 0 {
+				t.Fatalf("NULL png_size must read as 0, got %d", item.PNGSize)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("seeded row missing from list")
+	}
+
+	png := creativePNGBytes(48)
+	stored, err := ModelAuditCreativeSetPNG(ctx, upload, png)
+	if err != nil || !stored {
+		t.Fatalf("upload over legacy NULL png_size = stored %v, err %v", stored, err)
+	}
+	if got, err := ModelAuditCreativeGetPNG(ctx, upload); err != nil || !bytes.Equal(got, png) {
+		t.Fatalf("get uploaded png = %d bytes, err %v", len(got), err)
+	}
+
+	if n, err := ModelAuditCreativePurge(ctx, now); err != nil || n != 1 {
+		t.Fatalf("purge with legacy NULL rows = %d, %v; want 1", n, err)
+	}
+	if creativeExists(t, purgeMe) {
+		t.Fatal("old unpinned NULL row must be purged")
+	}
+	if n, err := ModelAuditCreativeClearUnpinned(ctx); err != nil || n != 1 {
+		t.Fatalf("clear unpinned with legacy NULL rows = %d, %v; want 1", n, err)
+	}
+	if creativeExists(t, clearMe) || !creativeExists(t, upload) {
+		t.Fatal("clear touched the wrong rows")
+	}
+}
+
 // 自动存 PNG：只收出完的图、只存一次（防重复上传）、列表不拖字节。
 func TestCreativePNGSetGetAndIdempotency(t *testing.T) {
 	ctx := setupAuditQueueTest(t)
@@ -378,7 +431,7 @@ func TestCreativePNGSetGetAndIdempotency(t *testing.T) {
 	if err := db.GetDB().Where("id = ?", done).First(&row).Error; err != nil {
 		t.Fatal(err)
 	}
-	if row.PNGSize != len(png) {
+	if int(row.PNGSize) != len(png) {
 		t.Fatalf("png_size = %d, want %d", row.PNGSize, len(png))
 	}
 }

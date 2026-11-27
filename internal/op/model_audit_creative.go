@@ -337,7 +337,7 @@ func ModelAuditCreativeSetPNG(ctx context.Context, id int64, data []byte) (store
 		return false, errors.New("这张图不在「出完」状态，不能存 PNG")
 	}
 	res := db.GetDB().WithContext(ctx).Model(&model.ModelAuditCreative{}).
-		Where("id = ? AND status = ? AND png_size = ?", id, model.CreativeDone, 0).
+		Where("id = ? AND status = ? AND COALESCE(png_size, 0) = ?", id, model.CreativeDone, 0).
 		Updates(map[string]any{"png_data": data, "png_size": len(data)})
 	if res.Error != nil {
 		return false, res.Error
