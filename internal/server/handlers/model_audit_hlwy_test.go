@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/modeltest"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modelverify"
 	"github.com/zhizhishu/octopus/internal/modelverify/numberdist"
@@ -919,7 +920,7 @@ func TestHlwyWorkerFullRun(t *testing.T) {
 // 空出来再发，最终采到正常样本。假发送器前两次回闸门忙、第三次回正常数字。
 func TestHlwySampleRetriesOnChannelGateBusy(t *testing.T) {
 	origWait := hlwyGateBusyWait
-	hlwyGateBusyWait = func() time.Duration { return time.Millisecond }
+	hlwyGateBusyWait = func(int, int) time.Duration { return time.Millisecond }
 	defer func() { hlwyGateBusyWait = origWait }()
 
 	var calls int32
@@ -931,7 +932,7 @@ func TestHlwySampleRetriesOnChannelGateBusy(t *testing.T) {
 		return modelverify.Response{Content: "217", FinishReason: "stop"}, nil
 	}}
 
-	outcome, fatal, _, _ := hlwySampleOnce(context.Background(), sender, 0)
+	outcome, fatal, _, _ := hlwySampleOnce(context.Background(), sender, 0, 0, 0)
 	if atomic.LoadInt32(&calls) != 3 {
 		t.Fatalf("calls = %d, want 3 (2 gate-busy retries + 1 success)", calls)
 	}
@@ -948,7 +949,7 @@ func TestHlwySampleRetriesOnChannelGateBusy(t *testing.T) {
 func TestHlwySampleGateBusyWaitInterruptedByUserCancel(t *testing.T) {
 	ctx := setupSettingAuthTestDB(t)
 	origWait := hlwyGateBusyWait
-	hlwyGateBusyWait = func() time.Duration { return time.Hour }
+	hlwyGateBusyWait = func(int, int) time.Duration { return time.Hour }
 	defer func() { hlwyGateBusyWait = origWait }()
 
 	job := model.ModelAuditJob{
@@ -967,7 +968,7 @@ func TestHlwySampleGateBusyWaitInterruptedByUserCancel(t *testing.T) {
 
 	done := make(chan op.HlwySlotOutcome, 1)
 	go func() {
-		outcome, _, _, _ := hlwySampleOnce(context.Background(), sender, int64(job.ID))
+		outcome, _, _, _ := hlwySampleOnce(context.Background(), sender, int64(job.ID), 0, 0)
 		done <- outcome
 	}()
 
@@ -1003,7 +1004,7 @@ func TestHlwySampleGateBusyWaitInterruptedByUserCancel(t *testing.T) {
 // 整轮 ctx 在等闸门时结束：按普通「没跑成」计，绝不能落进 429 拒收停轮分支。
 func TestHlwySampleGateBusyOnCancelledRoundIsNotFatal(t *testing.T) {
 	origWait := hlwyGateBusyWait
-	hlwyGateBusyWait = func() time.Duration { return time.Hour }
+	hlwyGateBusyWait = func(int, int) time.Duration { return time.Hour }
 	defer func() { hlwyGateBusyWait = origWait }()
 
 	sender := &hlwyFakeSender{ask: func(ctx context.Context, req modelverify.Ask) (modelverify.Response, error) {
@@ -1011,11 +1012,43 @@ func TestHlwySampleGateBusyOnCancelledRoundIsNotFatal(t *testing.T) {
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	outcome, fatal, _, _ := hlwySampleOnce(ctx, sender, 0)
+	outcome, fatal, _, _ := hlwySampleOnce(ctx, sender, 0, 0, 0)
 	if outcome.Result != op.HlwySlotFailed {
 		t.Fatalf("result = %q, want failed", outcome.Result)
 	}
 	if fatal != "" {
 		t.Fatalf("fatal stop = %q, want empty (gate-busy 429 is local, not upstream rejection)", fatal)
+	}
+}
+
+// fix-1127 返工 r2 第 4 条：等待时长按忙的原因分档——RPM 满等分钟桶（>50s 量级），
+// 只是并发位满短退避（1s，闸门自己的 Retry-After），不白等一分钟。
+func TestHlwyGateBusyWaitByReason(t *testing.T) {
+	_ = setupSettingAuthTestDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	// 直接用生产实现本体（不替换包级变量）——测的就是线上那份逻辑。
+	prod := hlwyGateBusyWait
+
+	// 并发位占满、无 RPM 限额：短退避。
+	release, reason := balancer.AdmitChannelGate(context.Background(), 900001, 1, 0, 0, nil)
+	if reason != "" {
+		t.Fatalf("setup admission failed: %q", reason)
+	}
+	defer release()
+	if got := prod(900001, 0); got != time.Second {
+		t.Fatalf("concurrency-only busy wait = %v, want 1s short backoff", got)
+	}
+
+	// RPM 计满：等分钟桶（应远大于 1s、不超过 61s）。
+	balancer.RecordChannelRPMSuccess(900002)
+	balancer.RecordChannelRPMSuccess(900002)
+	if got := prod(900002, 2); got <= time.Second || got > 61*time.Second {
+		t.Fatalf("rpm-full busy wait = %v, want minute-bucket scale (1s,61s]", got)
+	}
+	// RPM 未满时不按分钟等。
+	if got := prod(900002, 5); got != time.Second {
+		t.Fatalf("rpm-not-full wait = %v, want 1s", got)
 	}
 }

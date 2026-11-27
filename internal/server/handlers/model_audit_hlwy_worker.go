@@ -14,6 +14,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/modelverify"
 	"github.com/zhizhishu/octopus/internal/modelverify/numberdist"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 )
@@ -184,7 +185,7 @@ func runHlwyResult(ctx context.Context, res *model.ModelAuditResult, job model.M
 		return
 	}
 
-	hlwyRunLoop(ctx, res, claim, opts, sender, upstreamModel)
+	hlwyRunLoop(ctx, res, claim, opts, sender, upstreamModel, channel.RPMLimit)
 }
 
 // hlwyYieldOrGiveUp 把这一行推后等待，让位次数超上限就放弃。
@@ -218,7 +219,7 @@ func hlwyYieldOrGiveUp(ctx context.Context, res *model.ModelAuditResult, reason 
 // 别的写法绕过任务行锁改了报告），下一条语句会以 0 行受影响把我们拦住，而不是
 // 默默把别人的写入盖掉。
 func hlwyRunLoop(ctx context.Context, res *model.ModelAuditResult, claim op.HlwyClaim,
-	opts model.HlwyOptions, sender modelverify.Sender, upstreamModel string) {
+	opts model.HlwyOptions, sender modelverify.Sender, upstreamModel string, channelRPMLimit int) {
 	// fix-1127 第 3 项：逐格转发日志被压住（见 hlwyNewSender），这里累计整轮的
 	// 用量与格数，收尾时落**一条**汇总日志行。
 	var roundInputTokens, roundOutputTokens, roundSlots int
@@ -310,7 +311,7 @@ func hlwyRunLoop(ctx context.Context, res *model.ModelAuditResult, claim op.Hlwy
 		}
 		claim.Token = slot.Token
 
-		out, fatalStop, sampleInput, sampleOutput := hlwySampleOnce(runCtx, sender, claim.JobID)
+		out, fatalStop, sampleInput, sampleOutput := hlwySampleOnce(runCtx, sender, claim.JobID, res.ChannelID, channelRPMLimit)
 		roundSlots++
 		roundInputTokens += sampleInput
 		roundOutputTokens += sampleOutput
@@ -449,9 +450,16 @@ func hlwyClassifyStatus(status int) (string, string) {
 	}
 }
 
-// hlwyGateBusyWait 是闸门忙后的等待时长源。包级变量只为测试能换成短等待
-// （生产等于下一分钟桶滚动，一次测试等不起 60s）。
-var hlwyGateBusyWait = modeltest.ChannelGateBusyWait
+// hlwyGateBusyWait 是闸门忙后的等待时长源，按忙的**原因**分档（fix-1127 返工 r2
+// 第 4 条）：RPM 满才需要等整分钟桶滚动；只是并发位满时名额随时可能空出来，按闸门
+// 自己告诉调用方的 Retry-After（1s，见 relay 的 channel_rate_limited 终态）短退避，
+// 不白等一分钟。包级变量只为测试能换成短等待（生产等分钟桶，测试等不起 60s）。
+var hlwyGateBusyWait = func(channelID, rpmLimit int) time.Duration {
+	if rpmLimit > 0 && balancer.ChannelGateCurrentRPM(channelID) >= rpmLimit {
+		return modeltest.ChannelGateBusyWait()
+	}
+	return time.Second
+}
 
 // hlwyAskWithGateRetry 发一格采样题；遇**本地渠道闸门忙**（渠道 RPM/并发满，
 // 请求根本没打到上游）时不判失败、不丢样本：等到名额空出来再发，直到整轮
@@ -462,7 +470,7 @@ var hlwyGateBusyWait = modeltest.ChannelGateBusyWait
 // ctx 不一定随之结束（取消传播走的是 HlwyReserveSlot 的任务行判定），所以
 // 等待循环周期性用同一个谓词（op.HlwyJobCanceled）查；分钟翻转后、再发请求
 // 前还要最后查一次——取消后绝不再发上游请求（fix-1127 返工 r2 第 2 条）。
-func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender, jobID int64) (modelverify.Response, error) {
+func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender, jobID int64, channelID, rpmLimit int) (modelverify.Response, error) {
 	for {
 		sampleCtx, cancel := context.WithTimeout(ctx, op.HlwySampleTimeout)
 		resp, err := sender.Ask(sampleCtx, modelverify.Ask{Prompt: numberdist.Prompt})
@@ -472,7 +480,7 @@ func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender, jobID 
 		}
 		// 闸门忙时这一格什么都没发：不算样本、不算失败。等待期间小步轮询，
 		// 每一步都看整轮取消与用户取消，任一发生立刻退出。
-		deadline := time.Now().Add(hlwyGateBusyWait())
+		deadline := time.Now().Add(hlwyGateBusyWait(channelID, rpmLimit))
 		for time.Now().Before(deadline) {
 			if op.HlwyJobCanceled(jobID) {
 				return modelverify.Response{}, err
@@ -501,8 +509,8 @@ func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender, jobID 
 // 四个返回值：结果、观测到的条件快照、是否观测到、需要致命停止的原因（空=继续）。
 // 上游报错一律**不向上传递原文**：它可能带着响应体、URL 或密钥。落库的只有
 // 类别词（如 http_401）和我们自己拼的文案。
-func hlwySampleOnce(ctx context.Context, sender modelverify.Sender, jobID int64) (op.HlwySlotOutcome, string, int, int) {
-	resp, err := hlwyAskWithGateRetry(ctx, sender, jobID)
+func hlwySampleOnce(ctx context.Context, sender modelverify.Sender, jobID int64, channelID, rpmLimit int) (op.HlwySlotOutcome, string, int, int) {
+	resp, err := hlwyAskWithGateRetry(ctx, sender, jobID, channelID, rpmLimit)
 	if err != nil {
 		// 整轮 ctx 在等闸门时结束，错误仍是闸门忙：这一格什么都没发，按普通
 		// 「没跑成」计，绝不能落进 429=确定性拒收的停轮分支。
