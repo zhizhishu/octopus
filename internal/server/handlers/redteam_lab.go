@@ -114,7 +114,19 @@ var redTeamLabSend redTeamLabSender = func(ctx context.Context, channel model.Ch
 	if err != nil {
 		return modelverify.Response{}, err
 	}
-	return sender.Ask(ctx, ask)
+	outcome, err := sender.Ask(ctx, ask)
+	// 本地渠道闸门忙（RPM/并发满，一次都没打到上游）：等名额空出来再试一次
+	// （fix-1127 返工，用户拍板）。仍忙则原样返回闸门忙错误，归因见调用方。
+	if err != nil && modeltest.IsChannelGateBusy(err) {
+		timer := time.NewTimer(modeltest.ChannelGateBusyWait())
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-timer.C:
+			outcome, err = sender.Ask(ctx, ask)
+		}
+	}
+	return outcome, err
 }
 
 func redTeamLabRun(c *gin.Context) {
@@ -201,7 +213,12 @@ func redTeamLabRun(c *gin.Context) {
 	if sendErr != nil {
 		run.Status = "failed"
 		// Never persist proxy URLs, upstream raw errors or credentials here.
-		run.ErrorMessage = "上游未完成测试；请检查渠道、密钥冷却和网关日志"
+		// 本地闸门忙不是上游拒收：归因分开写（fix-1127 返工），文案不透传原文。
+		if modeltest.IsChannelGateBusy(sendErr) {
+			run.ErrorMessage = "渠道限流（本地）：渠道并发/RPM 名额此刻已满，请稍后重试"
+		} else {
+			run.ErrorMessage = "上游未完成测试；请检查渠道、密钥冷却和网关日志"
+		}
 	} else {
 		run.Status = "done"
 		run.ResponseText, run.ResponseClipped = redteamlab.ClipResponse(outcome.Content)

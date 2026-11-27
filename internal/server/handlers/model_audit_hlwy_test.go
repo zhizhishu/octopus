@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/db"
+	"github.com/zhizhishu/octopus/internal/modeltest"
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/modelverify"
 	"github.com/zhizhishu/octopus/internal/modelverify/numberdist"
@@ -911,5 +912,53 @@ func TestHlwyWorkerFullRun(t *testing.T) {
 				t.Fatalf("job status=%q finished=%d", jobRow.Status, jobRow.Finished)
 			}
 		})
+	}
+}
+
+// fix-1127 返工第 4 条：hlwy 遇本地闸门忙不判失败、不停轮、不丢样本——等到名额
+// 空出来再发，最终采到正常样本。假发送器前两次回闸门忙、第三次回正常数字。
+func TestHlwySampleRetriesOnChannelGateBusy(t *testing.T) {
+	origWait := hlwyGateBusyWait
+	hlwyGateBusyWait = func() time.Duration { return time.Millisecond }
+	defer func() { hlwyGateBusyWait = origWait }()
+
+	var calls int32
+	sender := &hlwyFakeSender{ask: func(ctx context.Context, req modelverify.Ask) (modelverify.Response, error) {
+		n := atomic.AddInt32(&calls, 1)
+		if n <= 2 {
+			return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 429, Err: modeltest.ErrChannelGateBusy}
+		}
+		return modelverify.Response{Content: "217", FinishReason: "stop"}, nil
+	}}
+
+	outcome, fatal, _, _ := hlwySampleOnce(context.Background(), sender)
+	if atomic.LoadInt32(&calls) != 3 {
+		t.Fatalf("calls = %d, want 3 (2 gate-busy retries + 1 success)", calls)
+	}
+	if outcome.Result != op.HlwySlotValid {
+		t.Fatalf("result = %q, want valid (gate-busy must not fail or drop the sample)", outcome.Result)
+	}
+	if fatal != "" {
+		t.Fatalf("fatal stop = %q, want empty (local gate-busy is never a rejection)", fatal)
+	}
+}
+
+// 整轮 ctx 在等闸门时结束：按普通「没跑成」计，绝不能落进 429 拒收停轮分支。
+func TestHlwySampleGateBusyOnCancelledRoundIsNotFatal(t *testing.T) {
+	origWait := hlwyGateBusyWait
+	hlwyGateBusyWait = func() time.Duration { return time.Hour }
+	defer func() { hlwyGateBusyWait = origWait }()
+
+	sender := &hlwyFakeSender{ask: func(ctx context.Context, req modelverify.Ask) (modelverify.Response, error) {
+		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 429, Err: modeltest.ErrChannelGateBusy}
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	outcome, fatal, _, _ := hlwySampleOnce(ctx, sender)
+	if outcome.Result != op.HlwySlotFailed {
+		t.Fatalf("result = %q, want failed", outcome.Result)
+	}
+	if fatal != "" {
+		t.Fatalf("fatal stop = %q, want empty (gate-busy 429 is local, not upstream rejection)", fatal)
 	}
 }

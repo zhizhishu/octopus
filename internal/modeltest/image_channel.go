@@ -183,6 +183,12 @@ func (r *modelRunner) forwardImageTest(ctx context.Context, channel *dbmodel.Cha
 	}
 	if outcome.status < 200 || outcome.status >= 300 {
 		outcome.errorCode = imageTestErrorCode(responseBody)
+		// 本地渠道闸门终态（relay channel_rate_limited，一次都没打到上游）不是
+		// 上游拒收：归因分开写（fix-1127 返工），与 chat 检测同一文案口径。
+		if outcome.status == 429 && bytes.Contains(responseBody, []byte("channel_rate_limited")) {
+			outcome.err = ErrChannelGateBusy
+			return outcome
+		}
 		outcome.err = fmt.Errorf("upstream status %d: %s", outcome.status, imageTestErrorMessage(responseBody))
 		return outcome
 	}

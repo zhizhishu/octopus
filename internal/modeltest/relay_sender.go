@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
@@ -19,6 +20,26 @@ import (
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
+
+// ErrChannelGateBusy 标记一次发送被**本地渠道闸门**（并发位/RPM 名额）挡下——
+// 请求一次都没发到上游。这不是上游拒收：渠道只是此刻满，等到名额空出来
+// （RPM 整分钟桶滚动/并发释放）再发就是。调用方用 errors.Is 判定，
+// 文案本身就是归因子「渠道限流（本地）」（fix-1127 返工，用户拍板）。
+var ErrChannelGateBusy = errors.New("渠道限流（本地）")
+
+// IsChannelGateBusy 判定错误是不是本地闸门忙（含 UpstreamStatusError 包装）。
+func IsChannelGateBusy(err error) bool {
+	return errors.Is(err, ErrChannelGateBusy)
+}
+
+// ChannelGateBusyWait 给出闸门忙后的建议等待：RPM 是整分钟桶（见
+// balancer/channel_gate.go），等不到下一分钟名额不会重置；并发位通常远早于此
+// 释放，但等待上层本就在异步采样/实验里，正确性优先。下一分钟边界 + 一点余量。
+func ChannelGateBusyWait() time.Duration {
+	now := time.Now()
+	next := now.Truncate(time.Minute).Add(time.Minute)
+	return time.Until(next) + 200*time.Millisecond
+}
 
 // RelaySender 把渠道测试 / 模型检测（含鹈鹕 creative）的题目经**正常 relay 转发
 // 链路**发出去（用户 2026-11-26 拍板：学 new-api controller/channel-test.go，
@@ -358,9 +379,17 @@ func (s *RelaySender) Send(ctx context.Context, ask modelverify.Ask) (int, *tran
 	status := recorder.Code
 	parsed := relay.InternalTestResponse(ginCtx)
 	if status >= 400 || parsed == nil {
-		message := relayErrorMessage(recorder.Body.Bytes())
+		body := recorder.Body.Bytes()
+		message := relayErrorMessage(body)
 		if message == "" {
 			message = fmt.Sprintf("relay 转发失败（HTTP %d）", status)
+		}
+		// 本地渠道闸门终态（relay.go channelRateLimitedCode，一次都没发到上游）
+		// 必须与上游 429 分开归因：这是「渠道此刻满」，等名额空了再发即可，
+		// 不是上游拒收。判定靠响应体里我们自己的错误码——上游 429 的转发体
+		// 不会带这个字面量。
+		if status == http.StatusTooManyRequests && bytes.Contains(body, []byte("channel_rate_limited")) {
+			return status, nil, &modelverify.UpstreamStatusError{Status: status, Err: ErrChannelGateBusy}
 		}
 		return status, nil, &modelverify.UpstreamStatusError{Status: status, Err: errors.New(message)}
 	}

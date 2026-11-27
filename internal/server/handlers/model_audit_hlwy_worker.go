@@ -447,17 +447,48 @@ func hlwyClassifyStatus(status int) (string, string) {
 	}
 }
 
+// hlwyGateBusyWait 是闸门忙后的等待时长源。包级变量只为测试能换成短等待
+// （生产等于下一分钟桶滚动，一次测试等不起 60s）。
+var hlwyGateBusyWait = modeltest.ChannelGateBusyWait
+
+// hlwyAskWithGateRetry 发一格采样题；遇**本地渠道闸门忙**（渠道 RPM/并发满，
+// 请求根本没打到上游）时不判失败、不丢样本：等到名额空出来（RPM 整分钟桶
+// 滚动）再发，直到整轮 ctx 结束（fix-1127 返工，用户承诺的行为）。
+// 上游真实错误（含上游自己的 429）原样返回，不在此重试。
+func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender) (modelverify.Response, error) {
+	for {
+		sampleCtx, cancel := context.WithTimeout(ctx, op.HlwySampleTimeout)
+		resp, err := sender.Ask(sampleCtx, modelverify.Ask{Prompt: numberdist.Prompt})
+		cancel()
+		if err == nil || !modeltest.IsChannelGateBusy(err) {
+			return resp, err
+		}
+		// 闸门忙时这一格什么都没发：不算样本、不算失败。等到下一分钟桶滚动
+		// （或整轮被取消）再试。timer 用 ctx 控制，整轮取消立刻返回。
+		wait := hlwyGateBusyWait()
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return modelverify.Response{}, err
+		case <-timer.C:
+		}
+	}
+}
+
 // hlwySampleOnce 发一格采样，并尽量诱出“这次到底发的是什么”的观测。
 //
 // 四个返回值：结果、观测到的条件快照、是否观测到、需要致命停止的原因（空=继续）。
 // 上游报错一律**不向上传递原文**：它可能带着响应体、URL 或密钥。落库的只有
 // 类别词（如 http_401）和我们自己拼的文案。
 func hlwySampleOnce(ctx context.Context, sender modelverify.Sender) (op.HlwySlotOutcome, string, int, int) {
-	sampleCtx, cancel := context.WithTimeout(ctx, op.HlwySampleTimeout)
-	defer cancel()
-
-	resp, err := sender.Ask(sampleCtx, modelverify.Ask{Prompt: numberdist.Prompt})
+	resp, err := hlwyAskWithGateRetry(ctx, sender)
 	if err != nil {
+		// 整轮 ctx 在等闸门时结束，错误仍是闸门忙：这一格什么都没发，按普通
+		// 「没跑成」计，绝不能落进 429=确定性拒收的停轮分支。
+		if modeltest.IsChannelGateBusy(err) {
+			return op.HlwySlotOutcome{Result: op.HlwySlotFailed}, "", 0, 0
+		}
 		var status *modelverify.UpstreamStatusError
 		if errors.As(err, &status) {
 			class, code := hlwyClassifyStatus(status.Status)
