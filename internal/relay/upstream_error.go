@@ -421,9 +421,9 @@ func upstreamErrorPublicCode(fallback string) string {
 	return code
 }
 
-// redactUpstreamFreeText 是上游生成自由文本落库/回下游前的统一打码（fix-ui1127b-r2）：
-// URLSecrets 管 URL 形态、Secrets 管密钥形状串。只护我们自己的上游密钥——下游
-// 客户端发来的正文不经过这里，仍然原样存储。
+// redactUpstreamFreeText 是上游生成自由文本进入落库/错误文本前的统一打码
+// （fix-ui1127b-r2）：URLSecrets 管 URL 形态、Secrets 管密钥形状串。只护我们自己的
+// 上游密钥；下游协议转发正文不在此改写，仍按原文转发/落库。
 func redactUpstreamFreeText(s string) string {
 	return xredact.Secrets(xredact.URLSecrets(s))
 }
