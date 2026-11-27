@@ -909,14 +909,6 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	if len(r.probeMessages) > 0 && channel.Type == outbound.OutboundTypeAnthropic {
 		internalRequest.Messages = r.probeMessages
 	}
-	// Mirror production relay (relay.go sets this from the same cloak switch): the
-	// synthetic Claude billing/agent-identity system blocks are injected only when the
-	// channel cloak applies (auto/always). Without this the test always injected them
-	// (zero-value false), so a cloak=never channel's test would send Claude identity the
-	// real relay would strip, and a cloaked channel's test must inject it (the block
-	// strict relays gate on) — so the test faithfully reflects exactly what the upstream
-	// receives in production.
-	internalRequest.TransformOptions.SuppressClaudeIdentity = !shouldApplyChannelCloak(channel.Cloak)
 	// Resolve the channel's fingerprint profile once and feed it to every body-shape
 	// helper so the test's device_id / installation id match the relay forward path
 	// for this channel (test==real-traffic invariant).
@@ -927,12 +919,6 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		// touched; codex/gpt models get prepareCodexModelTestRequest instead, other
 		// models get nothing. Simple model-family judgement, no collateral damage.
 		transformermodel.ApplyClaudeCodeFallbackTools(internalRequest, shouldApplyChannelCloak(channel.Cloak), true)
-		if channel.AnthropicContext1M {
-			internalRequest.TransformOptions.AnthropicOneMillionBeta = true
-		}
-		if enabled, err := op.SettingGetBool(dbmodel.SettingKeyAnthropicAutoCacheControl); err == nil {
-			internalRequest.TransformOptions.AnthropicAutoCacheControl = enabled
-		}
 		prepareClaudeOneMillionModelTestShape(internalRequest, r.request, fp)
 		// The outbound for an Anthropic channel is ALWAYS a /v1/messages claude request,
 		// regardless of which inbound test endpoint (anthropic_messages / openai_responses /
@@ -959,6 +945,20 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 	}
 	if !embeddingProbe && modelTestUsesCodexFingerprint(channel, r.request.Endpoint) {
 		prepareCodexModelTestRequest(internalRequest, channel.Type, fp)
+	}
+
+	// fix-1128 件4：探针出站与真实转发的共性形状统一走 relay.ApplyChannelOutboundShaping
+	// （生产 attempt、hlwy derive、红队同源），防止两边漂移。放在手写形状块之后：
+	// 探针专属的确定性会话（PromptCacheKey→metadata/header 三处一致）要先定下来，
+	// 统一整形里的补齐逻辑全部是 fill-if-absent，不会覆盖探针已定的值。
+	// cliShaped=true：探针按真 CLI 形状发（claude-cli UA），ClaudeNonCLICaller 保持 false
+	// 与现状一致。嵌入探针跳过（嵌入请求不碰指纹路径，红线）。
+	if !embeddingProbe {
+		if endpoint, epErr := normalizeEndpoint(r.request.Endpoint); epErr == nil {
+			if err := relay.ApplyChannelOutboundShaping(internalRequest, channel, true, endpoint.inbound); err != nil {
+				return 0, nil, fmt.Errorf("apply channel outbound shaping: %w", err)
+			}
+		}
 	}
 
 	internalRequest.TransformOptions.VerbatimUpstreamURL = channel.Type == outbound.OutboundTypeCustomOpenAIChat
