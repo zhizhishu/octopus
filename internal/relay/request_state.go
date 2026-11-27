@@ -22,8 +22,11 @@ type RequestState struct {
 	StartedAt time.Time `json:"started_at"`
 	Model     string    `json:"model"`
 	Endpoint  string    `json:"endpoint"`
-	UserID    int       `json:"-"` // 仅服务端做 SSE 权限过滤，绝不发到前端
-	APIKeyID  int       `json:"-"`
+	// user_id/api_key_id 序列化给前端：日志页「实时」标签要按用户/Key 筛选在途请求
+	// （fix-ui1127a）。非管理员本来只能看到自己的行（SSE 按归属过滤），管理员看全局
+	// 也本就有权知道是谁的——这不是新的暴露面。
+	UserID    int       `json:"user_id,omitempty"`
+	APIKeyID  int       `json:"api_key_id,omitempty"`
 
 	// 救援干预关联
 	InterventionID string `json:"intervention_id,omitempty"`
@@ -414,7 +417,7 @@ func GetRequestStateSnapshot() []*RequestState {
 }
 
 // GetRequestStateSnapshotForUser returns admin-global state or only the caller's own
-// requests. UserID/APIKeyID remain server-only fields and are hidden by json tags.
+// requests. UserID/APIKeyID 随负载序列化（实时标签的用户/Key 筛选用），归属隔离不变。
 func GetRequestStateSnapshotForUser(userID int, isAdmin bool) []*RequestState {
 	stateMu.RLock()
 	defer stateMu.RUnlock()
