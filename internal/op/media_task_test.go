@@ -150,3 +150,27 @@ func TestMediaTaskListByOwnerMergesAndFilters(t *testing.T) {
 		}
 	}
 }
+
+func TestMediaTaskListUnknownIncludesNullAndEmptyLegacyVideoStatus(t *testing.T) {
+	ctx := setupQuotaTest(t)
+	now := time.Now().Unix()
+	for i, status := range []any{nil, ""} {
+		task := model.VideoTask{
+			CreatedAt: now - int64(i), UpstreamTaskID: []string{"vid-null", "vid-empty"}[i], Model: "m",
+			Status: model.VideoTaskUnknown, OwnerUserID: 7, OwnerTokenID: 1,
+		}
+		if err := db.GetDB().Create(&task).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if err := db.GetDB().Exec("UPDATE video_tasks SET status = ? WHERE id = ?", status, task.ID).Error; err != nil {
+			t.Fatalf("legacy status: %v", err)
+		}
+	}
+	rows, total, err := MediaTaskListByOwner(ctx, MediaTaskListFilter{OwnerUserID: 7, Kind: MediaTaskKindVideo, Status: "unknown", Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Fatalf("total=%d len=%d rows=%v", total, len(rows), rows)
+	}
+}

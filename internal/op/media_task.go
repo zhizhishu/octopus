@@ -91,6 +91,11 @@ func mediaTaskStatusCond(raw string) (string, []any) {
 		args = append(args, st)
 	}
 	cond := "status IN (" + placeholders + ")"
+	if unknown {
+		// video_tasks.status 允许历史 NULL（见 model.VideoTask.Status）；空串也按同一类
+		// 「本地不知道」的历史行处理。unknown 不是终态，只是筛选口径要能看到它们。
+		cond = "(" + cond + " OR status IS NULL OR status = '')"
+	}
 	return " AND " + cond, args
 }
 
