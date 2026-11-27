@@ -13,6 +13,7 @@ import (
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 )
@@ -555,5 +556,84 @@ func TestRunChannelImageEndpointRejectsUnsavedChannel(t *testing.T) {
 	}
 	if got := hits(); len(got) != 0 {
 		t.Fatalf("被拒后上游必须一次请求都没收到, got %d", len(got))
+	}
+}
+
+// fix-1127 返工第 1 条：图片渠道测试与正常 images 路径同一套闸门/RPM——
+// 成功计入当分钟 RPM，RPM 满了被闸门挡住、上游零命中。
+func TestRunChannelImageSuccessCountsTowardChannelRPM(t *testing.T) {
+	ctx := setupModelTestDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	upstream, hits := imageTestUpstream(t)
+	channel := dbmodel.Channel{
+		Name:     "image-rpm-count-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "gpt-image-1",
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "k"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "gpt-image-1",
+		Endpoint: imageGenerationTestEndpointName,
+	})
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("image test must succeed, got %#v", response.Summary)
+	}
+	if got := balancer.ChannelGateCurrentRPM(channel.ID); got != 1 {
+		t.Fatalf("channel rpm after one successful image test = %d, want 1", got)
+	}
+	if len(hits()) != 1 {
+		t.Fatalf("upstream hits = %d, want 1", len(hits()))
+	}
+}
+
+func TestRunChannelImageBlockedWhenChannelRPMFull(t *testing.T) {
+	ctx := setupModelTestDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	upstream, hits := imageTestUpstream(t)
+	channel := dbmodel.Channel{
+		Name:     "image-rpm-full-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "gpt-image-1",
+		RPMLimit: 1,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "k"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	req := dbmodel.ModelTestRequest{Model: "gpt-image-1", Endpoint: imageGenerationTestEndpointName}
+
+	first, err := RunChannel(ctx, channel, req)
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	if first.Summary.Success != 1 {
+		t.Fatalf("first image test must succeed, got %#v", first.Summary)
+	}
+
+	before := len(hits())
+	second, err := RunChannel(ctx, channel, req)
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	if len(hits()) != before {
+		t.Fatalf("RPM 满时上游又被打了一次（before=%d after=%d）：闸门没有拦住测试请求", before, len(hits()))
+	}
+	if second.Summary.Success != 0 {
+		t.Fatalf("second test must not succeed while rpm full, got %#v", second.Summary)
 	}
 }

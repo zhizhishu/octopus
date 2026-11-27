@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/zhizhishu/octopus/internal/model"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/bodycache"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
@@ -186,6 +187,21 @@ func forwardImagesChannelTest(
 	ctx := c.Request.Context()
 	metrics := newImagesRelayMetrics(0, 0, "", actualModel, imageEndpointName(endpoint), c.Request.URL.Path)
 
+	// 渠道级硬限流闸门与生产同口径（images.go 正常路径的 AdmitChannelGate +
+	// RecordChannelRPMSuccess，用户「层层约束」拍板）：测试花的是渠道真实并发位与
+	// RPM 名额，占不到位就是「此刻发不出去」——上游零命中，绝不绕过。渠道级闸门，
+	// 同渠道各 key 命中同一道闸，所以只在第一个 key 前占一次；占不到直接收。
+	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+	if gateReason != "" {
+		if releaseGate != nil {
+			releaseGate()
+		}
+		// 终态口径与生产 429 一致（relay.go channelRateLimited*）：调用方据此按限流
+		// 节奏等待重试，而不是当上游坏了。
+		resp.ErrorWithCode(c, http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage)
+		return
+	}
+
 	var lastErr error
 	for _, usedKey := range keys {
 		statusCode := 0
@@ -193,13 +209,21 @@ func forwardImagesChannelTest(
 			written bool
 			fwdErr  error
 		)
-		if channel.Type == outbound.OutboundTypeGemini {
-			statusCode, written, _, _, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, bc, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, actualModel)
-		} else {
-			// firstTokenTimeOutSec 传 0：渠道测试不设首字节超时，整体由调用方 context 兜底。
-			statusCode, written, _, _, fwdErr = imagesAttempt(ctx, endpoint, c, bc, isMultipart, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, 0, metrics, actualModel)
-		}
+		func() {
+			// 闸门位与在途位分开释放（幂等）：成功/失败/panic 都会经这里，对齐生产路径。
+			if releaseGate != nil {
+				defer releaseGate()
+			}
+			if channel.Type == outbound.OutboundTypeGemini {
+				statusCode, written, _, _, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, bc, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, actualModel)
+			} else {
+				// firstTokenTimeOutSec 传 0：渠道测试不设首字节超时，整体由调用方 context 兜底。
+				statusCode, written, _, _, fwdErr = imagesAttempt(ctx, endpoint, c, bc, isMultipart, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, 0, metrics, actualModel)
+			}
+		}()
 		if fwdErr == nil {
+			// 渠道 RPM 口径与生产一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
+			balancer.RecordChannelRPMSuccess(channel.ID)
 			c.Set(imagesChannelTestUpstreamPathContextKey, imagesChannelTestUpstreamPath(channel, endpoint, actualModel, usedKey.ChannelKey, jsonPayload))
 			c.Set(imagesChannelTestKeyIDContextKey, usedKey.ID)
 			return
