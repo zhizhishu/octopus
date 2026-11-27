@@ -174,3 +174,38 @@ func TestMediaTaskListUnknownIncludesNullAndEmptyLegacyVideoStatus(t *testing.T)
 		t.Fatalf("total=%d len=%d rows=%v", total, len(rows), rows)
 	}
 }
+
+func TestMediaTaskListModelFilterEscapesLikeWildcards(t *testing.T) {
+	ctx := setupQuotaTest(t)
+	now := time.Now().Unix()
+	for _, row := range []struct{ id, model string }{
+		{"img-literal", "gpt_100"},
+		{"img-wildcard-hit", "gptX100"},
+		{"img-percent", "gpt%100"},
+	} {
+		task := model.ImageTask{
+			TaskID: row.id, CreatedAt: now, ExpiresAt: now + 3600,
+			Status: model.ImageTaskStatusCompleted, OwnerUserID: 7, OwnerTokenID: 1,
+			Model: row.model,
+		}
+		if err := db.GetDB().Create(&task).Error; err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	rows, total, err := MediaTaskListByOwner(ctx, MediaTaskListFilter{OwnerUserID: 7, Kind: MediaTaskKindImage, Model: "gpt_1", Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list underscore filter: %v", err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].TaskID != "img-literal" {
+		t.Fatalf("underscore must be literal: total=%d rows=%v", total, rows)
+	}
+
+	rows, total, err = MediaTaskListByOwner(ctx, MediaTaskListFilter{OwnerUserID: 7, Kind: MediaTaskKindImage, Model: "gpt%1", Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list percent filter: %v", err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].TaskID != "img-percent" {
+		t.Fatalf("percent must be literal: total=%d rows=%v", total, rows)
+	}
+}

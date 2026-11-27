@@ -99,6 +99,30 @@ func mediaTaskStatusCond(raw string) (string, []any) {
 	return " AND " + cond, args
 }
 
+// mediaTaskModelLikePattern 把用户输入变成字面量子串匹配：!、%、_ 都先转义，
+// SQL 侧统一配 ESCAPE '!'，否则用户搜 gpt_1 会把 _ 当单字符通配符。
+func mediaTaskModelLikePattern(model string) string {
+	var b strings.Builder
+	b.Grow(len(model) + 2)
+	b.WriteByte('%')
+	for _, r := range model {
+		if r == '!' || r == '%' || r == '_' {
+			b.WriteByte('!')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('%')
+	return b.String()
+}
+
+// mediaTaskAppendModelFilter 追加模型子串过滤；调用方传入 SELECT 与 COUNT 两份 SQL/args。
+func mediaTaskAppendModelFilter(sql string, args []any, model string) (string, []any) {
+	if model == "" {
+		return sql, args
+	}
+	return sql + " AND model LIKE ? ESCAPE '!'", append(args, mediaTaskModelLikePattern(model))
+}
+
 func mediaTaskAppendTime(sql string, args []any, filter MediaTaskListFilter) (string, []any) {
 	if filter.StartTime > 0 {
 		sql += " AND created_at >= ?"
@@ -154,12 +178,8 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, []mediaTask
 		imageArgs = append(imageArgs, statusArgs...)
 		imageCountSQL += statusCond
 		imageCountArgs = append(imageCountArgs, statusArgs...)
-		if filter.Model != "" {
-			imageSQL += " AND model LIKE ?"
-			imageArgs = append(imageArgs, "%"+filter.Model+"%")
-			imageCountSQL += " AND model LIKE ?"
-			imageCountArgs = append(imageCountArgs, "%"+filter.Model+"%")
-		}
+		imageSQL, imageArgs = mediaTaskAppendModelFilter(imageSQL, imageArgs, filter.Model)
+		imageCountSQL, imageCountArgs = mediaTaskAppendModelFilter(imageCountSQL, imageCountArgs, filter.Model)
 		imageSQL, imageArgs = mediaTaskAppendTime(imageSQL, imageArgs, filter)
 		imageCountSQL, imageCountArgs = mediaTaskAppendTime(imageCountSQL, imageCountArgs, filter)
 		sources = append(sources, mediaTaskSource{selectSQL: imageSQL, args: imageArgs, countSQL: imageCountSQL, countArgs: imageCountArgs, alias: "media_image_top"})
@@ -182,12 +202,8 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, []mediaTask
 			mjSQL += " AND 1=0"
 			mjCountSQL += " AND 1=0"
 		}
-		if filter.Model != "" {
-			mjSQL += " AND model LIKE ?"
-			mjArgs = append(mjArgs, "%"+filter.Model+"%")
-			mjCountSQL += " AND model LIKE ?"
-			mjCountArgs = append(mjCountArgs, "%"+filter.Model+"%")
-		}
+		mjSQL, mjArgs = mediaTaskAppendModelFilter(mjSQL, mjArgs, filter.Model)
+		mjCountSQL, mjCountArgs = mediaTaskAppendModelFilter(mjCountSQL, mjCountArgs, filter.Model)
 		mjSQL, mjArgs = mediaTaskAppendTime(mjSQL, mjArgs, filter)
 		mjCountSQL, mjCountArgs = mediaTaskAppendTime(mjCountSQL, mjCountArgs, filter)
 		sources = append(sources, mediaTaskSource{selectSQL: mjSQL, args: mjArgs, countSQL: mjCountSQL, countArgs: mjCountArgs, alias: "media_midjourney_top"})
@@ -203,12 +219,8 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, []mediaTask
 		videoArgs = append(videoArgs, statusArgs...)
 		videoCountSQL += statusCond
 		videoCountArgs = append(videoCountArgs, statusArgs...)
-		if filter.Model != "" {
-			videoSQL += " AND model LIKE ?"
-			videoArgs = append(videoArgs, "%"+filter.Model+"%")
-			videoCountSQL += " AND model LIKE ?"
-			videoCountArgs = append(videoCountArgs, "%"+filter.Model+"%")
-		}
+		videoSQL, videoArgs = mediaTaskAppendModelFilter(videoSQL, videoArgs, filter.Model)
+		videoCountSQL, videoCountArgs = mediaTaskAppendModelFilter(videoCountSQL, videoCountArgs, filter.Model)
 		videoSQL, videoArgs = mediaTaskAppendTime(videoSQL, videoArgs, filter)
 		videoCountSQL, videoCountArgs = mediaTaskAppendTime(videoCountSQL, videoCountArgs, filter)
 		sources = append(sources, mediaTaskSource{selectSQL: videoSQL, args: videoArgs, countSQL: videoCountSQL, countArgs: videoCountArgs, alias: "media_video_top"})
