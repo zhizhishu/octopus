@@ -1,6 +1,7 @@
 package op
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -237,13 +238,17 @@ func ModelAuditCreativeRounds(ctx context.Context, limit int) ([]CreativeRound, 
 }
 
 // ModelAuditCreativeList 一轮里的全部图（按发起顺序）。
+//
+// Omit(png_data)：PNG 字节不进列表（鹈鹕页 3 秒轮询一次，拖上 MB 级字节会白耗；
+// 前端靠 png_size 判断有没有 PNG），要字节走 ModelAuditCreativeGetPNG。
 func ModelAuditCreativeList(ctx context.Context, roundID string) ([]model.ModelAuditCreative, error) {
 	roundID = strings.TrimSpace(roundID)
 	if roundID == "" {
 		return nil, errors.New("缺少轮次")
 	}
 	var items []model.ModelAuditCreative
-	err := db.GetDB().WithContext(ctx).Where("round_id = ?", roundID).Order("id ASC").Find(&items).Error
+	err := db.GetDB().WithContext(ctx).Omit("png_data").
+		Where("round_id = ?", roundID).Order("id ASC").Find(&items).Error
 	return items, err
 }
 
@@ -302,6 +307,55 @@ func ModelAuditCreativePurge(ctx context.Context, now time.Time) (int64, error) 
 			[]string{model.CreativePending, model.CreativeRunning}).
 		Delete(&model.ModelAuditCreative{})
 	return res.RowsAffected, res.Error
+}
+
+// creativePNGHeader 是 PNG 文件头：上传的字节必须以它开头（前端 canvas toBlob
+// 出来的就是 PNG；验一下头，谁手滑传别的东西也进不了库）。
+var creativePNGHeader = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+
+// ModelAuditCreativeSetPNG 存一张前端渲染完成后自动上传的 PNG。
+//
+// 防重复上传是硬规则：只在「已出完且还没有 PNG」的行上写，第一次成功后
+// stored=true；再来一次 stored=false、字节不动（UPDATE 的 WHERE 里带 png_size = 0，
+// 并发下也只有一个赢家）。行不在返回 gorm.ErrRecordNotFound；还没出完/出错的
+// 行不接受 PNG。
+func ModelAuditCreativeSetPNG(ctx context.Context, id int64, data []byte) (stored bool, err error) {
+	if len(data) == 0 {
+		return false, errors.New("PNG 是空的")
+	}
+	if len(data) > model.CreativeMaxPNGBytes {
+		return false, fmt.Errorf("PNG 太大了（%d KB，上限 %d MB）", len(data)/1024, model.CreativeMaxPNGBytes>>20)
+	}
+	if !bytes.HasPrefix(data, creativePNGHeader) {
+		return false, errors.New("不是 PNG（文件头对不上）")
+	}
+	var row model.ModelAuditCreative
+	if err := db.GetDB().WithContext(ctx).Select("id, status").Where("id = ?", id).First(&row).Error; err != nil {
+		return false, err
+	}
+	if row.Status != model.CreativeDone {
+		return false, errors.New("这张图不在「出完」状态，不能存 PNG")
+	}
+	res := db.GetDB().WithContext(ctx).Model(&model.ModelAuditCreative{}).
+		Where("id = ? AND status = ? AND png_size = ?", id, model.CreativeDone, 0).
+		Updates(map[string]any{"png_data": data, "png_size": len(data)})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// ModelAuditCreativeGetPNG 取一张图的 PNG 字节。行不在返回 gorm.ErrRecordNotFound；
+// 行在但还没存过 PNG（png_size = 0）返回 (nil, nil)，调用方自己给「没有 PNG」的响应。
+func ModelAuditCreativeGetPNG(ctx context.Context, id int64) ([]byte, error) {
+	var row model.ModelAuditCreative
+	if err := db.GetDB().WithContext(ctx).Select("png_data").Where("id = ?", id).First(&row).Error; err != nil {
+		return nil, err
+	}
+	if len(row.PNGData) == 0 {
+		return nil, nil
+	}
+	return row.PNGData, nil
 }
 
 // ModelAuditCreativeClaimNext 取一张待出的图并占成 running。没有就返回 (nil, nil)。

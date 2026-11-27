@@ -1,6 +1,7 @@
 package op
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/model"
+	"gorm.io/gorm"
 )
 
 func seedCreative(t *testing.T, status string, pinned bool, created time.Time) int64 {
@@ -305,3 +307,78 @@ func TestCreativeTruncateKeepsUTF8(t *testing.T) {
 }
 
 func utf8ValidString(s string) bool { return strings.ToValidUTF8(s, "\uFFFD") == s }
+
+// creativePNGBytes 造一段带 PNG 文件头的字节。
+func creativePNGBytes(n int) []byte {
+	data := make([]byte, 8+n)
+	copy(data, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A})
+	for i := 8; i < len(data); i++ {
+		data[i] = byte(i)
+	}
+	return data
+}
+
+// 自动存 PNG：只收出完的图、只存一次（防重复上传）、列表不拖字节。
+func TestCreativePNGSetGetAndIdempotency(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	now := time.Now()
+	done := seedCreative(t, model.CreativeDone, false, now)
+	running := seedCreative(t, model.CreativeRunning, false, now)
+	png := creativePNGBytes(64)
+
+	// 没出完的图不接受 PNG。
+	if _, err := ModelAuditCreativeSetPNG(ctx, running, png); err == nil {
+		t.Fatal("running item must refuse a PNG")
+	}
+	// 空、非 PNG 文件头、超限都拒。
+	if _, err := ModelAuditCreativeSetPNG(ctx, done, nil); err == nil {
+		t.Fatal("empty PNG must be refused")
+	}
+	if _, err := ModelAuditCreativeSetPNG(ctx, done, append([]byte("GIF89a"), png...)); err == nil {
+		t.Fatal("non-PNG bytes must be refused")
+	}
+	if _, err := ModelAuditCreativeSetPNG(ctx, done, creativePNGBytes(model.CreativeMaxPNGBytes+1)); err == nil {
+		t.Fatal("oversized PNG must be refused")
+	}
+
+	// 第一次成功；再传一次 stored=false、字节不动。
+	stored, err := ModelAuditCreativeSetPNG(ctx, done, png)
+	if err != nil || !stored {
+		t.Fatalf("first upload = stored %v, err %v", stored, err)
+	}
+	stored, err = ModelAuditCreativeSetPNG(ctx, done, creativePNGBytes(32))
+	if err != nil || stored {
+		t.Fatalf("second upload must be a no-op, got stored %v err %v", stored, err)
+	}
+	got, err := ModelAuditCreativeGetPNG(ctx, done)
+	if err != nil || !bytes.Equal(got, png) {
+		t.Fatalf("get png = %d bytes err %v, want the first upload verbatim", len(got), err)
+	}
+
+	// 行在但还没存过 PNG：(nil, nil)。行不在：ErrRecordNotFound。
+	empty := seedCreative(t, model.CreativeDone, false, now)
+	if data, err := ModelAuditCreativeGetPNG(ctx, empty); err != nil || data != nil {
+		t.Fatalf("no png yet = (%d bytes, %v), want (nil, nil)", len(data), err)
+	}
+	if _, err := ModelAuditCreativeGetPNG(ctx, done+100000); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("missing row must be ErrRecordNotFound, got %v", err)
+	}
+
+	// 列表不带 png_data（鹈鹕页 3 秒轮询不拖 MB 级字节），但 png_size 能读到。
+	items, err := ModelAuditCreativeList(ctx, "r-test")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, item := range items {
+		if item.PNGData != nil {
+			t.Fatalf("list must not carry png bytes, got %d bytes on item %d", len(item.PNGData), item.ID)
+		}
+	}
+	var row model.ModelAuditCreative
+	if err := db.GetDB().Where("id = ?", done).First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.PNGSize != len(png) {
+		t.Fatalf("png_size = %d, want %d", row.PNGSize, len(png))
+	}
+}

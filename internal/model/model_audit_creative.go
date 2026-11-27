@@ -15,6 +15,8 @@ import "time"
 // 一张带动画的 SVG 很容易超），Postgres 上是 varchar(262144)，SQLite 上是 text。
 // 这些列不带默认值：MySQL 不接受 TEXT 列上的字面量默认值。题目原文（上限 8KB，代码里截）
 // 和出错原因用 type:text，免得几列 varchar 一起撑爆 MySQL 单行 65535 字节的上限。
+// PNGData 是二进制列：gorm 驱动对 []byte 的默认类型三库都够用（MySQL longblob /
+// PG bytea / SQLite blob），不需要自定义 type tag。
 type ModelAuditCreative struct {
 	ID int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 
@@ -49,6 +51,15 @@ type ModelAuditCreative struct {
 	// Pinned 收藏：收藏的不会被 7 天自动清理、也不会被「清空未收藏」删掉。
 	Pinned bool `json:"pinned" gorm:"index;default:false"`
 
+	// PNGData 前端渲染完成后自动存的一张 PNG 截图（SVG 走 canvas 栅格化，
+	// 见 handlers 的 upload 接口）：跟这张图同生同死——7 天清理 / 单张删 /
+	// 清空未收藏删行时 PNG 一并没了，收藏不删的规则自然一致，不需要另做文件清理。
+	// json:"-"：字节永不进任何 JSON 响应；列表查询用 Omit 不拖它（见 op 的 List）。
+	PNGData []byte `json:"-" gorm:"column:png_data"`
+	// PNGSize 已存 PNG 的字节数（0 = 还没有）。列表只带这一列，前端靠它判断要不要
+	// 再上传（防重复）和能不能下载。
+	PNGSize int `json:"png_size" gorm:"column:png_size;default:0"`
+
 	CreatedAt  time.Time  `json:"created_at" gorm:"index"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
@@ -66,5 +77,9 @@ const (
 
 // CreativeMaxContentBytes 单张图内容（以及原文）的上限：256KB。
 const CreativeMaxContentBytes = 256 * 1024
+
+// CreativeMaxPNGBytes 单张图自动存的 PNG 上限：4MB。SVG 栅格化出来的 PNG
+// 远用不到这么多，这个上限主要防异常大包打爆数据库行。
+const CreativeMaxPNGBytes = 4 << 20
 
 func (ModelAuditCreative) TableName() string { return "model_audit_creatives" }

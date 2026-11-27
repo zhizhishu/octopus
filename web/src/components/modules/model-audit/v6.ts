@@ -250,3 +250,68 @@ export function creativeFailureText(item: Pick<CreativeItem, 'status' | 'error' 
             return '';
     }
 }
+
+/* ---------------------------- SVG 自动存 PNG ---------------------------- */
+
+/** 这张图有没有自动存的 PNG（列表只带 png_size，字节另取）。 */
+export function creativeHasPNG(item: Pick<CreativeItem, 'png_size'>): boolean {
+    return (item.png_size ?? 0) > 0;
+}
+
+/** 要不要给这张图自动截 PNG：出完、是 SVG、有内容、还没有 PNG。 */
+export function creativePNGCandidate(item: Pick<CreativeItem, 'status' | 'format' | 'content' | 'png_size'>): boolean {
+    return item.status === 'done' && item.format === 'svg' && item.content !== '' && !creativeHasPNG(item);
+}
+
+/** 下载时用的文件名，与后端 Content-Disposition 里的名字一致。 */
+export function creativePNGFileName(item: Pick<CreativeItem, 'id'>): string {
+    return `creative-${item.id}.png`;
+}
+
+/**
+ * 从 SVG 里读出「这张图本来的尺寸」：优先 <svg> 的 width/height 属性（px 数字），
+ * 退回 viewBox 的宽高。都读不出返回 null（栅格化时退回默认尺寸）。
+ * 百分比 / em / 负数 / 0 一律不算数。
+ */
+export function creativeSVGIntrinsicSize(content: string): { width: number; height: number } | null {
+    const open = /<svg\b[^>]*>/i.exec(content);
+    if (!open) return null;
+    const attrs = open[0];
+    const px = (name: string): number | null => {
+        const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']*)["']`, 'i').exec(attrs);
+        const raw = (m?.[1] ?? '').trim().replace(/px$/i, '');
+        if (!/^\d+(\.\d+)?$/.test(raw)) return null;
+        const n = Number(raw);
+        return n > 0 ? n : null;
+    };
+    const w = px('width');
+    const h = px('height');
+    if (w !== null && h !== null) return { width: w, height: h };
+    const vb = /(?:^|\s)viewBox\s*=\s*["']([^"']*)["']/i.exec(attrs);
+    if (vb) {
+        const parts = vb[1].trim().split(/[\s,]+/).map(Number);
+        if (parts.length === 4 && parts.every((n) => Number.isFinite(n)) && parts[2] > 0 && parts[3] > 0) {
+            return { width: parts[2], height: parts[3] };
+        }
+    }
+    // 只有一边时按 1:1 补另一边（浏览器对缺尺寸的 SVG 也这么猜）。
+    if (w !== null) return { width: w, height: w };
+    if (h !== null) return { width: h, height: h };
+    return null;
+}
+
+/**
+ * 栅格化目标尺寸：长边夹在 [512, 2048]，短边按比例；读不出尺寸时用 1024×768。
+ * 下限避免小图存出缩略图，上限避免超大 SVG 存出几十 MB 的 PNG。
+ */
+export function creativePNGRasterSize(intrinsic: { width: number; height: number } | null): { width: number; height: number } {
+    let width = intrinsic?.width ?? 0;
+    let height = intrinsic?.height ?? 0;
+    if (!(width > 0) || !(height > 0)) {
+        width = 1024;
+        height = 768;
+    }
+    const long = Math.max(width, height);
+    const scale = long < 512 ? 512 / long : long > 2048 ? 2048 / long : 1;
+    return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
