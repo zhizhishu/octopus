@@ -31,6 +31,8 @@ export interface RequestState {
     id: number;
     status: 'running' | 'success' | 'failed' | 'canceled';
     started_at: string;
+    user_id?: number;
+    api_key_id?: number;
     intervention_id?: string;
     rescuable?: boolean;
     model: string;

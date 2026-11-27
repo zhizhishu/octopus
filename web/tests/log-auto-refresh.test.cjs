@@ -87,17 +87,20 @@ test('auto refresh: all three locales carry the labels', () => {
     }
 });
 
-test('auto refresh: page wiring reuses the existing log SSE and the panel remembers collapse', () => {
+test('auto refresh: page wiring — requests tab is pure history, live activity moved to the live tab', () => {
     const page = readFileSync(path.join(__dirname, '..', 'src', 'components', 'modules', 'log', 'index.tsx'), 'utf8');
-    // 自动刷新走 useLogs 的 live（同一条 /api/v1/log/stream），不另起轮询器。
-    assert.match(page, /live: isLiveMode && currentPage === 1/);
-    assert.match(page, /livePaused: autoRefresh\.pauseReason !== null/);
-    assert.doesNotMatch(page, /setInterval\(/);
-    assert.match(page, /LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY/);
-    assert.match(page, /aria-expanded=\{!collapsed\}/);
+    // fix-ui1127a：请求日志是纯历史——不自动插入新记录、没有实时按钮、没有「实时插入中」。
+    assert.doesNotMatch(page, /<AutoRefreshControl/);
+    assert.doesNotMatch(page, /<PendingLogsPill/);
+    assert.match(page, /const isLiveMode = false/);
+    // 在途动态面板不再内联在请求日志页（它搬到「实时」标签，全页形态）。
+    assert.doesNotMatch(page, /<LiveActivityPanel/);
+    // 三个标签的切换器：live/requests/tasks。
+    assert.match(page, /useState<'live' \| 'requests' \| 'tasks'>\('requests'\)/);
+    // 折叠记忆仍在面板组件本体里。
+    const panel = readFileSync(path.join(__dirname, '..', 'src', 'components', 'modules', 'log', 'LiveActivityPanel.tsx'), 'utf8');
+    assert.match(panel, /LIVE_ACTIVITY_COLLAPSED_STORAGE_KEY/);
+    assert.match(panel, /aria-expanded=\{!collapsed\}/);
     const hook = readFileSync(path.join(__dirname, '..', 'src', 'api', 'endpoints', 'log.ts'), 'utf8');
     assert.match(hook, /\/api\/v1\/log\/stream\?/);
-    // 缓冲/插入的判定已抽到 lib/log-live-buffer.ts 的纯状态机（并发行为由
-    // tests/log-detail-stability.test.cjs 直接压真模块）；这里只锁 hook 仍把 SSE 交给它。
-    assert.match(hook, /receiveLiveLog\(\{/);
 });
