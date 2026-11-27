@@ -931,7 +931,7 @@ func TestHlwySampleRetriesOnChannelGateBusy(t *testing.T) {
 		return modelverify.Response{Content: "217", FinishReason: "stop"}, nil
 	}}
 
-	outcome, fatal, _, _ := hlwySampleOnce(context.Background(), sender)
+	outcome, fatal, _, _ := hlwySampleOnce(context.Background(), sender, 0)
 	if atomic.LoadInt32(&calls) != 3 {
 		t.Fatalf("calls = %d, want 3 (2 gate-busy retries + 1 success)", calls)
 	}
@@ -941,6 +941,63 @@ func TestHlwySampleRetriesOnChannelGateBusy(t *testing.T) {
 	if fatal != "" {
 		t.Fatalf("fatal stop = %q, want empty (local gate-busy is never a rejection)", fatal)
 	}
+}
+
+// fix-1127 返工 r2 第 2 条：用户在闸门忙等待期间点取消——等待必须立刻被打断，
+// 取消后绝不再发上游请求。
+func TestHlwySampleGateBusyWaitInterruptedByUserCancel(t *testing.T) {
+	ctx := setupSettingAuthTestDB(t)
+	origWait := hlwyGateBusyWait
+	hlwyGateBusyWait = func() time.Duration { return time.Hour }
+	defer func() { hlwyGateBusyWait = origWait }()
+
+	job := model.ModelAuditJob{
+		ChannelID: 1, ChannelName: "cancel-gate-test", Status: model.AuditJobRunning,
+		Total: 1, Kind: model.AuditKindHlwy, Trigger: "manual", CreatedAt: time.Now().UTC(),
+	}
+	if err := db.GetDB().Create(&job).Error; err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	var calls int32
+	sender := &hlwyFakeSender{ask: func(ctx context.Context, req modelverify.Ask) (modelverify.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return modelverify.Response{}, &modelverify.UpstreamStatusError{Status: 429, Err: modeltest.ErrChannelGateBusy}
+	}}
+
+	done := make(chan op.HlwySlotOutcome, 1)
+	go func() {
+		outcome, _, _, _ := hlwySampleOnce(context.Background(), sender, int64(job.ID))
+		done <- outcome
+	}()
+
+	// 等第一次闸门忙错误发生、进入等待后，翻转任务行为已取消。
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&calls) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&calls) == 0 {
+		t.Fatalf("sender never asked")
+	}
+	callsBeforeCancel := atomic.LoadInt32(&calls)
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", job.ID).Update("status", model.AuditJobCanceled).Error; err != nil {
+		t.Fatalf("cancel job: %v", err)
+	}
+
+	select {
+	case outcome := <-done:
+		if outcome.Result != op.HlwySlotFailed {
+			t.Fatalf("result = %q, want failed (什么都没发，按没跑成计)", outcome.Result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("等待未被取消打断（1 小时的等待 3 秒内必须退出）")
+	}
+	// 退出后再观察一阵：绝不能再有新的上游请求发出。
+	time.Sleep(300 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != callsBeforeCancel {
+		t.Fatalf("calls after cancel = %d, want %d (取消后零新命中)", got, callsBeforeCancel)
+	}
+	_ = ctx
 }
 
 // 整轮 ctx 在等闸门时结束：按普通「没跑成」计，绝不能落进 429 拒收停轮分支。
@@ -954,7 +1011,7 @@ func TestHlwySampleGateBusyOnCancelledRoundIsNotFatal(t *testing.T) {
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	outcome, fatal, _, _ := hlwySampleOnce(ctx, sender)
+	outcome, fatal, _, _ := hlwySampleOnce(ctx, sender, 0)
 	if outcome.Result != op.HlwySlotFailed {
 		t.Fatalf("result = %q, want failed", outcome.Result)
 	}

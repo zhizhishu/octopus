@@ -919,6 +919,20 @@ func hlwyLockJob(tx *gorm.DB, jobID int64) (model.ModelAuditJob, error) {
 	return job, nil
 }
 
+// HlwyJobCanceled 报告任务是否已被用户取消。判定与 HlwyReserveSlot 识别取消
+// 用的是同一个谓词（任务行 status == AuditJobCanceled），只是纯读、不取行锁——
+// 用于 hlwy 闸门忙等待这类需要周期性轮询取消状态的地方（fix-1127 返工 r2 第 2 条）。
+func HlwyJobCanceled(jobID int64) bool {
+	if jobID <= 0 {
+		return false
+	}
+	var job model.ModelAuditJob
+	if err := db.GetDB().Select("status").Where("id = ?", jobID).First(&job).Error; err != nil {
+		return false
+	}
+	return job.Status == model.AuditJobCanceled
+}
+
 // hlwyLoadOwned 在事务内重读结果行并校验所有权，返回可改写的报告副本。
 func hlwyLoadOwned(tx *gorm.DB, claim HlwyClaim, now time.Time) (model.ModelAuditResult, model.HlwyAuditReport, error) {
 	var res model.ModelAuditResult

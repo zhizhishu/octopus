@@ -310,7 +310,7 @@ func hlwyRunLoop(ctx context.Context, res *model.ModelAuditResult, claim op.Hlwy
 		}
 		claim.Token = slot.Token
 
-		out, fatalStop, sampleInput, sampleOutput := hlwySampleOnce(runCtx, sender)
+		out, fatalStop, sampleInput, sampleOutput := hlwySampleOnce(runCtx, sender, claim.JobID)
 		roundSlots++
 		roundInputTokens += sampleInput
 		roundOutputTokens += sampleOutput
@@ -454,10 +454,15 @@ func hlwyClassifyStatus(status int) (string, string) {
 var hlwyGateBusyWait = modeltest.ChannelGateBusyWait
 
 // hlwyAskWithGateRetry 发一格采样题；遇**本地渠道闸门忙**（渠道 RPM/并发满，
-// 请求根本没打到上游）时不判失败、不丢样本：等到名额空出来（RPM 整分钟桶
-// 滚动）再发，直到整轮 ctx 结束（fix-1127 返工，用户承诺的行为）。
+// 请求根本没打到上游）时不判失败、不丢样本：等到名额空出来再发，直到整轮
+// ctx 结束或用户取消（fix-1127 返工，用户承诺的行为）。
 // 上游真实错误（含上游自己的 429）原样返回，不在此重试。
-func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender) (modelverify.Response, error) {
+//
+// jobID 用于等待期间的取消轮询：用户点取消只是库里的任务行状态翻转，整轮
+// ctx 不一定随之结束（取消传播走的是 HlwyReserveSlot 的任务行判定），所以
+// 等待循环周期性用同一个谓词（op.HlwyJobCanceled）查；分钟翻转后、再发请求
+// 前还要最后查一次——取消后绝不再发上游请求（fix-1127 返工 r2 第 2 条）。
+func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender, jobID int64) (modelverify.Response, error) {
 	for {
 		sampleCtx, cancel := context.WithTimeout(ctx, op.HlwySampleTimeout)
 		resp, err := sender.Ask(sampleCtx, modelverify.Ask{Prompt: numberdist.Prompt})
@@ -465,15 +470,28 @@ func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender) (model
 		if err == nil || !modeltest.IsChannelGateBusy(err) {
 			return resp, err
 		}
-		// 闸门忙时这一格什么都没发：不算样本、不算失败。等到下一分钟桶滚动
-		// （或整轮被取消）再试。timer 用 ctx 控制，整轮取消立刻返回。
-		wait := hlwyGateBusyWait()
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		// 闸门忙时这一格什么都没发：不算样本、不算失败。等待期间小步轮询，
+		// 每一步都看整轮取消与用户取消，任一发生立刻退出。
+		deadline := time.Now().Add(hlwyGateBusyWait())
+		for time.Now().Before(deadline) {
+			if op.HlwyJobCanceled(jobID) {
+				return modelverify.Response{}, err
+			}
+			step := 200 * time.Millisecond
+			if remaining := time.Until(deadline); remaining < step {
+				step = remaining
+			}
+			timer := time.NewTimer(step)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return modelverify.Response{}, err
+			case <-timer.C:
+			}
+		}
+		// 等待结束、再发之前最后查一次取消。
+		if op.HlwyJobCanceled(jobID) {
 			return modelverify.Response{}, err
-		case <-timer.C:
 		}
 	}
 }
@@ -483,8 +501,8 @@ func hlwyAskWithGateRetry(ctx context.Context, sender modelverify.Sender) (model
 // 四个返回值：结果、观测到的条件快照、是否观测到、需要致命停止的原因（空=继续）。
 // 上游报错一律**不向上传递原文**：它可能带着响应体、URL 或密钥。落库的只有
 // 类别词（如 http_401）和我们自己拼的文案。
-func hlwySampleOnce(ctx context.Context, sender modelverify.Sender) (op.HlwySlotOutcome, string, int, int) {
-	resp, err := hlwyAskWithGateRetry(ctx, sender)
+func hlwySampleOnce(ctx context.Context, sender modelverify.Sender, jobID int64) (op.HlwySlotOutcome, string, int, int) {
+	resp, err := hlwyAskWithGateRetry(ctx, sender, jobID)
 	if err != nil {
 		// 整轮 ctx 在等闸门时结束，错误仍是闸门忙：这一格什么都没发，按普通
 		// 「没跑成」计，绝不能落进 429=确定性拒收的停轮分支。
