@@ -423,6 +423,9 @@ func waitChannelGateRoom(ctx context.Context, wait time.Duration, canceled func(
 	if canceled == nil {
 		canceled = func() bool { return false }
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		if canceled() {
