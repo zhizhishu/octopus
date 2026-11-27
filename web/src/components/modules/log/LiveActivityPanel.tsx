@@ -339,7 +339,9 @@ const stopping = abortingIDs.has(state.id);
     const retryingCount = runningStates.filter((state) => Boolean(state.intervention_id) || state.round > 1).length;
 
     return (
-        <section aria-label={t('activeActivity')} className={cn('live-activity-panel flex min-h-0 flex-none flex-col rounded-lg border border-border bg-card', collapsed ? 'px-3 py-1' : 'gap-2 p-3')}>
+        <section aria-label={t('activeActivity')} className={cn('live-activity-panel flex min-h-0 flex-none flex-col rounded-lg border border-border bg-card', collapsed ? 'px-3 py-1' : 'gap-2 p-3', fullPage && 'flex-1')}>
+            {/* fix-ui1127a-r1 第 1 条：整页形态没有可折叠表头——计数已在筛选排显示，折叠无意义。 */}
+            {!fullPage && (
             <div className={cn('flex items-center justify-between gap-2', !collapsed && 'border-b border-border pb-2')}>
                 <button
                     type="button"
@@ -369,6 +371,13 @@ const stopping = abortingIDs.has(state.id);
                     </span>
                 )}
             </div>
+            )}
+            {fullPage && !requestStateConnected && (
+                <span className="flex shrink-0 items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                    <WifiOff className="size-3" />
+                    {t('reconnecting')}
+                </span>
+            )}
 
             <style jsx>{`
                 .live-activity-panel details > summary {
