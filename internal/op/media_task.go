@@ -217,7 +217,7 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, []mediaTask
 		pageArgs = append(pageArgs, append(append([]any{}, src.args...), topN)...)
 		countSources = append(countSources, src)
 	}
-	pageSQL := "SELECT * FROM (" + strings.Join(pageParts, " UNION ALL ") + ") AS media_tasks_union ORDER BY created_at DESC, task_id ASC LIMIT ? OFFSET ?"
+	pageSQL := "SELECT * FROM (" + strings.Join(pageParts, " UNION ALL ") + ") AS media_tasks_union ORDER BY created_at DESC, kind ASC, task_id ASC LIMIT ? OFFSET ?"
 	pageArgs = append(pageArgs, pageSize, (page-1)*pageSize)
 	return pageSQL, pageArgs, countSources, nil
 }
