@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +21,15 @@ func TestVideosCreateCountsChannelRPMPollDoesNot(t *testing.T) {
 
 	balancer.ResetChannelGates()
 	t.Cleanup(balancer.ResetChannelGates)
+
+	// 🔴 必须清掉本用例的日志，否则会污染同包其它测试（同 videos_billing_e2e_test.go）：
+	// relayLogAddPending 把日志放进**进程级**待落库队列 relayLogCache，这个队列
+	// 不随 db.InitDB 的临时库切换而重置；而 op.RelayLogList 会先读这个队列。
+	// 本用例写一条 model="rpm-video-model" 的创建日志后，videos_test.go:228 那条
+	// 「取全局前 10 条日志再找 create 记录」的用例就会抓到本用例的记录，在
+	// videos_test.go:249 报 `expected request model alias-sora, got "rpm-video-model"`。
+	// 单独跑各自都绿、一起跑必红。用生产已有的 RelayLogClear 收尾。
+	t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
