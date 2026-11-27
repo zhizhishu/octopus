@@ -138,7 +138,7 @@ func mediaTaskBuildQuery(filter MediaTaskListFilter) (string, []any, error) {
 	var outer strings.Builder
 	outer.WriteString("SELECT * FROM (")
 	outer.WriteString(union)
-	outer.WriteString(")")
+	outer.WriteString(") AS media_tasks_union")
 	where := []string{}
 	if filter.StartTime > 0 {
 		where = append(where, "created_at >= ?")
@@ -161,7 +161,7 @@ func MediaTaskListByOwner(ctx context.Context, filter MediaTaskListFilter) ([]Me
 		return nil, 0, err
 	}
 	var total int64
-	if err := db.GetDB().WithContext(ctx).Raw("SELECT COUNT(*) FROM ("+base+")", args...).Scan(&total).Error; err != nil {
+	if err := db.GetDB().WithContext(ctx).Raw("SELECT COUNT(*) FROM ("+base+") AS media_tasks_count", args...).Scan(&total).Error; err != nil {
 		return nil, 0, err
 	}
 	page := filter.Page
