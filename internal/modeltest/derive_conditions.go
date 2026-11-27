@@ -125,8 +125,11 @@ func op_HlwyUnknownConditionsShim(channel dbmodel.Channel) numberdist.Conditions
 // HlwyChannelConfigHash 是被测渠道「决定出站长什么样」的配置快照哈希。
 // 进报告的只有这个 hash（不是配置本身——里面有 base url 等不该复制进每份
 // 报告的东西）；两轮 hash 不同即配置不同，分布数字不可对照（HlwyComparability
-// 的不变式）。输入覆盖：渠道类型、cloak 形状、参数覆盖、模型映射、AnthropicContext1M、
-// ThinkingToContent——都是出站形状的确定性来源。
+// 的不变式）。输入覆盖：渠道类型、cloak 形状、参数覆盖、模型映射、AnthropicContext1M，
+// 以及出站整形编排实际读取的全局形状开关（relay.OutboundShapingSettingsSnapshot：
+// Claude 默认 effort、CLI shape keys、auto cache control、codex 默认 effort/fast mode/
+// verbosity 等，fix-1127 返工 r2 第 5 条）。ThinkingToContent 只在回客户端方向折叠
+// 思考内容，不改变世界出站长什么样，故意不在其中。
 func HlwyChannelConfigHash(channel dbmodel.Channel) string {
 	snapshot := struct {
 		Type               outbound.OutboundType `json:"type"`
@@ -134,14 +137,14 @@ func HlwyChannelConfigHash(channel dbmodel.Channel) string {
 		ParamOverride      *string               `json:"param_override,omitempty"`
 		ModelMapping       map[string]string     `json:"model_mapping"`
 		AnthropicContext1M bool                  `json:"anthropic_context_1m"`
-		ThinkingToContent  bool                  `json:"thinking_to_content"`
+		Settings           map[string]string     `json:"settings"`
 	}{
 		Type:               channel.Type,
 		Cloak:              channel.Cloak,
 		ParamOverride:      channel.ParamOverride,
 		ModelMapping:       channel.ModelMapping,
 		AnthropicContext1M: channel.AnthropicContext1M,
-		ThinkingToContent:  channel.ThinkingToContent,
+		Settings:           relay.OutboundShapingSettingsSnapshot(),
 	}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {

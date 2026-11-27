@@ -137,6 +137,13 @@ func TestHlwyChannelConfigHashSensitivity(t *testing.T) {
 	if HlwyChannelConfigHash(cloaked) == h1 {
 		t.Fatalf("cloak shape change must change the hash")
 	}
+
+	// ThinkingToContent 只影响回客户端方向，不进 hash（fix-1127 返工 r2 第 5 条）。
+	withT2C := base
+	withT2C.ThinkingToContent = true
+	if HlwyChannelConfigHash(withT2C) != h1 {
+		t.Fatalf("thinking_to_content must NOT change the shape hash (response-side only)")
+	}
 	override := `{"temperature":0.7}`
 	overridden := base
 	overridden.ParamOverride = &override
@@ -365,4 +372,28 @@ func jsonValueAt(m map[string]any, path string) string {
 		return "<unmarshalable>"
 	}
 	return string(raw)
+}
+
+// 形状开关进 hash：改 Claude 默认 effort 全局设置，hash 必须变（fix-1127 返工 r2 第 5 条）。
+func TestHlwyChannelConfigHashCoversShapingSettings(t *testing.T) {
+	_ = setupModelTestDB(t)
+	channel := dbmodel.Channel{Name: "hash-settings-channel", Type: outbound.OutboundTypeAnthropic}
+	before := HlwyChannelConfigHash(channel)
+
+	orig, err := op.SettingGetString(dbmodel.SettingKeyClaudeCLIReasoningEffort)
+	if err != nil {
+		t.Fatalf("read setting: %v", err)
+	}
+	changed := "max"
+	if orig == changed {
+		changed = "low"
+	}
+	if err := op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, changed); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+	defer func() { _ = op.SettingSetString(dbmodel.SettingKeyClaudeCLIReasoningEffort, orig) }()
+
+	if HlwyChannelConfigHash(channel) == before {
+		t.Fatalf("shaping setting change must change the hash")
+	}
 }

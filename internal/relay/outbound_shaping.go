@@ -2,6 +2,7 @@ package relay
 
 import (
 	"net/http"
+	"strconv"
 	"net/http/httptest"
 
 	"github.com/gin-gonic/gin"
@@ -126,4 +127,30 @@ func ApplyChannelOutboundShaping(req *model.InternalLLMRequest, channel *dbmodel
 		channel:      channel,
 	}
 	return ra.applyChannelOutboundShaping(false)
+}
+
+// OutboundShapingSettingsSnapshot 读出 applyChannelOutboundShaping 调用树实际读取的
+// 全局设置快照（fix-1127 返工 r2 第 5 条）：这些开关改变出站形状，两次 hlwy 采样之间
+// 任何一个变了，分布数字都不可对照——所以它们必须进渠道配置快照 hash。读取用与整形
+// 链同一批函数（settingString/settingBool 同样的 fallback），key 清单跟着调用树走，
+// 加新的形状开关时有进有出。
+func OutboundShapingSettingsSnapshot() map[string]string {
+	out := map[string]string{}
+	for key, fallback := range map[dbmodel.SettingKey]string{
+		dbmodel.SettingKeyClaudeCLIReasoningEffort:   dbmodel.ClaudeDefaultEffortDefault,
+		dbmodel.SettingKeyCodexDefaultReasoningEffort: "none",
+		dbmodel.SettingKeyRelayCodexTextVerbosity:     "true",
+		dbmodel.SettingKeyClaudeHeaderOS:              dbmodel.DefaultClaudeHeaderOS,
+	} {
+		out[string(key)] = settingString(key, fallback)
+	}
+	for key, fallback := range map[dbmodel.SettingKey]bool{
+		dbmodel.SettingKeyRelayClaudeCLIShapeKeys:    true,
+		dbmodel.SettingKeyAnthropicAutoCacheControl:  false,
+		dbmodel.SettingKeyOpenAIAutoPromptCacheKey:   false,
+		dbmodel.SettingKeyCodexFastMode:              false,
+	} {
+		out[string(key)] = strconv.FormatBool(settingBool(key, fallback))
+	}
+	return out
 }
