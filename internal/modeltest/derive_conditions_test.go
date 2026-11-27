@@ -3,9 +3,12 @@ package modeltest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
 	"testing"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
@@ -153,10 +156,15 @@ func TestDeriveRelayConditionsMatchesActualOutboundMultiProtocol(t *testing.T) {
 		name        string
 		channelType outbound.OutboundType
 		endpoint    string
+		cloak       dbmodel.ChannelCloak
 	}{
-		{"anthropic", outbound.OutboundTypeAnthropic, "anthropic_messages"},
-		{"openai_responses", outbound.OutboundTypeOpenAIResponse, "openai_responses"},
-		{"gemini", outbound.OutboundTypeGemini, "gemini_generate_content"},
+		{"anthropic", outbound.OutboundTypeAnthropic, "anthropic_messages", dbmodel.ChannelCloak{}},
+		{"openai_responses", outbound.OutboundTypeOpenAIResponse, "openai_responses", dbmodel.ChannelCloak{}},
+		{"gemini", outbound.OutboundTypeGemini, "gemini_generate_content", dbmodel.ChannelCloak{}},
+		// 带 codex 形状的 Responses 渠道：生产出站走 prepareCodexRequestFingerprint/
+		// prepareCodexRequestShape 一整套（include/store=false/默认 effort/agent context），
+		// 推算必须与它逐键一致——这正是第 2 轮第 1 条把编排收敛成唯一入口要保的东西。
+		{"codex_shaped_responses", outbound.OutboundTypeOpenAIResponse, "openai_responses", dbmodel.ChannelCloak{Mode: "always", Shape: "codex"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,6 +188,7 @@ func TestDeriveRelayConditionsMatchesActualOutboundMultiProtocol(t *testing.T) {
 				Name:     "derive-multi-" + tc.name,
 				Type:     tc.channelType,
 				Enabled:  false,
+				Cloak:    tc.cloak,
 				BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
 				Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
 			}
@@ -230,6 +239,130 @@ func TestDeriveRelayConditionsMatchesActualOutboundMultiProtocol(t *testing.T) {
 			if derived.ConfigHash == "" {
 				t.Fatalf("%s config hash must be present", tc.name)
 			}
+
+			// 第 2 轮第 1 条验收：推算的最终出站体与真实截获体逐键一致——
+			// 覆盖 system 注入、tools 注入、thinking/effort 字段等所有形状维度
+			// （键集合递归比对，任何一边多一个/少一个键都判失败；随机值如
+			// metadata.user_id 只比键不比值）。
+			derivedReq, ok := deriveOutboundRequest(channel, "test-model", tc.endpoint)
+			if !ok {
+				t.Fatalf("%s deriveOutboundRequest failed", tc.name)
+			}
+			derivedBody, err := io.ReadAll(derivedReq.Body)
+			if err != nil {
+				t.Fatalf("%s read derived body: %v", tc.name, err)
+			}
+			var derivedJSON, actualJSON map[string]any
+			if err := json.Unmarshal(derivedBody, &derivedJSON); err != nil {
+				t.Fatalf("%s derived body not json: %v", tc.name, err)
+			}
+			if err := json.Unmarshal(got.body, &actualJSON); err != nil {
+				t.Fatalf("%s captured body not json: %v", tc.name, err)
+			}
+			dKeys := jsonKeySet(derivedJSON, "")
+			aKeys := jsonKeySet(actualJSON, "")
+			if strings.Join(dKeys, ",") != strings.Join(aKeys, ",") {
+				t.Fatalf("%s shape key mismatch:\nderived-only/extra-in-derived vs actual\nderived: %v\nactual: %v", tc.name, dKeys, aKeys)
+			}
+			// 形状关键字段的值必须一致（不止键）：system 注入内容、thinking/effort、
+			// temperature、store 等确定性值。随机值路径（metadata.user_id）除外。
+			for _, path := range shapeValuePaths(derivedJSON) {
+				if jsonValueAt(derivedJSON, path) != jsonValueAt(actualJSON, path) {
+					t.Fatalf("%s shape value mismatch at %q: derived=%q actual=%q", tc.name, path, jsonValueAt(derivedJSON, path), jsonValueAt(actualJSON, path))
+				}
+			}
 		})
 	}
+}
+
+// jsonKeySet 递归列出 JSON 对象的所有键路径（数组按位置展开），排序后返回。
+// 只比键不比值——随机化值（user_id 哈希等）不影响形状判定。
+func jsonKeySet(v any, prefix string) []string {
+	var out []string
+	switch node := v.(type) {
+	case map[string]any:
+		for k, sub := range node {
+			p := k
+			if prefix != "" {
+				p = prefix + "." + k
+			}
+			out = append(out, p)
+			out = append(out, jsonKeySet(sub, p)...)
+		}
+	case []any:
+		for i, sub := range node {
+			p := prefix + "[]"
+			if i > 0 {
+				// 同构数组（messages/tools）元素键集相同，只展开第一个，
+				// 避免消息条数差异造成假阳性——条数由模板固定，两边本就相同。
+				continue
+			}
+			out = append(out, jsonKeySet(sub, p)...)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// shapeValuePaths 返回对象中所有「确定性形状值」的叶子路径：跳过明显的随机/
+// 会话相关字段（user_id、prompt_cache_key、session id），其余叶子全部纳入。
+func shapeValuePaths(m map[string]any) []string {
+	var out []string
+	var walk func(v any, prefix string)
+	walk = func(v any, prefix string) {
+		switch node := v.(type) {
+		case map[string]any:
+			for k, sub := range node {
+				p := k
+				if prefix != "" {
+					p = prefix + "." + k
+				}
+				walk(sub, p)
+			}
+		case []any:
+			if len(node) > 0 {
+				walk(node[0], prefix+"[]")
+			}
+		default:
+			lower := strings.ReplaceAll(strings.ToLower(prefix), "-", "_")
+			if strings.Contains(lower, "user_id") || strings.Contains(lower, "prompt_cache_key") || strings.Contains(lower, "session_id") ||
+				strings.Contains(lower, "turn_metadata") || strings.Contains(lower, "turn_id") || strings.Contains(lower, "turn_started_at") {
+				// codex 指纹里的 turn_id / 时间戳 / installation 元数据逐请求随机，
+				// 键集合仍参与比对，值不比。
+				return
+			}
+			out = append(out, prefix)
+		}
+	}
+	walk(m, "")
+	sort.Strings(out)
+	return out
+}
+
+func jsonValueAt(m map[string]any, path string) string {
+	cur := any(m)
+	for _, part := range strings.Split(path, ".") {
+		arr := strings.HasSuffix(part, "[]")
+		name := strings.TrimSuffix(part, "[]")
+		asMap, ok := cur.(map[string]any)
+		if !ok {
+			return "<missing>"
+		}
+		cur, ok = asMap[name]
+		if !ok {
+			return "<missing>"
+		}
+		if arr {
+			list, ok := cur.([]any)
+			if !ok || len(list) == 0 {
+				return "<missing>"
+			}
+			cur = list[0]
+		}
+	}
+	raw, err := json.Marshal(cur)
+	if err != nil {
+		return "<unmarshalable>"
+	}
+	return string(raw)
 }

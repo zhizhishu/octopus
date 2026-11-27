@@ -2,6 +2,7 @@ package modeltest
 
 import (
 	"context"
+	"net/http"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,18 +37,32 @@ import (
 // 绝不拿猜的值充数。
 func DeriveRelayConditions(channel dbmodel.Channel, upstreamModel, endpoint string) numberdist.Conditions {
 	unknown := op_HlwyUnknownConditionsShim(channel)
+	req, ok := deriveOutboundRequest(channel, upstreamModel, endpoint)
+	if !ok {
+		return unknown
+	}
+	conditions := buildOutboundConditions(probeProtocolOf(channel.Type), req)
+	conditions.ConfigHash = HlwyChannelConfigHash(channel)
+	return conditions
+}
+
+// deriveOutboundRequest 是 DeriveRelayConditions 的推算管线本体（同源整形→出站变换→
+// ParamOverride），包内单独拆出是为了让一致性测试拿到推算的最终出站请求体，与假上游
+// 截获的真实出站字节逐键对比。失败返回 ok=false——与 DeriveRelayConditions 的
+// unknown 同义，绝不拿猜的值充数。
+func deriveOutboundRequest(channel dbmodel.Channel, upstreamModel, endpoint string) (*http.Request, bool) {
 	sender, err := NewRelaySender(channel, upstreamModel, endpoint)
 	if err != nil {
-		return unknown
+		return nil, false
 	}
 	spec, err := sender.buildRelayRequest(modelverify.Ask{Prompt: numberdist.Prompt})
 	if err != nil {
-		return unknown
+		return nil, false
 	}
 	inAdapter := inbound.Get(sender.inboundType)
 	outAdapter := outbound.Get(channel.Type)
 	if inAdapter == nil || outAdapter == nil {
-		return unknown
+		return nil, false
 	}
 	ctx := context.Background()
 	if sender.inboundType == inbound.InboundTypeGemini {
@@ -55,7 +70,7 @@ func DeriveRelayConditions(channel dbmodel.Channel, upstreamModel, endpoint stri
 	}
 	internalReq, err := inAdapter.TransformRequest(ctx, spec.body)
 	if err != nil || internalReq == nil {
-		return unknown
+		return nil, false
 	}
 	// 流式强制的确定性部分（relay.go:2222-2260）：responses 出站恒强制流式；
 	// anthropic 渠道在 cloak 生效时强制流式（嵌入除外，hlwy 不到嵌入）。
@@ -69,12 +84,15 @@ func DeriveRelayConditions(channel dbmodel.Channel, upstreamModel, endpoint stri
 	stream := forced
 	internalReq.Stream = &stream
 
-	// 内部请求级整形（fix-1127 返工第 2 条）：SuppressClaudeIdentity、fallback tools
-	// 注入、默认 effort、CLI 顶层成员、AnthropicContext1M、ThinkingToContent——与
-	// relay 生产 attempt 同一批实现、同一顺序（见 relay/outbound_shaping.go），
-	// 不再零件式重放。cliShaped=false：hlwy 合成请求 UA 是 octopus-internal-test，
-	// 永远不是 CLI 形状，与真实采样完全一致。
-	relay.ApplyChannelOutboundShaping(internalReq, &channel, false)
+	// 内部请求级整形（fix-1127 返工第 2 轮第 1 条）：调 relay 唯一的出站整形编排
+	// ——生产 attempt 也走它（relay/outbound_shaping.go，applyTransformOptions 直接
+	// 委托同一函数），覆盖所有协议形状（Anthropic fallback tools/默认 effort/CLI 顶层
+	// 成员、Codex/Responses 指纹与形状、Gemini 等），不存在第二份拷贝。
+	// cliShaped=false：hlwy 合成请求 UA 是 octopus-internal-test，永远不是 CLI 形状，
+	// 与真实采样一致。
+	if err := relay.ApplyChannelOutboundShaping(internalReq, &channel, false, sender.inboundType); err != nil {
+		return nil, false
+	}
 
 	key := ""
 	if keys := channel.GetAvailableChannelKeys(); len(keys) > 0 {
@@ -82,14 +100,12 @@ func DeriveRelayConditions(channel dbmodel.Channel, upstreamModel, endpoint stri
 	}
 	req, err := outAdapter.TransformRequest(ctx, internalReq, channel.GetBaseUrl(), key)
 	if err != nil || req == nil {
-		return unknown
+		return nil, false
 	}
 	if err := relay.ApplyParamOverride(req, channel.ParamOverride); err != nil {
-		return unknown
+		return nil, false
 	}
-	conditions := buildOutboundConditions(probeProtocolOf(channel.Type), req)
-	conditions.ConfigHash = HlwyChannelConfigHash(channel)
-	return conditions
+	return req, true
 }
 
 // op_HlwyUnknownConditionsShim 是 DeriveRelayConditions 内部兜底：与
