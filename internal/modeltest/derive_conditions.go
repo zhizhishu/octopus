@@ -69,6 +69,13 @@ func DeriveRelayConditions(channel dbmodel.Channel, upstreamModel, endpoint stri
 	stream := forced
 	internalReq.Stream = &stream
 
+	// 内部请求级整形（fix-1127 返工第 2 条）：SuppressClaudeIdentity、fallback tools
+	// 注入、默认 effort、CLI 顶层成员、AnthropicContext1M、ThinkingToContent——与
+	// relay 生产 attempt 同一批实现、同一顺序（见 relay/outbound_shaping.go），
+	// 不再零件式重放。cliShaped=false：hlwy 合成请求 UA 是 octopus-internal-test，
+	// 永远不是 CLI 形状，与真实采样完全一致。
+	relay.ApplyChannelOutboundShaping(internalReq, &channel, false)
+
 	key := ""
 	if keys := channel.GetAvailableChannelKeys(); len(keys) > 0 {
 		key = keys[0].ChannelKey

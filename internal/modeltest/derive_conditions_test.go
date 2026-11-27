@@ -142,3 +142,94 @@ func TestHlwyChannelConfigHashSensitivity(t *testing.T) {
 	}
 }
 
+
+// fix-1127 返工第 2 条验收：一致性扩展到 Anthropic / OpenAI Responses / Gemini 三家。
+// 假上游只截获请求体就回 500——比对的是「发往上游的字节」，响应内容无关紧要；
+// 这样流式强制、错误重试等链路细节都不影响截获的完整性。
+func TestDeriveRelayConditionsMatchesActualOutboundMultiProtocol(t *testing.T) {
+	ctx := setupModelTestDB(t)
+
+	cases := []struct {
+		name        string
+		channelType outbound.OutboundType
+		endpoint    string
+	}{
+		{"anthropic", outbound.OutboundTypeAnthropic, "anthropic_messages"},
+		{"openai_responses", outbound.OutboundTypeOpenAIResponse, "openai_responses"},
+		{"gemini", outbound.OutboundTypeGemini, "gemini_generate_content"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			type capture struct {
+				url  string
+				body []byte
+			}
+			capCh := make(chan capture, 4)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				select {
+				case capCh <- capture{url: r.URL.String(), body: body}:
+				default:
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"capture only"}`))
+			}))
+			t.Cleanup(upstream.Close)
+
+			channel := dbmodel.Channel{
+				Name:     "derive-multi-" + tc.name,
+				Type:     tc.channelType,
+				Enabled:  false,
+				BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+				Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "test-key"}},
+			}
+			if err := op.ChannelCreate(&channel, ctx); err != nil {
+				t.Fatalf("create channel: %v", err)
+			}
+
+			derived := DeriveRelayConditions(channel, "test-model", tc.endpoint)
+
+			sender, err := NewRelaySender(channel, "test-model", tc.endpoint)
+			if err != nil {
+				t.Fatalf("new relay sender: %v", err)
+			}
+			// 上游恒 500：发送必然失败，但请求体已被截获，这正是要对比的东西。
+			_, _ = sender.Ask(ctx, modelverify.Ask{Prompt: numberdist.Prompt})
+
+			// 截获必须带真实 URL：gemini 的流式体现在 URL 动作
+			// （:generateContent vs :streamGenerateContent），只留 body 会丢掉它。
+			var got capture
+			select {
+			case got = <-capCh:
+			default:
+				t.Fatalf("upstream never saw the sample request")
+			}
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+got.url, bytes.NewReader(got.body))
+			if err != nil {
+				t.Fatalf("rebuild captured request: %v", err)
+			}
+			actual := buildOutboundConditions(probeProtocolOf(channel.Type), req)
+
+			if derived.TemperatureState != actual.TemperatureState {
+				t.Fatalf("%s temperature state: derived=%q actual=%q", tc.name, derived.TemperatureState, actual.TemperatureState)
+			}
+			if (derived.Temperature == nil) != (actual.Temperature == nil) ||
+				(derived.Temperature != nil && actual.Temperature != nil && *derived.Temperature != *actual.Temperature) {
+				t.Fatalf("%s temperature mismatch: derived=%v actual=%v", tc.name, derived.Temperature, actual.Temperature)
+			}
+			if derived.TopPState != actual.TopPState {
+				t.Fatalf("%s top_p state: derived=%q actual=%q", tc.name, derived.TopPState, actual.TopPState)
+			}
+			if (derived.Stream == nil) != (actual.Stream == nil) ||
+				(derived.Stream != nil && actual.Stream != nil && *derived.Stream != *actual.Stream) {
+				t.Fatalf("%s stream mismatch: derived=%v actual=%v", tc.name, derived.Stream, actual.Stream)
+			}
+			if derived.PromptSHA256 != actual.PromptSHA256 {
+				t.Fatalf("%s prompt sha mismatch: derived=%q actual=%q", tc.name, derived.PromptSHA256, actual.PromptSHA256)
+			}
+			if derived.ConfigHash == "" {
+				t.Fatalf("%s config hash must be present", tc.name)
+			}
+		})
+	}
+}
