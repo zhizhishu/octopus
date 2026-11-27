@@ -77,7 +77,7 @@ func TestAuditEndpointBothEntriesShareOneSource(t *testing.T) {
 //  2. 每一处 modeltest.NewRelaySender 的端点实参，最终都只可能来自
 //     op.AuditEndpointForChannel；
 //  3. 一处 modeltest.NewProbeSender 都不许有——审计检测只走 relay 发送器，
-//     探针发送器留给断路器/红队/hlwy 那些非审计入口的调用面。
+//     探针发送器只留给断路器定时探测（fix-1127 起红队/hlwy 也已改走 relay 发送器）。
 //
 // 返回该文件里 NewRelaySender 的调用次数。
 func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
@@ -113,7 +113,7 @@ func assertFilePathUsesSharedEndpoint(t *testing.T, path string) int {
 			return true
 		}
 		if sel.Sel.Name == "NewProbeSender" {
-			t.Errorf("%s: 审计入口不许再调 modeltest.NewProbeSender——检测只走 NewRelaySender（红队/hlwy/断路器的探针调用面不在入口文件里）",
+			t.Errorf("%s: 审计入口不许再调 modeltest.NewProbeSender——检测只走 NewRelaySender（断路器定时探测的探针调用面不在入口文件里）",
 				fset.Position(call.Pos()).String())
 			return true
 		}

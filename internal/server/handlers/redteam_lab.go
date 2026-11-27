@@ -107,7 +107,10 @@ type redTeamLabRunRequest struct {
 type redTeamLabSender func(context.Context, model.Channel, string, string, modelverify.Ask) (modelverify.Response, error)
 
 var redTeamLabSend redTeamLabSender = func(ctx context.Context, channel model.Channel, upstreamModel, endpoint string, ask modelverify.Ask) (modelverify.Response, error) {
-	sender, err := modeltest.NewProbeSender(channel, upstreamModel, endpoint)
+	// fix-1127 第 3 项：红队实验与渠道检测同走 relay 链路（relay.HandlerForChannelTest）
+	// ——对上游而言一次实验与一次真实转发在字节层面无法区分，并发/RPM/形状层层约束
+	// 全部照走，不再用探针自拼出站。
+	sender, err := modeltest.NewRelaySender(channel, upstreamModel, endpoint)
 	if err != nil {
 		return modelverify.Response{}, err
 	}

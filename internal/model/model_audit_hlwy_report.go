@@ -447,6 +447,13 @@ func HlwyComparability(run, base numberdist.Conditions) (string, []string) {
 	addDiff := func(code string) { different = true; codes = append(codes, code) }
 	addUnknown := func(code string) { unknown = true; codes = append(codes, code) }
 
+	// 渠道配置快照 hash 总闸（fix-1127 第 3 项）：两轮 hash 都录得且不同，
+	// 说明渠道配置本身变了——temperature 那些字段就算碰巧一致，形状来源也
+	// 已经不是同一份配置，分布数字不可对照。任一侧为空（老数据）跳过此闸。
+	if hlwyKnown(run.ConfigHash) && hlwyKnown(base.ConfigHash) && run.ConfigHash != base.ConfigHash {
+		addIncompat("channel_config_changed")
+	}
+
 	// API 协议族先用一层：openai-chat vs anthropic-messages 属于「已知条件不同」
 	// （仍然可对照，但必须留痕），不是「不可比」——同一个题目可以跑在不同协议上。
 	switch {

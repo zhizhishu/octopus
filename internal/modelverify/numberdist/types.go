@@ -104,6 +104,12 @@ type Conditions struct {
 	// Completeness 取 unknown|partial|complete；UnknownFields 列出仍未观测的字段名。
 	Completeness  string   `json:"completeness"`
 	UnknownFields []string `json:"unknown_fields,omitempty"`
+
+	// ConfigHash 是整轮渠道的「形状决定性配置」快照哈希（fix-1127 第 3 项，
+	// 渠道配置推算路线）。它不参与逐字段对照——逐字段仍按上面的三态判——
+	// 只在 HlwyComparability 里加一条总闸：两轮 hash 都在且不同 = 渠道配置
+	// 本身变了，分布数字不可对照。空串 = 老数据/推算失败，跳过这条闸（向后兼容）。
+	ConfigHash string `json:"config_hash,omitempty"`
 }
 
 // unknownConditions 是「旧数据/未观测」的条件快照：所有参数 unknown，绝非默认值。

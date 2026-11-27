@@ -42,6 +42,15 @@ type RelaySender struct {
 	requestModel string
 	endpoint     string
 	inboundType  inbound.InboundType
+	// suppressRelayLog：批量采样（hlwy）要求逐请求不写转发日志行（fix-1127
+	// 第 3 项：一轮采样只落一条汇总日志，不刷 100–200 条）。
+	suppressRelayLog bool
+}
+
+// SetSuppressRelayLog 让之后每次 Send 都不落逐请求转发日志行（汇总行由调用方
+// 在整轮结束时自落）。单次的渠道测试/检测不要用——那条日志正是运营要的观测。
+func (s *RelaySender) SetSuppressRelayLog(v bool) {
+	s.suppressRelayLog = v
 }
 
 // relayAnthropicMaxTokens 是 Anthropic 入站必须携带的输出预算。
@@ -335,6 +344,9 @@ func (s *RelaySender) Send(ctx context.Context, ask modelverify.Ask) (int, *tran
 	// 身份全零值：没有任何 API Key/用户。统计与 last_used 的 op 层函数对零 id
 	// 本来就是空操作；user_role 给 admin 只是让身份语义自洽（测试入口在 relay
 	// 里已整段跳过提示词注入，与角色无关）。
+	if s.suppressRelayLog {
+		relay.MarkSuppressInternalTestRelayLog(ginCtx)
+	}
 	ginCtx.Set("api_key_id", 0)
 	ginCtx.Set("user_id", 0)
 	ginCtx.Set("user_role", string(dbmodel.UserRoleAdmin))

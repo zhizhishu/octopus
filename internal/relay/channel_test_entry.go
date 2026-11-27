@@ -19,6 +19,18 @@ import (
 // last_used 的 op 层函数对零 id 本来就是空操作；日志行以
 // request_source=model_test 标记（见 metrics.buildRelayLog）。
 
+// suppressRelayLogContextKey 是 gin context 里「本条内部测试请求不写转发日志行」
+// 的键。只服务批量采样（hlwy）：一轮上百格，逐格落行会把日志页刷没；调用方在
+// 整轮结束时自己落一条汇总行。普通渠道测试/检测不压——单条日志正是运营要的观测。
+const suppressRelayLogContextKey = "octopus_internal_test_suppress_log"
+
+// MarkSuppressInternalTestRelayLog 标记本条内部测试请求不落转发日志行。
+func MarkSuppressInternalTestRelayLog(c *gin.Context) {
+	if c != nil {
+		c.Set(suppressRelayLogContextKey, true)
+	}
+}
+
 // internalResponseContextKey 是 gin context 里回写最终内部响应的键。
 // 只有测试入口的请求会写——它是进程内调用方取结果的回传通道，不是输入标记。
 const internalResponseContextKey = "octopus_internal_test_response"

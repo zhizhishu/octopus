@@ -641,3 +641,46 @@ func TestValidateHlwyConditions(t *testing.T) {
 		})
 	}
 }
+
+func TestHlwyComparabilityConfigHashMismatchIsIncompatible(t *testing.T) {
+	// fix-1127 第 3 项：两轮渠道配置快照 hash 都在且不同 = 渠道配置本身变了，
+	// 分布数字不可对照——哪怕逐字段碰巧一致。
+	base := numberdist.Conditions{
+		Protocol:         "openai-chat",
+		ProtocolID:       numberdist.ProtocolID,
+		ParserVersion:    numberdist.ParserVersion,
+		TransportProfile: numberdist.TransportProfile,
+		PromptSHA256:     "abc",
+		ConfigHash:       "hash-a",
+	}
+	run := base
+	run.ConfigHash = "hash-b"
+	comparability, codes := HlwyComparability(run, base)
+	found := false
+	for _, code := range codes {
+		if code == "channel_config_changed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("config hash mismatch must yield channel_config_changed, got codes=%v comparability=%s", codes, comparability)
+	}
+
+	// hash 相同：不触发这条闸。
+	run.ConfigHash = "hash-a"
+	_, codes = HlwyComparability(run, base)
+	for _, code := range codes {
+		if code == "channel_config_changed" {
+			t.Fatalf("same config hash must not trigger the gate, got codes=%v", codes)
+		}
+	}
+
+	// 任一侧为空（老数据）：跳过此闸，不出现在 codes 里。
+	run.ConfigHash = ""
+	_, codes = HlwyComparability(run, base)
+	for _, code := range codes {
+		if code == "channel_config_changed" {
+			t.Fatalf("legacy empty hash must skip the gate, got codes=%v", codes)
+		}
+	}
+}

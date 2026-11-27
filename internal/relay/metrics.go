@@ -28,6 +28,11 @@ const metricsPersistTimeout = 30 * time.Second
 // RelayMetrics 负责最终的日志收集与持久化
 type RelayMetrics struct {
 	quota *relayUserQuota
+	// suppressRelayLog：内部批量检测（hlwy 采样）要求不写逐请求转发日志行——
+	// 一轮上百次采样会刷出上百行，日志页失去可读性（fix-1127 第 3 项）。只压
+	// saveLog 的 relay_logs 落库，Stats 统计与 RPM 计数不受影响；汇总行由调用方
+	// 在整轮结束时自己落一条。
+	suppressRelayLog  bool
 	// internalTest：本请求是「渠道测试/模型检测」的内部转发（HandlerForChannelTest
 	// 进程内入口，见 channel_test_entry.go）。为 true 时计费闸门整段跳过——不扣任何
 	// 用户余额/额度（检测没有任何用户资产），费用仍随转发日志照记；UserRecordRelayIP
@@ -884,7 +889,9 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 
 	m.logDiagnostics(success, duration, attempts, channelID, channelName)
 
-	m.saveLog(persistCtx, err, duration, attempts, channelID, channelName)
+	if !m.suppressRelayLog {
+		m.saveLog(persistCtx, err, duration, attempts, channelID, channelName)
+	}
 }
 
 func (m *RelayMetrics) chatImageUsesUpstreamDefaultTier() bool {

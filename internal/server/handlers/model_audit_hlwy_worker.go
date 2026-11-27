@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,25 +56,18 @@ var hlwyFatalStatuses = map[int]struct{}{
 	400: {}, 401: {}, 403: {}, 404: {}, 422: {}, 429: {},
 }
 
-// hlwyWithConditionsObserver 是本 worker 与核心采样器之间的**唯一**接缝。
-//
-// 条件观测必须由真正发出请求的那一层做（只有它看得到最终出站请求体），因此这里
-// 直接接到 modeltest 的实现上。核心没接上时观测一律「未知」，报告如实写「可对照
-// 程度未知」，绝不去猜 temperature/thinking——猜出来的「一致」比诚实的「未知」
-// 危险得多。测试可以把它换成自己的实现。
-var hlwyWithConditionsObserver = modeltest.WithProbeConditionsObserver
-
 // hlwyNewSender 建一个采样 sender。测试用它注入假 sender（不打上游）。
 var hlwyNewSender = func(channel model.Channel, upstreamModel, endpoint string) (modelverify.Sender, error) {
-	return modeltest.NewProbeSender(channel, upstreamModel, endpoint)
-}
-
-// hlwyObserveConditions 给 ctx 装上条件观察器；核心未落地时原样返回。
-func hlwyObserveConditions(ctx context.Context, fn func(numberdist.Conditions)) context.Context {
-	if hlwyWithConditionsObserver == nil {
-		return ctx
+	// fix-1127 第 3 项：hlwy 采样与真实转发同走 relay 链路——渠道并发/RPM/形状
+	// 层层约束全部照走（用户「所有东西层层约束」），不再用探针自拼出站。
+	sender, err := modeltest.NewRelaySender(channel, upstreamModel, endpoint)
+	if err != nil {
+		return nil, err
 	}
-	return hlwyWithConditionsObserver(ctx, fn)
+	// 一轮采样上百格：逐格落转发日志会把日志页刷没。逐格行压住不写，整轮结束
+	// 时由下面 hlwyRunLoop 落一条汇总行（fix-1127 第 3 项）。
+	sender.SetSuppressRelayLog(true)
+	return sender, nil
 }
 
 // hlwyDispatchJob 读任务行，判断这条结果是不是 hlwy 对照。
@@ -170,10 +164,14 @@ func runHlwyResult(ctx context.Context, res *model.ModelAuditResult, job model.M
 	clearModelAuditYield(res.ID)
 	defer release()
 
+	// fix-1127 第 3 项（Hark 中间路线）：条件不再靠逐格观测（探针自拼出站已拆），
+	// 整轮开始时从渠道配置推算一次——用 relay 出站同一批变换函数把 hlwy 的题目
+	// 模板过一遍，读出 temperature/stream/max_tokens 等最终值，外加渠道配置快照
+	// hash（两轮 hash 不同 = 配置变了，数字不可对照）。推不出的字段 honest unknown。
 	claim, err := op.HlwyClaimResult(ctx, op.HlwyClaimInput{
 		ResultID:      res.ID,
 		UpstreamModel: upstreamModel,
-		Conditions:    op.HlwyUnknownConditions(probeProtocolName(channel.Type)),
+		Conditions:    modeltest.DeriveRelayConditions(*channel, upstreamModel, endpoint),
 	}, time.Now())
 	if err != nil {
 		switch {
@@ -186,7 +184,7 @@ func runHlwyResult(ctx context.Context, res *model.ModelAuditResult, job model.M
 		return
 	}
 
-	hlwyRunLoop(ctx, res, claim, opts, sender)
+	hlwyRunLoop(ctx, res, claim, opts, sender, upstreamModel)
 }
 
 // hlwyYieldOrGiveUp 把这一行推后等待，让位次数超上限就放弃。
@@ -220,7 +218,10 @@ func hlwyYieldOrGiveUp(ctx context.Context, res *model.ModelAuditResult, reason 
 // 别的写法绕过任务行锁改了报告），下一条语句会以 0 行受影响把我们拦住，而不是
 // 默默把别人的写入盖掉。
 func hlwyRunLoop(ctx context.Context, res *model.ModelAuditResult, claim op.HlwyClaim,
-	opts model.HlwyOptions, sender modelverify.Sender) {
+	opts model.HlwyOptions, sender modelverify.Sender, upstreamModel string) {
+	// fix-1127 第 3 项：逐格转发日志被压住（见 hlwyNewSender），这里累计整轮的
+	// 用量与格数，收尾时落**一条**汇总日志行。
+	var roundInputTokens, roundOutputTokens, roundSlots int
 	// 总时长由服务器按采样次数算定（min(300+10N, 1800)），不采信库里的值：
 	// 旧任务或脏数据不得把单 worker 堵死。
 	runCtx, cancelRun := context.WithTimeout(ctx,
@@ -257,7 +258,6 @@ func hlwyRunLoop(ctx context.Context, res *model.ModelAuditResult, claim op.Hlwy
 	})
 
 	state := hlwyRunState{execution: model.HlwyExecutionComplete}
-	conds := claim.Conditions
 	failures := 0
 
 	for {
@@ -310,28 +310,16 @@ func hlwyRunLoop(ctx context.Context, res *model.ModelAuditResult, claim op.Hlwy
 		}
 		claim.Token = slot.Token
 
-		out, observed, hasObs, fatalStop := hlwySampleOnce(runCtx, sender)
+		out, fatalStop, sampleInput, sampleOutput := hlwySampleOnce(runCtx, sender)
+		roundSlots++
+		roundInputTokens += sampleInput
+		roundOutputTokens += sampleOutput
 
-		// 条件与题目只信观测到的硬证据：拿到哈希就比，拿到参数就记，只在**两边
-		// 都已知**时判漂移。观测到的条件一律照实写进报告——题目/参数变了更不能
-		// 假装还是旧值，那等于把不可比的证据洗成可比的。
+		// fix-1127 第 3 项：条件在整轮开始时已从配置推算并写进报告（见上方
+		// HlwyClaimResult），逐格不再有观测/合并/漂移管线。渠道配置中途被人改
+		// 是管理动作，hash 进报告后由对照方在 HlwyComparability 里判，不在
+		// 采样循环里追。
 		stopAfterSettle := fatalStop
-		if hasObs {
-			snapshot := op.HlwyMergeConditions(conds, observed)
-			if op.HlwyPromptMismatch(model.HlwyPromptSHA256(), observed) {
-				stopAfterSettle = op.HlwyStopPromptMismatch
-				state.errMsg = "实际发出的题目与本轮预期不一致，已停止采样（这一轮的数字不再对照）"
-			} else if drift := op.HlwyConditionsDrift(conds, observed); drift != "" {
-				stopAfterSettle = op.HlwyStopConditionsChanged
-				state.errMsg = "同一轮里采样条件发生了变化，已停止采样（这一轮的数字不再对照）"
-			} else {
-				conds = snapshot
-			}
-			// 无论是否因此停手，这一格观测到的东西照实落库。
-			if model.ValidateHlwyConditions(snapshot) == nil {
-				out.Conditions = &snapshot
-			}
-		}
 
 		// 这一格的钱可能已经花出去了，因此落定用脱离取消的 ctx：用户刚点取消、
 		// 或总时长刚好到，都不能把这一格的证据丢掉。
@@ -394,6 +382,40 @@ func hlwyRunLoop(ctx context.Context, res *model.ModelAuditResult, claim op.Hlwy
 	}, time.Now()); err != nil {
 		log.Warnf("hlwy result %d finish failed: %v", res.ID, err)
 	}
+	hlwyWriteRoundSummaryLog(wctx, res, upstreamModel, state, claim.StartedAt, roundSlots, roundInputTokens, roundOutputTokens)
+}
+
+// hlwyWriteRoundSummaryLog 落整轮采样的**唯一**一条转发日志行（fix-1127 第 3 项：
+// 一轮只落一条汇总，不刷 100–200 条逐格行）。它是汇总而不是转发：token 是各格
+// 加总，attempts 是实际发出的格数，时长覆盖整轮。费用不填——单价评估只在 relay
+// 链路里做，这里重算一遍等于复制计费逻辑，运营要看钱的明细走审计报告本身。
+func hlwyWriteRoundSummaryLog(ctx context.Context, res *model.ModelAuditResult, upstreamModel string,
+	state hlwyRunState, startedAt time.Time, slots, inputTokens, outputTokens int) {
+	if res == nil {
+		return
+	}
+	src := "model_test"
+	severity := 1
+	if state.execution != model.HlwyExecutionComplete {
+		severity = 3
+	}
+	row := model.RelayLog{
+		RequestEndpoint:  "hlwy_sampling",
+		RequestSource:    &src,
+		RequestModelName: res.Model,
+		ActualModelName:  upstreamModel,
+		ChannelId:        res.ChannelID,
+		ChannelName:      res.ChannelName,
+		Severity:         severity,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		UseTime:          int(time.Since(startedAt).Milliseconds()),
+		TotalAttempts:    slots,
+		RequestContent:   "hlwy 采样汇总：整轮 " + strconv.Itoa(slots) + " 格",
+	}
+	if err := op.RelayLogAdd(ctx, row); err != nil {
+		log.Warnf("hlwy result %d summary log failed: %v", res.ID, err)
+	}
 }
 
 // 一次采样失败的三种算账类别。
@@ -430,17 +452,9 @@ func hlwyClassifyStatus(status int) (string, string) {
 // 四个返回值：结果、观测到的条件快照、是否观测到、需要致命停止的原因（空=继续）。
 // 上游报错一律**不向上传递原文**：它可能带着响应体、URL 或密钥。落库的只有
 // 类别词（如 http_401）和我们自己拼的文案。
-func hlwySampleOnce(ctx context.Context, sender modelverify.Sender) (op.HlwySlotOutcome, numberdist.Conditions, bool, string) {
-	var (
-		observed numberdist.Conditions
-		hasObs   bool
-	)
+func hlwySampleOnce(ctx context.Context, sender modelverify.Sender) (op.HlwySlotOutcome, string, int, int) {
 	sampleCtx, cancel := context.WithTimeout(ctx, op.HlwySampleTimeout)
 	defer cancel()
-	sampleCtx = hlwyObserveConditions(sampleCtx, func(c numberdist.Conditions) {
-		observed = c
-		hasObs = true
-	})
 
 	resp, err := sender.Ask(sampleCtx, modelverify.Ask{Prompt: numberdist.Prompt})
 	if err != nil {
@@ -449,15 +463,15 @@ func hlwySampleOnce(ctx context.Context, sender modelverify.Sender) (op.HlwySlot
 			class, code := hlwyClassifyStatus(status.Status)
 			if class == hlwyClassInvalidAnswer {
 				// 上游确实回了话，只是没给出答案：这是无效回答，不是「没跑成」。
-				return op.HlwySlotOutcome{Result: op.HlwySlotInvalid}, observed, hasObs, ""
+				return op.HlwySlotOutcome{Result: op.HlwySlotInvalid}, "", 0, 0
 			}
 			if class == hlwyClassRejected {
-				return op.HlwySlotOutcome{Result: op.HlwySlotFailed, StopReason: code}, observed, hasObs, code
+				return op.HlwySlotOutcome{Result: op.HlwySlotFailed, StopReason: code}, code, 0, 0
 			}
 		}
 		// 超时/连接被断/5xx 都算“这一格没拿到可用响应”，
 		// 是否停手由连续失败计数决定。
-		return op.HlwySlotOutcome{Result: op.HlwySlotFailed}, observed, hasObs, ""
+		return op.HlwySlotOutcome{Result: op.HlwySlotFailed}, "", 0, 0
 	}
 
 	parsed := numberdist.Parse(resp.Content)
@@ -470,7 +484,11 @@ func hlwySampleOnce(ctx context.Context, sender modelverify.Sender) (op.HlwySlot
 		out.Number = parsed.Number
 		out.StrictInteger = parsed.StrictInteger
 	}
-	return out, observed, hasObs, ""
+	usageInput := resp.Usage.Input
+	if usageInput == 0 {
+		usageInput = resp.Usage.Prompt
+	}
+	return out, "", usageInput, resp.Usage.Completion
 }
 
 // hlwyTruncated 判断上游是不是因为长度上限被截断。
