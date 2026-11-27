@@ -465,7 +465,11 @@ func ModelAuditResultPurge(ctx context.Context) error {
 		// 挡住查询与删除之间新跑进 running 的竞态。
 		busySub := tx.Model(&model.ModelAuditResult{}).
 			Select("DISTINCT job_id").
-			Where("status IN ?", []string{model.AuditResultPending, model.AuditResultRunning})
+			Where("status IN ?", []string{model.AuditResultPending, model.AuditResultRunning}).
+			// NOT IN 三值逻辑防空转（fix-1127 返工 r2 第 6 条）：子查询里只要混进
+			// 一行 job_id 为 NULL 的结果行（无任务的散行/旧数据），NOT IN 对任何
+			// 候选都判不出 TRUE，清理会整条为空——明明有可删的也一条不删。
+			Where("job_id IS NOT NULL")
 		if err := tx.Model(&model.ModelAuditJob{}).
 			Where("created_at < ? AND status IN ?", cutoff, []string{model.AuditJobDone, model.AuditJobCanceled}).
 			Where("id NOT IN (?)", busySub).

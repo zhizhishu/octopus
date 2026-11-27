@@ -199,3 +199,34 @@ func TestModelAuditResultPurgeBusyRowsDoNotEatTheWindow(t *testing.T) {
 		t.Fatalf("clean job beyond a busy-only window was not purged (busy rows ate the limit): jobs=%d", jobs)
 	}
 }
+
+// fix-1127 返工 r2 第 6 条：结果行里混入 job_id 为 NULL 的散行（无任务旧数据）时，
+// NOT IN 三值逻辑不能让清理整条空转——可删的到期任务照样被清。
+func TestModelAuditResultPurgeSurvivesNullJobIDRows(t *testing.T) {
+	ctx := setupAuditQueueTest(t)
+	ch := ensureAuditChannel(t, "NULL job_id 渠道")
+
+	clean := enqueueTestJob(t, ch.ID, "null-clean")
+	setJobStatus(t, clean, model.AuditJobDone, model.AuditResultDone)
+	oldCreatedAt := time.Now().Add(-91 * 24 * time.Hour)
+	if err := db.GetDB().Model(&model.ModelAuditJob{}).Where("id = ?", clean).Update("created_at", oldCreatedAt).Error; err != nil {
+		t.Fatalf("age job: %v", err)
+	}
+	// 造一行 job_id 为 NULL 且仍 running 的散行（旧数据/无主行）：没有
+	// job_id IS NOT NULL 过滤时，它会让 busy 子查询含 NULL，NOT IN 恒不为 TRUE。
+	stray := enqueueTestJob(t, ch.ID, "null-stray")
+	var strayResultID int64
+	if err := db.GetDB().Model(&model.ModelAuditResult{}).Where("job_id = ?", stray).Select("id").Scan(&strayResultID).Error; err != nil {
+		t.Fatalf("find stray result: %v", err)
+	}
+	if err := db.GetDB().Exec("UPDATE model_audit_results SET job_id = NULL, status = ? WHERE id = ?", model.AuditResultRunning, strayResultID).Error; err != nil {
+		t.Fatalf("null stray job_id: %v", err)
+	}
+
+	if err := ModelAuditResultPurge(ctx); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if jobs, _ := countJobRows(t, clean); jobs != 0 {
+		t.Fatalf("clean job not purged when a NULL job_id row exists (NOT IN three-valued logic): jobs=%d", jobs)
+	}
+}
