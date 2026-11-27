@@ -34,8 +34,8 @@ import { rasterizeCreativeSVG } from './creative-png';
  *   但**不给 allow-same-origin**，框里的脚本碰不到本站的登录和接口；再加一条
  *   只允许内联资源的 CSP，连不了外网（见 v6.creativeSrcDoc）。
  * - 7 天后自动删除，收藏的保留；也可以单张删、一键清空未收藏。
- * - SVG 出图后会自动存一张 PNG（父页面 canvas 栅格化，随图同生同死，
- *   见 creative-png.ts）；整页 HTML 没有截图库，暂不自动存，放大框里有说明。
+ * - SVG 出图后会自动存一张 PNG（在隔离框内 canvas 栅格化、postMessage 回传，
+ *   主页面不直接加载模型 SVG，随图同生同死，见 creative-png.ts）；整页 HTML 没有截图库，暂不自动存，放大框里有说明。
  */
 
 const MAX_MODELS = 12;

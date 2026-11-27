@@ -223,6 +223,71 @@ export function creativeSrcDoc(item: Pick<CreativeItem, 'format' | 'content'>): 
     );
 }
 
+/**
+ * 鹈鹕 PNG 栅格化的隔离框 srcdoc（fix-ui1127b-r2 B1）。
+ *
+ * 威胁边界和显示框一模一样：模型输出的 SVG 是不可信内容，栅格化也必须在
+ * 同一个 sandbox="allow-scripts" + 内联 CSP 的隔离框里做——框里 CSP 只放行
+ * data:/blob:，SVG 里的外部 <image href>/外部字体根本发不出请求。主页面
+ * 从头到尾不碰这段 SVG（早期的实现是主页面 new Image 栅格化，外部引用会
+ * 在主页面上下文真实拉取，已废弃）。
+ *
+ * 框里脚本把 PNG 字节经 postMessage 回传；token 是每次栅格化的一次性随机串，
+ * 主页面只认 token 对得上的消息（模型输出在框里，理论上能伪造消息类型，
+ * 但猜不到 128 位随机 token）。
+ */
+export const CREATIVE_PNG_MESSAGE_TYPE = 'octopus-creative-png';
+
+export function creativeRasterSrcDoc(svgContent: string, token: string, width: number, height: number): string {
+    const csp = `<meta http-equiv="Content-Security-Policy" content="${CREATIVE_FRAME_CSP}">`;
+    const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgContent)}`;
+    // 宽高/token 都是主页面算好的数值与随机串，直接嵌进脚本；SVG 本体走 data URI，
+    // 不拼进 HTML/JS 源码，不存在注入逃逸面。
+    const script =
+        '<script>(function(){var img=new Image();' +
+        'img.onload=function(){try{' +
+        'var c=document.createElement("canvas");c.width=' +
+        '${W}' +
+        ';c.height=' +
+        '${H}' +
+        ';var x=c.getContext("2d");if(!x)throw 0;' +
+        'x.fillStyle="#ffffff";x.fillRect(0,0,c.width,c.height);x.drawImage(img,0,0,c.width,c.height);' +
+        'c.toBlob(function(b){if(!b){done(null);return};b.arrayBuffer().then(function(buf){done(buf)},function(){done(null)})},"image/png")' +
+        '}catch(e){done(null)}};' +
+        'img.onerror=function(){done(null)};' +
+        'function done(png){parent.postMessage({type:"${T}",token:"${K}",png:png},"*",png?[png]:[])};' +
+        'img.src="${U}";})();</script>';
+    const body = script
+        .replace('${W}', String(Math.max(1, Math.round(width))))
+        .replace('${H}', String(Math.max(1, Math.round(height))))
+        .replace('"${T}"', JSON.stringify(CREATIVE_PNG_MESSAGE_TYPE))
+        .replace('"${K}"', JSON.stringify(token))
+        .replace('${U}', dataUri);
+    return `<!doctype html><html><head>${csp}<meta charset="utf-8"></head><body>${body}</body></html>`;
+}
+
+/**
+ * 校验并取出栅格化回传消息。返回 undefined = 不是我们的消息（别的 postMessage 流量，
+ * 主页面该无视）；null = 是我们的但栅格化失败；ArrayBuffer = PNG 字节。
+ * 校验：类型/令牌精确相等、png 只能是 ArrayBuffer 或 null——格式之外的一概不认。
+ */
+export function creativePNGMessageParse(data: unknown, token: string): ArrayBuffer | null | undefined {
+    if (!data || typeof data !== 'object') return undefined;
+    const msg = data as { type?: unknown; token?: unknown; png?: unknown };
+    if (msg.type !== CREATIVE_PNG_MESSAGE_TYPE) return undefined;
+    if (typeof token !== 'string' || token.length < 16 || msg.token !== token) return undefined;
+    if (msg.png === null) return null;
+    if (msg.png instanceof ArrayBuffer && msg.png.byteLength > 0) return msg.png;
+    return undefined;
+}
+
+/** 每次栅格化的一次性令牌：128 位随机，框里的不可信脚本猜不到。 */
+export function creativePNGToken(): string {
+    const buf = new Uint8Array(16);
+    crypto.getRandomValues(buf);
+    return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** 卡片底部的「18 秒 · 1,920 token」。 */
 export function creativeMeta(item: Pick<CreativeItem, 'duration_ms' | 'output_tokens' | 'input_tokens'>): string {
     const parts: string[] = [];
