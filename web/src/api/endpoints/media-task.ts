@@ -49,6 +49,11 @@ export function isMediaTaskTerminal(status: string): boolean {
     return status === 'success' || status === 'failure' || status === 'completed' || status === 'failed';
 }
 
+/** 会不会继续变化到值得轮询：只限「排队中/进行中」。unknown 是「本地不存状态」，不是活任务。 */
+export function isMediaTaskPollingStatus(status: string): boolean {
+    return status === 'not_start' || status === 'submitted' || status === 'queued' || status === 'in_progress' || status === 'processing';
+}
+
 export function useMediaTaskList(options: {
     page?: number;
     pageSize?: number;
@@ -86,7 +91,7 @@ export function useMediaTaskList(options: {
         },
         refetchInterval: (query) => {
             const items = query.state.data?.items ?? [];
-            return items.some((item) => !isMediaTaskTerminal(item.status)) ? 5000 : false;
+            return items.some((item) => isMediaTaskPollingStatus(item.status)) ? 5000 : false;
         },
     });
 }

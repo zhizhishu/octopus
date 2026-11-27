@@ -103,10 +103,12 @@ test('media-task polling: non-terminal rows keep a 5s refetch, terminal rows sto
     const done = options.refetchInterval({ state: { data: { items: [{ status: 'success' }] } } });
     const imgDone = options.refetchInterval({ state: { data: { items: [{ status: 'completed' }] } } });
     const unknown = options.refetchInterval({ state: { data: { items: [{ status: 'unknown' }] } } });
-    assert.equal(live, 5000, 'processing is not terminal');
+    assert.equal(live, 5000, 'processing is actively running');
     assert.equal(done, false, 'success is terminal');
     assert.equal(imgDone, false, 'completed is terminal');
-    assert.equal(unknown, 5000, 'unknown (midjourney) is not terminal');
+    assert.equal(unknown, false, 'unknown (midjourney/history) must not poll forever');
+    const queued = options.refetchInterval({ state: { data: { items: [{ status: 'queued' }] } } });
+    assert.equal(queued, 5000, 'queued still polls');
 });
 
 test('media-task terminal vocabulary covers both image and video statuses', () => {
@@ -120,6 +122,12 @@ test('media-task terminal vocabulary covers both image and video statuses', () =
     }
     for (const live of ['processing', 'in_progress', 'queued', 'submitted', 'not_start', 'unknown', '']) {
         assert.equal(mod.isMediaTaskTerminal(live), false, `${live || '(empty)'} is not terminal`);
+    }
+    for (const polling of ['processing', 'in_progress', 'queued', 'submitted', 'not_start']) {
+        assert.equal(mod.isMediaTaskPollingStatus(polling), true, `${polling} should poll`);
+    }
+    for (const idle of ['success', 'failure', 'completed', 'failed', 'unknown', '']) {
+        assert.equal(mod.isMediaTaskPollingStatus(idle), false, `${idle || '(empty)'} should not poll`);
     }
 });
 
