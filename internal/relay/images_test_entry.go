@@ -189,19 +189,10 @@ func forwardImagesChannelTest(
 
 	// 渠道级硬限流闸门与生产同口径（images.go 正常路径的 AdmitChannelGate +
 	// RecordChannelRPMSuccess，用户「层层约束」拍板）：测试花的是渠道真实并发位与
-	// RPM 名额，占不到位就是「此刻发不出去」——上游零命中，绝不绕过。渠道级闸门，
-	// 同渠道各 key 命中同一道闸，所以只在第一个 key 前占一次；占不到直接收。
-	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
-	if gateReason != "" {
-		if releaseGate != nil {
-			releaseGate()
-		}
-		// 终态口径与生产 429 一致（relay.go channelRateLimited*）：调用方据此按限流
-		// 节奏等待重试，而不是当上游坏了。
-		resp.ErrorWithCode(c, http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage)
-		return
-	}
-
+	// RPM 名额，占不到位就是「此刻发不出去」——上游零命中，绝不绕过。
+	// 准入手法对齐生产（fix-1127 返工 r2 第 3 条）：**每个 key attempt 各自准入、
+	// 各自释放**——闸门是渠道级的，但占位生命周期跟着单次上游调用走，而不是循环外
+	// 占一次靠第一把 key 的 defer 顺带释放（那样第二把 key 起就在闸门外裸奔）。
 	var lastErr error
 	for _, usedKey := range keys {
 		statusCode := 0
@@ -209,6 +200,17 @@ func forwardImagesChannelTest(
 			written bool
 			fwdErr  error
 		)
+		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+		if gateReason != "" {
+			if releaseGate != nil {
+				releaseGate()
+			}
+			// 渠道级闸门对同渠道所有 key 是同一道：这把占不到，换 key 也占不到，
+			// 直接收。终态口径与生产 429 一致（relay.go channelRateLimited*）：
+			// 调用方据此按限流节奏等待重试，而不是当上游坏了。
+			resp.ErrorWithCode(c, http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage)
+			return
+		}
 		func() {
 			// 闸门位与在途位分开释放（幂等）：成功/失败/panic 都会经这里，对齐生产路径。
 			if releaseGate != nil {

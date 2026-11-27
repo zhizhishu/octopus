@@ -1,12 +1,14 @@
 package modeltest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"sync"
 	"testing"
 	"time"
@@ -635,5 +637,88 @@ func TestRunChannelImageBlockedWhenChannelRPMFull(t *testing.T) {
 	}
 	if second.Summary.Success != 0 {
 		t.Fatalf("second test must not succeed while rpm full, got %#v", second.Summary)
+	}
+}
+
+// fix-1127 返工 r2 第 3 条：图片测试按生产做法**每个 key attempt 各自准入、各自释放**。
+// 渠道 MaxConcurrent=1：第一把 key 失败换第二把时，第二把的在途期间闸门唯一的并发位
+// 必须被它占着（上游处理器里再试准入必须被拒）；若实现是循环外占一次、第一把 key 的
+// defer 顺带释放，第二把 key 就在闸门外裸奔，探测会占到位从而暴露。
+func TestRunChannelImageSecondKeyHoldsOwnConcurrencySlot(t *testing.T) {
+	ctx := setupModelTestDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	var (
+		mu             sync.Mutex
+		key1Hits       int
+		key2Hits       int
+		slotHeldByKey2 bool
+		channelID      atomic.Int64
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if strings.Contains(auth, "key-one") {
+			mu.Lock()
+			key1Hits++
+			mu.Unlock()
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+			return
+		}
+		mu.Lock()
+		key2Hits++
+		mu.Unlock()
+		// 第二把 key 的在途期间：渠道唯一并发位必须被它占着——再试准入必须被拒。
+		releaseProbe, probeReason := balancer.AdmitChannelGate(context.Background(), int(channelID.Load()), 1, 0, 0, nil)
+		if releaseProbe != nil {
+			releaseProbe()
+		}
+		mu.Lock()
+		slotHeldByKey2 = probeReason != ""
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"created":1730000000,
+			"data":[{"url":"https://image.example.test/one.png"}],
+			"usage":{"input_tokens":11,"output_tokens":22,"total_tokens":33}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:          "image-perkey-gate-channel",
+		Type:          outbound.OutboundTypeOpenAIChat,
+		Enabled:       true,
+		Model:         "gpt-image-1",
+		MaxConcurrent: 1,
+		BaseUrls:      []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys: []dbmodel.ChannelKey{
+			{Enabled: true, ChannelKey: "key-one"},
+			{Enabled: true, ChannelKey: "key-two"},
+		},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	channelID.Store(int64(channel.ID))
+
+	response, err := RunChannel(ctx, channel, dbmodel.ModelTestRequest{
+		Model:    "gpt-image-1",
+		Endpoint: imageGenerationTestEndpointName,
+	})
+	if err != nil {
+		t.Fatalf("RunChannel: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if key1Hits != 1 || key2Hits != 1 {
+		t.Fatalf("hits key1=%d key2=%d, want 各 1（第一把失败后换第二把）", key1Hits, key2Hits)
+	}
+	if response.Summary.Success != 1 {
+		t.Fatalf("换 key 后必须成功, got %#v", response.Summary)
+	}
+	if !slotHeldByKey2 {
+		t.Fatalf("第二把 key 在途期间并发位未被它持有：per-key 准入缺失")
 	}
 }
