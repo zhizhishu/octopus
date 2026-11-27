@@ -121,6 +121,10 @@ func Init() {
 		balancer.SweepExpired(24 * time.Hour)
 		relay.PruneResponsesSessionsExpired()
 		op.RelayLogStreamTokenSweep(time.Hour)
+		// 检测记录 90 天到期清理：和手动删除同一套 busy 保护，排队/在跑/收尾中的一律不碰。
+		if err := op.ModelAuditResultPurge(ctx); err != nil {
+			log.Warnf("model audit result purge failed: %v", err)
+		}
 		// 鹈鹕测试的图：7 天前、没收藏、已出完的删掉（收藏的一直留着）。
 		if n, err := op.ModelAuditCreativePurge(ctx, time.Now()); err != nil {
 			log.Warnf("model audit creative purge failed: %v", err)
