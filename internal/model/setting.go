@@ -76,7 +76,8 @@ const (
 	// RequestContent 记的是还原后的内部结构（不是出站字节），排查"我们到底给上游
 	// 发了什么参数"时会被误导。打开后上述路径的每次尝试会多存一份出站 body：
 	// 按发出去的字节原样保存（凭据不打码），超过 128KB 截断并标明原始长度。
-	// request_content、response_content、错误和 URL 仍然脱敏。
+	// request_content / response_content 自 2026-12 起也不再脱敏（下游正文原样落库，
+	// 见 relay/metrics.go 文件头）；错误信息与 URL 仍打码。
 	// 存储成本与请求体同量级，所以默认关闭。
 	SettingKeyUpstreamRequestBodyLog SettingKey = "upstream_request_body_log_enabled"
 	SettingKeyResponsesSessionTTL    SettingKey = "responses_session_ttl_seconds"

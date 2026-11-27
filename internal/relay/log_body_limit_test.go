@@ -165,7 +165,7 @@ func TestContentWithImagesKeepsVisibleImagePlaceholder(t *testing.T) {
 	}
 }
 
-// 小正文必须逐字节不变：与以前的 redactLogBody(build(nil)) 完全一致，没有标记。
+// 小正文必须逐字节不变：不再脱敏，原样入库，没有标记。
 func TestContentWithImagesLeavesSmallContentByteIdentical(t *testing.T) {
 	withLogImages(t)
 	stubLogImageEnqueue(t)
@@ -176,7 +176,7 @@ func TestContentWithImagesLeavesSmallContentByteIdentical(t *testing.T) {
 		return stripInlineBinaryWith(small, c)
 	})
 
-	if want := redactLogBody(small); got != want {
+	if want := small; got != want {
 		t.Fatalf("small content changed:\n got %q\nwant %q", got, want)
 	}
 	if strings.Contains(got, "bytes before truncation") {
@@ -184,7 +184,7 @@ func TestContentWithImagesLeavesSmallContentByteIdentical(t *testing.T) {
 	}
 }
 
-// 23MB 的真实装配路径（剥离 → 脱敏 → 上限）落库必须 <= 1MiB。
+// 23MB 的真实装配路径（剥离 → 原样 → 上限）落库必须 <= 1MiB。
 func TestContentWithImagesBoundsOversizedBody(t *testing.T) {
 	withLogImages(t)
 	body := oversizedJSONBody(23 << 20)

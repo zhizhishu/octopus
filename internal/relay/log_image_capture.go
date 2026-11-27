@@ -29,9 +29,9 @@ import (
 //
 // 2026-10-31 起「请求内容」(request_content) 和「响应内容」(response_content)
 // 也走同一套：客户端发来的图、模型回出来的图同样换成带 id 的占位符，文件按哈希
-// 去重（和出站请求体里的同一张图共用一个文件）。这两列落库前还要过
-// redactLogBody，而 64 位十六进制会被当成密钥打掉，所以用 redactKeepingImages
-// 先把占位符换成不会被打码的临时记号、打码完再换回来。
+// 去重（和出站请求体里的同一张图共用一个文件）。这两列落库前不再脱敏（2026-12
+// 用户决定，见 metrics.go 文件头「落库正文的脱敏边界」）：下游正文按原文存储，
+// 占位符里的 sha256 哈希原样保留，不需要再换临时记号。
 
 const (
 	omitReasonTooLarge    = "too large"
@@ -248,52 +248,24 @@ func quoteLogString(s string) string {
 	return string(b)
 }
 
-// redactKeepingImages 对一份日志正文打码（redactLogBody），但保留 c 里登记过的
-// 占位符原文：占位符里的 sha256 长得像密钥，直接打码会变成 id=[redacted]。
-// c 为 nil 或没有登记任何图时就是 redactLogBody(s)。
-func redactKeepingImages(s string, c *imageCapture) string {
-	if c == nil || len(c.order) == 0 {
-		return redactLogBody(s)
-	}
-	type swap struct{ token, inner string }
-	swaps := make([]swap, 0, len(c.order))
-	for i, h := range c.order {
-		e := c.byHash[h]
-		if e == nil || !strings.Contains(s, e.inner) {
-			continue
-		}
-		// 记号只含字母和连字符，打码规则不会碰它；正文里本来就有同样文字的概率可以忽略。
-		token := fmt.Sprintf("[octopus-log-image-ref-%c%c]", 'a'+rune(i/26), 'a'+rune(i%26))
-		if strings.Contains(s, token) {
-			// 极端情况：正文里恰好有这个记号。宁可让这张图的 id 被打码（commit 时
-			// 看不见占位符，就不存文件），也不能把客户端的原文换掉。
-			continue
-		}
-		s = strings.ReplaceAll(s, e.inner, token)
-		swaps = append(swaps, swap{token: token, inner: e.inner})
-	}
-	s = redactLogBody(s)
-	for _, sw := range swaps {
-		s = strings.ReplaceAll(s, sw.token, sw.inner)
-	}
-	return s
-}
+// redactKeepingImages 已取消：2026-12 起落库正文不再脱敏（见 metrics.go
+// 文件头「落库正文的脱敏边界」），占位符与客户端原文都原样保留。
 
 // contentWithImages 生成一列落库正文（请求内容 / 响应内容）：build 在副本上产出
-// 已剥离（可传 capture 登记图片）、已截断的文本，这里再打码、把截断后仍看得见的
-// 图片交给写盘队列，并把哈希记进 l，落库时一并写引用行。
+// 已剥离（可传 capture 登记图片）、已截断的文本，这里再按 logContentColumnLimit
+// 截长度、把截断后仍看得见的图片交给写盘队列，并把哈希记进 l，落库时一并写引用行。
+// 正文本身不再脱敏（见 metrics.go 文件头「落库正文的脱敏边界」）：下游正文原样落库。
 //
 // 图片另存关闭（历史日志不落库）时 capture 为 nil：一张图都不另存，占位符退回不带
-// id 的旧格式。但长度预算照旧生效——超限仍会被截断并追加标记，所以结果**不再**等
-// 同于旧的 redactLogBody(build(nil))，只有未超限的小正文才与以前逐字节一致。
+// id 的旧格式。但长度预算照旧生效——超限仍会被截断并追加标记。
 //
-// 顺序是硬的：先剥离内联二进制（build 内部做，图片换成带 id 的占位符）→ 再脱敏
-// （占位符原样保留）→ 再按 logContentColumnLimit 截长度 → 最后才 commit 交给写盘队列。
+// 顺序是硬的：先剥离内联二进制（build 内部做，图片换成带 id 的占位符）→ 正文原样
+// → 再按 logContentColumnLimit 截长度 → 最后才 commit 交给写盘队列。
 // 截断放在 commit 之前，是为了让"占位符被截掉的那张图"根本不进队列：否则文件写下去了、
 // 正文里却找不到引用，只能等孤儿清扫（1 小时）才回收。
 func (l *upstreamBodyLog) contentWithImages(build func(c *imageCapture) string) string {
 	capture := newLogImageCapture()
-	content := redactKeepingImages(build(capture), capture)
+	content := build(capture)
 	content = capLogColumn(content)
 	content, saved := capture.commit(content)
 	if l != nil && len(saved) > 0 {
