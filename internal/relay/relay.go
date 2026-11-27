@@ -154,6 +154,7 @@ func handlerImpl(inboundType inbound.InboundType, c *gin.Context, testChannel *d
 		// 计费闸门（quota admission + 落账扣减）整段跳过；费用照记在转发
 		// 日志里（metrics.saveLog 不受影响）。metrics.quota 保持 nil，close() 为空操作。
 		metrics.internalTest = true
+		metrics.suppressRelayLog = c.GetBool(suppressRelayLogContextKey)
 		defer stashInternalResponse(c, metrics)
 	}
 	defer metrics.quota.close()
@@ -2690,6 +2691,20 @@ func isBenignUpstreamStreamEnd(err error) bool {
 	return strings.Contains(normalized, "unexpected end of input") || strings.Contains(normalized, "eof")
 }
 
+// isMidFrameStreamTruncation 判定「帧中断流」：上游在一个 SSE 事件写到一半时断开
+// （io.ErrUnexpectedEOF / "unexpected end of input"）。这与事件边界上的干净 EOF
+// 本质不同——干净 EOF 可能是上游的合法收尾（gemini 入站既有测试钉死这一点），
+// 而半个事件永远不是合法收尾：没有任何正常上游会把一帧写一半就当结束。
+func isMidFrameStreamTruncation(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "unexpected end of input")
+}
+
 func messagesContainClaudeCodeSystemPrompt(messages []model.Message) bool {
 	for _, msg := range messages {
 		switch strings.ToLower(strings.TrimSpace(msg.Role)) {
@@ -3110,6 +3125,19 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return !upstreamTerminalSeen && !streamDoneSeen && !sawUpstreamCompletion &&
 			!upstreamFinishSeen && !responsesToolCallTerminalSeen
 	}
+	// geminiMidFrameTruncated 是 gemini 入站的断流判定（fix-1127 第 4 项）。
+	// gemini 不被上面的通用截断检测覆盖——事件边界上的无终端干净 EOF 对它是
+	// 合法收尾（上游常这么结束，成功收尾合成冲刷缓冲工具调用的行为被既有测试
+	// 钉死）。但「帧中断流」永远不是合法收尾：此时合成 [DONE] 会把半截工具调用
+	// 冲刷成看似完整的 functionCall、把一次断流伪装成干净结束。判定条件与通用
+	// 检测同一套负集，只是触发源收窄到 mid-frame 断流一种。
+	geminiMidFrameTruncated := func() bool {
+		if ra.inboundType != inbound.InboundTypeGemini || !ra.wroteMeaningfulDownstream {
+			return false
+		}
+		return !upstreamTerminalSeen && !streamDoneSeen && !sawUpstreamCompletion &&
+			!upstreamFinishSeen && !responsesToolCallTerminalSeen
+	}
 	writeStreamData := func(data []byte) error {
 		if len(data) == 0 {
 			return nil
@@ -3367,6 +3395,22 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 							return nil
 						}
 						// 凭据脱敏: 合成帧先写 (进还原器), 再 flush 把缓冲按 FIFO 吐净。
+						// gemini 帧中断流（fix-1127 第 4 项）：断在半帧上永远不是干净
+						// 结束。gemini 客户端认哪种带内错误帧无法确认（Gemini 流式没有
+						// 文档化的中途错误帧，参考项目也无一一致做法），按用户拍板的
+						// 回落：只记错误日志、不伪造干净结束——不合成 [DONE]（半截工具
+						// 调用不冲刷）、记下输出不完整，流就此结束（缺 finishReason
+						// 收尾帧本身就是客户端可辨的「不完整」信号）。仍返回 nil：
+						// 业务数据已交付，报错会触发换渠道整体重放，SOP 禁止。
+						if isMidFrameStreamTruncation(r.err) && geminiMidFrameTruncated() {
+							if err := flushRedactRestore(); err != nil {
+								return err
+							}
+							ra.outputIncompleteReason = dbmodel.RelayLogOutputIncompleteUpstreamMissingTerminal
+							ra.writeTruncatedStreamTerminal()
+							log.Warnf("gemini upstream stream truncated mid-frame before terminal event; no in-band frame written (format unconfirmed), stream ends without a finishReason terminal (inbound=%v)", ra.inboundType)
+							return nil
+						}
 						if err := writeSynthesizedDone(); err != nil {
 							return err
 						}
@@ -3624,6 +3668,12 @@ func (ra *relayAttempt) writeTruncatedStreamTerminal() {
 		writeAnthropicErrorSSE(ra.c, "api_error", upstreamStreamTruncatedMessage)
 	case inbound.InboundTypeOpenAIChat:
 		writeChatErrorSSE(ra.c, upstreamStreamTruncatedCode, upstreamStreamTruncatedMessage)
+	case inbound.InboundTypeGemini:
+		// gemini 不写任何带内帧（fix-1127 第 4 项）：Gemini 流式没有文档化的
+		// 中途错误帧格式，客户端认哪一种无法确认，瞎写一帧可能把客户端解析
+		// 搞坏。按用户拍板的回落：只记错误日志（调用侧已记）、不当干净结束——
+		// 不合成收尾，让流缺 finishReason 地结束，这本身就是客户端可辨的
+		// 「不完整」信号。
 	}
 }
 

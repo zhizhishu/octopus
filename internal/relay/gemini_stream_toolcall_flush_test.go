@@ -145,3 +145,63 @@ func mustMarshal(t *testing.T, v interface{}) string {
 	}
 	return string(body)
 }
+
+// fix-1127 第 4 项：gemini 流式中途断流（帧中断开）不得按干净结束收尾——
+// 半截工具调用不冲刷、不合成 [DONE]、记下输出不完整。gemini 客户端认哪种
+// 错误帧无法确认，按用户拍板只记日志、不写带内帧。
+func TestGeminiStreamMidFrameTruncationIsNotACleanEnd(t *testing.T) {
+	ra, rec := newGeminiStreamTestAttempt(t)
+	mkChunk := func(delta *m.Message) string {
+		chunk := m.InternalLLMResponse{Object: "chat.completion.chunk", Choices: []m.Choice{{Index: 0, Delta: delta}}}
+		return "data: " + mustMarshal(t, chunk) + "\n\n"
+	}
+	name := "oct9_lookup"
+	var b strings.Builder
+	// 先有已交付的正文内容（工具调用碎片在 gemini 入站是缓冲不转发的，
+	// 没有已交付内容就不算 committed，断流走的是另一路）。再发完整名 +
+	// 部分参数碎片（没有 finish_reason），然后流在一个事件写到一半时断开。
+	content := "A-1"
+	b.WriteString(mkChunk(&m.Message{Content: m.MessageContent{Content: &content}}))
+	b.WriteString(mkChunk(&m.Message{ToolCalls: []m.ToolCall{{ID: "call_1", Index: 0, Function: m.FunctionCall{Name: name, Arguments: ""}}}}))
+	b.WriteString(mkChunk(&m.Message{ToolCalls: []m.ToolCall{{Index: 0, Function: m.FunctionCall{Name: name, Arguments: `{"q": "OCT9-`}}}}))
+	b.WriteString(`data: {"id":"chatcmpl_trunc_mid","object":"chat.completion.chunk","cho`)
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(b.String())),
+	}
+	err := ra.handleStreamResponse(ra.relayRequest.c.Request.Context(), response, &chatOut.ChatOutbound{})
+	if err != nil {
+		t.Fatalf("committed mid-frame truncation must not error (no channel swap): %v", err)
+	}
+	wire := rec.Body.String()
+	if strings.Contains(wire, `"functionCall"`) {
+		t.Fatalf("partial tool call must NOT be flushed on mid-frame truncation; wire=%s", wire)
+	}
+	if strings.Contains(wire, `"finishReason"`) {
+		t.Fatalf("mid-frame truncation must not carry any finish terminal; wire=%s", wire)
+	}
+	if ra.outputIncompleteReason == "" {
+		t.Fatalf("mid-frame truncation must record output incomplete")
+	}
+}
+
+// 对照：事件边界上的干净 EOF 仍是合法收尾（既有钉死行为不变）——缓冲的
+// 完整工具调用照常冲刷送达。
+func TestGeminiStreamCleanBoundaryEOFStillFlushes(t *testing.T) {
+	ra, rec := newGeminiStreamTestAttempt(t)
+	sse := geminiSSEToolCallChunks(t, false)
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(sse)),
+	}
+	if err := ra.handleStreamResponse(ra.relayRequest.c.Request.Context(), response, &chatOut.ChatOutbound{}); err != nil {
+		t.Fatalf("clean boundary EOF must stay a successful end: %v", err)
+	}
+	wire := rec.Body.String()
+	if !strings.Contains(wire, `"functionCall"`) {
+		t.Fatalf("clean boundary EOF must still flush the complete tool call; wire=%s", wire)
+	}
+	if ra.outputIncompleteReason != "" {
+		t.Fatalf("clean boundary EOF must not be marked incomplete, got %q", ra.outputIncompleteReason)
+	}
+}
