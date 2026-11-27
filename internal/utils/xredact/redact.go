@@ -86,7 +86,9 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(authorization\s*[:=]\s*bearer\s+)([^\s"',;{}\[\]]+)`),
 	regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9._~+\-/=]{8,})`),
 	regexp.MustCompile(`(?i)(x-api-key\s*[:=]\s*)([^\s"',;{}\[\]]+)`),
-	regexp.MustCompile(`(?i)((?:api[_-]?key|apikey|token|secret)\s*[:=]\s*)([^\s"',;{}\[\]]+)`),
+	// & 排除在密钥字符集外：查询串里 apikey=SECRET&foo=1 的 & 不是密钥的一部分，
+	// 不排除会把相邻参数一起吞掉（fix-ui1127b-r2，errSafeMessage 统一打码后暴露）。
+	regexp.MustCompile(`(?i)((?:api[_-]?key|apikey|token|secret)\s*[:=]\s*)([^\s"',;{}\[\]&]+)`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9._-]{3,}\b`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`),
 	regexp.MustCompile(`\b[A-Fa-f0-9]{32,}\b`),

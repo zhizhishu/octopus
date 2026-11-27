@@ -143,9 +143,9 @@ func TestImageTaskLogSuccessRecordsRequestUpstreamBodyResultAndCost(t *testing.T
 	if !strings.Contains(l.UpstreamRequestBody, imgLogSecret) || !strings.Contains(l.UpstreamRequestBody, `"model":"image-poll-test-model"`) {
 		t.Fatalf("snapshot must be verbatim and carry the mapped model: %s", l.UpstreamRequestBody)
 	}
-	// 请求内容与同步图片同一口径（含 prompt，密钥形态的串按 redactLogBody 打码）。
-	if !strings.Contains(l.RequestContent, "lake") || strings.Contains(l.RequestContent, imgLogSecret) {
-		t.Fatalf("request content should match the sync images rule: %s", l.RequestContent)
+	// 请求内容与同步图片同一口径（含 prompt；2026-12 起下游正文原样落库，密钥形态的串不打码）。
+	if !strings.Contains(l.RequestContent, "lake") || !strings.Contains(l.RequestContent, imgLogSecret) {
+		t.Fatalf("request content should keep the client text verbatim: %s", l.RequestContent)
 	}
 	// 结果：落库的 result_json（b64 已剔除）。
 	if !strings.Contains(l.ResponseContent, "images.upstream.example/ok.png") || strings.Contains(l.ResponseContent, "QUJD") {

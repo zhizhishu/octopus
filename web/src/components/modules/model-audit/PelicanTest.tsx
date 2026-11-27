@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { Code2, Loader2, Maximize2, Sparkles, Star, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Code2, Download, Loader2, Maximize2, Sparkles, Star, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { SearchableSelect } from '@/components/ui/searchable-select';
@@ -9,6 +9,8 @@ import { toast } from '@/components/common/Toast';
 import { cn } from '@/lib/utils';
 import type { Channel } from '@/api/endpoints/channel';
 import {
+    fetchCreativePNG,
+    uploadCreativePNG,
     useAuditBudget,
     useClearUnpinnedCreatives,
     useCreateCreativeRound,
@@ -21,7 +23,8 @@ import {
 } from '@/api/endpoints/model-audit';
 import { getSelectedChannelModels } from '@/components/modules/channel/channel-utils';
 import { MultiPicker, type MultiPickerOption } from './MultiPicker';
-import { PELICAN_PROMPT, creativeFailureText, creativeMeta, creativeSrcDoc } from './v6';
+import { PELICAN_PROMPT, creativeFailureText, creativeHasPNG, creativeMeta, creativePNGCandidate, creativePNGFileName, creativeSrcDoc } from './v6';
+import { rasterizeCreativeSVG } from './creative-png';
 
 /**
  * 鹈鹕测试：同一道创作题发给几个模型，各交一份 SVG/HTML，并排看谁画得像样。
@@ -31,6 +34,8 @@ import { PELICAN_PROMPT, creativeFailureText, creativeMeta, creativeSrcDoc } fro
  *   但**不给 allow-same-origin**，框里的脚本碰不到本站的登录和接口；再加一条
  *   只允许内联资源的 CSP，连不了外网（见 v6.creativeSrcDoc）。
  * - 7 天后自动删除，收藏的保留；也可以单张删、一键清空未收藏。
+ * - SVG 出图后会自动存一张 PNG（在隔离框内 canvas 栅格化、postMessage 回传，
+ *   主页面不直接加载模型 SVG，随图同生同死，见 creative-png.ts）；整页 HTML 没有截图库，暂不自动存，放大框里有说明。
  */
 
 const MAX_MODELS = 12;
@@ -84,6 +89,7 @@ function CreativeCard({
     onSource,
     onPin,
     onDelete,
+    onDownloadPNG,
     busy,
 }: {
     item: CreativeItem;
@@ -91,6 +97,7 @@ function CreativeCard({
     onSource: () => void;
     onPin: () => void;
     onDelete: () => void;
+    onDownloadPNG: () => void;
     busy: boolean;
 }) {
     const [confirming, setConfirming] = useState(false);
@@ -137,6 +144,17 @@ function CreativeCard({
                                 <button type="button" onClick={onSource} title="看源码" className="rounded-lg p-1 hover:bg-muted">
                                     <Code2 className="size-3.5" />
                                 </button>
+                                {creativeHasPNG(item) && (
+                                    <button
+                                        type="button"
+                                        onClick={onDownloadPNG}
+                                        title="下载自动存的 PNG"
+                                        aria-label="下载 PNG"
+                                        className="rounded-lg p-1 hover:bg-muted"
+                                    >
+                                        <Download className="size-3.5" />
+                                    </button>
+                                )}
                             </>
                         )}
                         {!active && (
@@ -205,6 +223,60 @@ export function PelicanTest({ channels }: { channels: Channel[] }) {
     const retryRead = () => {
         if (roundsError) void refetchRounds();
         if (itemsError) void refetchItems();
+    };
+
+    // 自动存 PNG（只对 SVG）：列表里出现一张「出完的 SVG 且还没存过 PNG」的图，就在
+    // 父页面把它栅格化成 PNG 上传一次（见 creative-png.ts 的说明：隔离框没有
+    // allow-same-origin，读不到框里的像素，栅格化用的是同一段 SVG 源文字）。
+    // 防重复：服务端 png_size>0 就不传，本会话内传过/失败的也只试一次；
+    // 失败（SVG 解不开、网络错）静默放弃，不阻塞看图、不弹窗。
+    const pngInFlight = useRef<Set<number>>(new Set());
+    const pngDone = useRef<Set<number>>(new Set());
+    const pngFailed = useRef<Set<number>>(new Set());
+    useEffect(() => {
+        if (!items) return;
+        for (const item of items) {
+            if (!creativePNGCandidate(item)) continue;
+            if (pngDone.current.has(item.id) || pngInFlight.current.has(item.id) || pngFailed.current.has(item.id)) continue;
+            pngInFlight.current.add(item.id);
+            void (async () => {
+                try {
+                    const blob = await rasterizeCreativeSVG(item.content);
+                    if (!blob) {
+                        pngFailed.current.add(item.id);
+                        return;
+                    }
+                    const res = await uploadCreativePNG(item.id, blob);
+                    pngDone.current.add(item.id);
+                    if (res.stored) {
+                        // 存上了就刷新这一轮：png_size 更新后下载按钮出现，也不会再传。
+                        void refetchItems();
+                    }
+                } catch {
+                    pngFailed.current.add(item.id);
+                } finally {
+                    pngInFlight.current.delete(item.id);
+                }
+            })();
+        }
+    }, [items, activeRoundId, refetchItems]);
+
+    // 下载自动存的 PNG：带鉴权拉字节再转 object URL（套路同日志另存图），
+    // 文件名跟后端 Content-Disposition 一致。
+    const downloadPNG = async (item: CreativeItem) => {
+        try {
+            const blob = await fetchCreativePNG(item.id);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = creativePNGFileName(item);
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            toast.error('PNG 没取到', { description: error instanceof Error ? error.message : String(error) });
+        }
     };
 
     const options = useMemo<MultiPickerOption[]>(
@@ -421,6 +493,7 @@ export function PelicanTest({ channels }: { channels: Channel[] }) {
                             onSource={() => setSource(item)}
                             onPin={() => togglePin(item)}
                             onDelete={() => deleteItem(item)}
+                            onDownloadPNG={() => void downloadPNG(item)}
                         />
                     ))}
                 </div>
@@ -430,7 +503,24 @@ export function PelicanTest({ channels }: { channels: Channel[] }) {
                 <DialogContent className="flex h-[90vh] w-[95vw] max-w-[95vw] flex-col sm:max-w-[95vw]">
                     <DialogHeader>
                         <DialogTitle>{zoom ? `${zoom.channel_name} · ${zoom.model}` : ''}</DialogTitle>
-                        <DialogDescription>{zoom ? creativeMeta(zoom) : ''}</DialogDescription>
+                        <DialogDescription>
+                            {zoom ? creativeMeta(zoom) : ''}
+                            {zoom && zoom.status === 'done' && zoom.content !== '' && zoom.format === 'html' && (
+                                <span className="ml-1">· 整页 HTML 暂不自动存 PNG（SVG 出图后会自动存）</span>
+                            )}
+                        </DialogDescription>
+                        {zoom && zoom.status === 'done' && zoom.content !== '' && creativeHasPNG(zoom) && (
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-8 w-fit rounded-lg text-xs"
+                                onClick={() => void downloadPNG(zoom)}
+                            >
+                                <Download className="size-3.5" />
+                                下载 PNG
+                            </Button>
+                        )}
                     </DialogHeader>
                     <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border">
                         {zoom && <CreativeFrame item={zoom} />}

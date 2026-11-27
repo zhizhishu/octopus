@@ -80,8 +80,11 @@ async function handleResponse<T>(response: Response): Promise<T> {
     return data as T;
 }
 
-/** 带上登录 token 的请求头（从 zustand store 取）。 */
-function authHeaders(): Headers {
+/**
+ * 带上登录 token 的请求头（从 zustand store 取）。也导出给需要裸 fetch 的
+ * 端点用（如鹈鹕 PNG 的字节上传——apiClient.post 只会发 JSON）。
+ */
+export function authHeaders(): Headers {
     const headers = new Headers();
     if (typeof window !== 'undefined' && getAuthStore) {
         const store = getAuthStore();

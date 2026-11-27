@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiClient } from '../client';
+import { apiClient, API_BASE_URL, authHeaders } from '../client';
 import { logger } from '@/lib/logger';
 
 export const AUDIT_PROBE_IDS = [
@@ -598,6 +598,8 @@ export type CreativeItem = {
     input_tokens: number;
     output_tokens: number;
     pinned: boolean;
+    // 自动存的 PNG：列表只带字节数（0 = 还没有），字节要下载时另取。
+    png_size: number;
     created_at: string;
     finished_at?: string;
 };
@@ -681,6 +683,41 @@ export function useClearUnpinnedCreatives() {
         mutationFn: async () => apiClient.post<{ deleted: number }>('/api/v1/model-audit/creative/clear-unpinned', {}),
         onSuccess: () => invalidateCreative(queryClient),
     });
+}
+
+/* 鹈鹕图自动存的 PNG：SVG 渲染完成后上传一次、下载时再取字节。 */
+
+/**
+ * 上传一张自动截的 PNG（请求体是 PNG 原始字节，不是 JSON，所以不走 apiClient.post；
+ * 鉴权头复用 client.ts 的 authHeaders）。已存过（服务端防重复）时返回 stored=false，
+ * 不覆盖。
+ */
+export async function uploadCreativePNG(id: number, blob: Blob): Promise<{ stored: boolean }> {
+    const headers = authHeaders();
+    headers.set('Content-Type', 'image/png');
+    const res = await fetch(`${API_BASE_URL}/api/v1/model-audit/creative/items/${id}/png`, {
+        method: 'POST',
+        headers,
+        body: blob,
+    });
+    const contentType = res.headers.get('content-type') || '';
+    const payload = contentType.includes('application/json') ? await res.json() : await res.text();
+    if (!res.ok) {
+        const message =
+            payload && typeof payload === 'object' && 'message' in payload && typeof payload.message === 'string'
+                ? payload.message
+                : typeof payload === 'string' && payload
+                  ? payload
+                  : res.statusText;
+        throw new Error(message);
+    }
+    const data = payload && typeof payload === 'object' && 'data' in payload ? (payload as { data?: { stored?: boolean } }).data : undefined;
+    return { stored: data?.stored === true };
+}
+
+/** 取一张图的 PNG 字节（带登录 token 的二进制拉取，套路同日志另存图）。 */
+export function fetchCreativePNG(id: number, signal?: AbortSignal): Promise<Blob> {
+    return apiClient.getBlob(`/api/v1/model-audit/creative/items/${id}/png`, { signal });
 }
 
 export type ChannelLatestAudit = AuditResult & {

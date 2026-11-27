@@ -337,7 +337,7 @@ func TestRequestContentStripsInternalShapesAndKeepsRequest(t *testing.T) {
 	if !bytes.Equal(req.ResponsesInputRaw, rawInput) {
 		t.Fatal("ResponsesInputRaw was cleared")
 	}
-	for _, absent := range []string{payload, logCanaryKey, "data:image/png", "data:application/pdf"} {
+	for _, absent := range []string{payload, "data:image/png", "data:application/pdf"} {
 		if strings.Contains(logged, absent) {
 			t.Fatalf("request log still contains %q: %s", absent, logged)
 		}
@@ -349,7 +349,9 @@ func TestRequestContentStripsInternalShapesAndKeepsRequest(t *testing.T) {
 		"[audio omitted: unknown, 48B]",
 		"https://cdn.example.com/a.pdf",
 		"file_123",
-		"[redacted]",
+		// 客户端正文原样落库（2026-12 起不脱敏，见 metrics.go 文件头）：密钥形态的
+		// 文字照抄，也不再有 [redacted] 标记。
+		logCanaryKey,
 		"gpt-img",
 		"hello",
 		`"transcript":"said"`,
@@ -357,6 +359,9 @@ func TestRequestContentStripsInternalShapesAndKeepsRequest(t *testing.T) {
 		if !strings.Contains(logged, want) {
 			t.Fatalf("request log missing %q: %s", want, logged)
 		}
+	}
+	if strings.Contains(logged, "[redacted]") {
+		t.Fatalf("client text must stay verbatim and unredacted: %s", logged)
 	}
 	// json:"-" raw passthrough is not part of request_content.
 	if strings.Contains(logged, "input_image") {

@@ -71,6 +71,7 @@ func saveClientValidationRelayLog(ctx context.Context, c *gin.Context, inboundTy
 	}
 	clientSession := deriveClientSessionInfo(c.Request.Header, req)
 
+	// 客户端正文原样落库（只截 8KB，不脱敏；见 metrics.go 文件头「落库正文的脱敏边界」）。
 	relayLog := dbmodel.RelayLog{
 		UserID:             c.GetInt("user_id"),
 		APIKeyID:           c.GetInt("api_key_id"),
@@ -83,7 +84,7 @@ func saveClientValidationRelayLog(ctx context.Context, c *gin.Context, inboundTy
 		ActualModelName:    strings.TrimSpace(req.Model),
 		UseTime:            0,
 		TotalAttempts:      0,
-		RequestContent:     redactLogBody(truncateString(strings.TrimSpace(string(body)), 8*1024)),
+		RequestContent:     truncateString(strings.TrimSpace(string(body)), 8*1024),
 		ResponseContent:    clientValidationResponseContent(code),
 		Error:              clientValidationErrorMessage(err),
 		ErrorCode:          code,
@@ -215,6 +216,7 @@ func saveCursorEmptyProbeRelayLog(ctx context.Context, c *gin.Context, req *tran
 	}
 	clientSession := deriveClientSessionInfo(c.Request.Header, req)
 
+	// 客户端正文原样落库（只截 8KB，不脱敏；见 metrics.go 文件头「落库正文的脱敏边界」）。
 	relayLog := dbmodel.RelayLog{
 		UserID:             c.GetInt("user_id"),
 		APIKeyID:           c.GetInt("api_key_id"),
@@ -227,7 +229,7 @@ func saveCursorEmptyProbeRelayLog(ctx context.Context, c *gin.Context, req *tran
 		ActualModelName:    strings.TrimSpace(req.Model),
 		UseTime:            0,
 		TotalAttempts:      0,
-		RequestContent:     redactLogBody(truncateString(strings.TrimSpace(string(body)), 8*1024)),
+		RequestContent:     truncateString(strings.TrimSpace(string(body)), 8*1024),
 		ResponseContent:    cursorEmptyProbeResponseContent(),
 		ErrorCode:          cursorEmptyProbeCode,
 		ErrorStatus:        http.StatusOK,

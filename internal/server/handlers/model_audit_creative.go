@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -49,7 +50,11 @@ func init() {
 		Use(middleware.AdminOnly()).
 		AddRoute(router.NewRoute("/rounds", http.MethodGet).Handle(listCreativeRounds)).
 		AddRoute(router.NewRoute("/rounds/:round", http.MethodGet).Handle(getCreativeRound)).
-		AddRoute(router.NewRoute("/items/:id", http.MethodDelete).Handle(deleteCreativeItem))
+		AddRoute(router.NewRoute("/items/:id", http.MethodDelete).Handle(deleteCreativeItem)).
+		// PNG 上传/下载挂在**不挂 RequireJSON** 的这组：上传的请求体是 PNG 原始字节，
+		// 不是 JSON；下载是二进制响应。权限沿用 creative 路由（仅管理员）。
+		AddRoute(router.NewRoute("/items/:id/png", http.MethodPost).Handle(uploadCreativeItemPNG)).
+		AddRoute(router.NewRoute("/items/:id/png", http.MethodGet).Handle(downloadCreativeItemPNG))
 
 	router.NewGroupRouter("/api/v1/model-audit/creative").
 		Use(middleware.Auth()).
@@ -159,6 +164,65 @@ func clearUnpinnedCreatives(c *gin.Context) {
 		return
 	}
 	resp.Success(c, gin.H{"deleted": n})
+}
+
+// uploadCreativeItemPNG 接收前端渲染完成后自动上传的一张 PNG（SVG 走 canvas 栅格化）。
+//
+// 请求体是 PNG 原始字节（Content-Type 由前端设 image/png，这里只验文件头）。
+// 防重复上传在 op 层做（已存过的这张返回 stored=false，不覆盖）；上限
+// CreativeMaxPNGBytes，超限直接 413。
+func uploadCreativeItemPNG(c *gin.Context) {
+	id, ok := creativeIDParam(c)
+	if !ok {
+		return
+	}
+	// 多读 1 字节判超限：正好等于上限的包能过，超出一个字节就拒。
+	data, err := io.ReadAll(io.LimitReader(c.Request.Body, model.CreativeMaxPNGBytes+1))
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, "读取上传的 PNG 失败")
+		return
+	}
+	if len(data) > model.CreativeMaxPNGBytes {
+		resp.Error(c, http.StatusRequestEntityTooLarge, fmt.Sprintf("PNG 太大了（上限 %d MB）", model.CreativeMaxPNGBytes>>20))
+		return
+	}
+	stored, err := op.ModelAuditCreativeSetPNG(c.Request.Context(), id, data)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			resp.Error(c, http.StatusNotFound, "这张图不存在（可能已经删了）")
+			return
+		}
+		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp.Success(c, gin.H{"stored": stored})
+}
+
+// downloadCreativeItemPNG 下载/预览一张图自动存的 PNG。仅管理员，与 creative 其余
+// 路由同口径。还没有 PNG 的返回 404（只有 SVG 渲染成功后才会自动生成）。
+func downloadCreativeItemPNG(c *gin.Context) {
+	id, ok := creativeIDParam(c)
+	if !ok {
+		return
+	}
+	data, err := op.ModelAuditCreativeGetPNG(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			resp.Error(c, http.StatusNotFound, "这张图不存在（可能已经删了）")
+			return
+		}
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(data) == 0 {
+		resp.Error(c, http.StatusNotFound, "这张图还没有 PNG（SVG 渲染成功后会自动生成）")
+		return
+	}
+	h := c.Writer.Header()
+	h.Set("Content-Disposition", fmt.Sprintf(`inline; filename="creative-%d.png"`, id))
+	h.Set("Cache-Control", "private, max-age=300")
+	h.Set("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, "image/png", data)
 }
 
 var creativeWorkerStarted bool

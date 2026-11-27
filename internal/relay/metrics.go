@@ -15,13 +15,16 @@ import (
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/tokenizer"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
-// redactLogBody 只用于写进日志的正文。出站请求体不经过这里。
-func redactLogBody(body string) string {
-	return xredact.Secrets(body)
-}
+// 落库正文的脱敏边界（2026-12 用户决定）：侧边栏「凭据脱敏」只管 octopus 发给
+// 上游的内容；octopus 是中间层，下游调用日志要完整收集、不打码——管理员日志页
+// 就是要看到客户端发来/收到的原文，抓滥用。所以 request_content / response_content
+// 这两列（以及客户端校验、图片/原始协议/视频/异步图片等所有落库路径的客户端
+// 正文）按原文存储，只做剥离内联二进制、图片占位、长度截断（capLogColumn）。
+// 上游凭据仍照旧打码：调试捕获（debug_capture.go）里的上游 URL key / 授权头、
+// 上游错误信息（upstream_error.go）与探测/modeltest 路径的 xredact 打码不变。
+// 出站请求体快照（upstream_body_log.go）本来就是原样字节，与本约定一致。
 
 const metricsPersistTimeout = 30 * time.Second
 
@@ -510,7 +513,7 @@ const logContentColumnLimit = 1 << 20
 
 // logContentTruncatedMarker 是截断标记。它是**自描述**的：写明被截断，并给出截断前
 // 这一列的实际字节数，不让人误以为存下来的是完整的。
-// 注意这个数字是"这一列在剥离内联二进制/脱敏之后、截断之前的长度"，不是上游原始
+// 注意这个数字是"这一列在剥离内联二进制之后、截断之前的长度"，不是上游原始
 // body 的字节数（那个数只有 upstream_request_body 那一列的标记才有）。
 func logContentTruncatedMarker(before int) string {
 	return fmt.Sprintf("\n...[truncated: %d bytes before truncation]", before)
@@ -518,7 +521,8 @@ func logContentTruncatedMarker(before int) string {
 
 // capLogColumn 把一列即将落库的正文压到 logContentColumnLimit 以内。
 //
-// 调用方必须先完成剥离内联二进制与脱敏：这里只负责长度，不重新解析 JSON。
+// 调用方必须先完成剥离内联二进制（正文本身已不再脱敏，见文件头「落库正文的脱敏边界」）：
+// 这里只负责长度，不重新解析 JSON。
 // 标记本身也算在预算内（最终长度 <= 上限），且始终用 truncateUTF8 回退到字符边界，
 // 不会把多字节字符/emoji 切半。
 func capLogColumn(s string) string {
@@ -1161,8 +1165,8 @@ func (m *RelayMetrics) buildRelayLog(ctx context.Context, err error, duration ti
 		relayLog.CacheWrite1hTokens = int(m.InternalResponse.Usage.CacheCreation1hInputTokens)
 	}
 
-	// 请求内容。marshal、ParamOverride 合并、剥二进制、打码都在副本上完成，
-	// InternalRequest 与真正发出去的 body 一个字节不动。
+	// 请求内容。marshal、ParamOverride 合并、剥二进制都在副本上完成，正文按原样落库
+	// （见文件头「落库正文的脱敏边界」），InternalRequest 与真正发出去的 body 一个字节不动。
 	if m.InternalRequest != nil {
 		relayLog.RequestContent = m.upstreamBodyLog.contentWithImages(func(c *imageCapture) string {
 			return requestContentForLogWith(m.InternalRequest, m.ParamOverride, c)
@@ -1319,8 +1323,8 @@ func filterResponseForLogWith(resp *transformerModel.InternalLLMResponse, captur
 }
 
 // responseImageURLForLog 决定响应里一张图在日志里记成什么：http(s) 链接原样记下
-// （只是一段文字，不下载、不请求它；之后仍会过 redactLogBody），内联图交给
-// capture 换成带 id 的占位符。都不是时返回空串，调用方退回旧的省略文字。
+// （只是一段文字，不下载、不请求它；正文按原样落库，见文件头「落库正文的脱敏边界」），
+// 内联图交给 capture 换成带 id 的占位符。都不是时返回空串，调用方退回旧的省略文字。
 func responseImageURLForLog(u string, capture *imageCapture) string {
 	trimmed := strings.TrimSpace(u)
 	if strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "http://") {

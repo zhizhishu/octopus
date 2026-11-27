@@ -142,13 +142,13 @@ func stripInlineBinaryWith(s string, c *imageCapture) string {
 // the override replaces that key, a null value is stored as JSON null (it does
 // not delete the key — deletion is only the outbound ApplyParamOverride
 // contract). Marshal / merge failures fall back to the previous successful
-// JSON, then inline bytes are stripped and redactLogBody still runs.
+// JSON, then inline bytes are stripped and the text is stored as is.
 func requestContentForLog(req *transformerModel.InternalLLMRequest, paramOverride string) string {
 	return requestContentForLogWith(req, paramOverride, nil)
 }
 
 // requestContentForLogWith 与 requestContentForLog 相同；c 非空时可保存的内联图片
-// 换成带 id 的占位符（打码时占位符原样保留），调用方之后要 c.commit。
+// 换成带 id 的占位符。正文不再脱敏（见 metrics.go 文件头「落库正文的脱敏边界」）。
 func requestContentForLogWith(req *transformerModel.InternalLLMRequest, paramOverride string, c *imageCapture) string {
 	if req == nil {
 		return ""
@@ -167,7 +167,7 @@ func requestContentForLogWith(req *transformerModel.InternalLLMRequest, paramOve
 			}
 		}
 	}
-	return redactKeepingImages(stripInlineBinaryWith(content, c), c)
+	return stripInlineBinaryWith(content, c)
 }
 
 type mediaHint struct {

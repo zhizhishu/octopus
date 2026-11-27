@@ -155,7 +155,11 @@ func assertAPIKeyQueryRedacted(t *testing.T, got string, secrets ...string) {
 			t.Fatalf("query credential %q leaked: %s", secret, got)
 		}
 	}
-	if strings.Contains(got, "apikey=") && !strings.Contains(got, "apikey=***") && !strings.Contains(got, "apiKey=***") {
+	// 掩码形态按调用点分两代：URLSecrets 打 ***，Secrets 进一步打 [redacted]
+	// （fix-ui1127b-r2 后 errSafeMessage 两层都过，形态是后者）。两种都算打了。
+	masked := strings.Contains(got, "apikey=***") || strings.Contains(got, "apiKey=***") ||
+		strings.Contains(got, "apikey=[redacted]") || strings.Contains(got, "apiKey=[redacted]")
+	if strings.Contains(got, "apikey=") && !masked {
 		t.Fatalf("expected an apikey/apiKey value to be masked, got: %s", got)
 	}
 }

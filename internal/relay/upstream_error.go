@@ -421,6 +421,13 @@ func upstreamErrorPublicCode(fallback string) string {
 	return code
 }
 
+// redactUpstreamFreeText 是上游生成自由文本落库/回下游前的统一打码（fix-ui1127b-r2）：
+// URLSecrets 管 URL 形态、Secrets 管密钥形状串。只护我们自己的上游密钥——下游
+// 客户端发来的正文不经过这里，仍然原样存储。
+func redactUpstreamFreeText(s string) string {
+	return xredact.Secrets(xredact.URLSecrets(s))
+}
+
 func errSafeMessage(err error) string {
 	var upErr *upstreamError
 	if errors.As(err, &upErr) {
@@ -429,7 +436,9 @@ func errSafeMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	return xredact.URLSecrets(err.Error())
+	// 非 upstreamError 的任意错误文本同样统一打码：错误链路可能拼进上游
+	// 响应片段，漏了密钥形状的串就是泄我们自己的上游 key（fix-ui1127b-r2 N3）。
+	return redactUpstreamFreeText(err.Error())
 }
 
 func isClientAbortError(err error) bool {

@@ -140,7 +140,7 @@ test('the creative iframe never gets allow-same-origin', () => {
 
 function pelicanPage(options = {}) {
     const runtime = createRuntime();
-    const state = { created: [], pinned: [], deleted: [], cleared: 0, toasts: [], refetched: [] };
+    const state = { created: [], pinned: [], deleted: [], cleared: 0, toasts: [], refetched: [], uploaded: [] };
     const toast = new Proxy({}, { get: (_, kind) => (...a) => state.toasts.push([kind, ...a]) });
     const items = options.items ?? [];
     const { PelicanTest } = load('src/components/modules/model-audit/PelicanTest.tsx', {
@@ -170,19 +170,23 @@ function pelicanPage(options = {}) {
             usePinCreative: () => ({ isPending: false, mutate: (vars) => state.pinned.push(vars) }),
             useDeleteCreative: () => ({ isPending: false, mutate: (id) => state.deleted.push(id) }),
             useClearUnpinnedCreatives: () => ({ isPending: false, mutate: () => { state.cleared += 1; } }),
+            uploadCreativePNG: async (id, blob) => { state.uploaded.push({ id, size: blob?.size ?? 0 }); return { stored: true }; },
+            fetchCreativePNG: async () => new Blob(['png']),
         },
+        './creative-png': { rasterizeCreativeSVG: async () => new Blob(['png'], { type: 'image/png' }) },
     });
     const channels = options.channels ?? [
         { id: 3, name: 'mistral', enabled: true, type: 0, selected_models: ['deepseek-v4.1-flash', 'zai-glm-5-3'] },
         { id: 4, name: 'emb', enabled: true, type: 5, selected_models: ['text-embedding'] },
     ];
-    return { state, render: () => runtime.render(PelicanTest, { channels }) };
+    return { state, render: () => runtime.render(PelicanTest, { channels }), runEffects: () => runtime.runEffects() };
 }
 
 const creative = (over) => ({
     id: 1, round_id: 'r1', channel_id: 3, channel_name: 'mistral', model: 'deepseek-v4.1-flash', kind: 'pelican',
     prompt: 'Generate an SVG of a pelican riding a bicycle', format: 'svg', content: '<svg></svg>', raw: '```svg\n<svg></svg>\n```',
     status: 'done', error: '', duration_ms: 18000, input_tokens: 20, output_tokens: 1900, pinned: false,
+    png_size: 0,
     created_at: new Date().toISOString(), ...over,
 });
 
@@ -283,6 +287,88 @@ test('pelican: a failure card shows the backend reason and still offers the raw 
     assert.match(body, /没返回合法的 SVG\/HTML/);
     const rawLinks = findAll(p.render(), (n) => n.type === 'button' && squash(n) === '看原文 ›');
     assert.equal(rawLinks.length, 1, 'only the item that has a raw reply offers it');
+});
+
+/* ------------------------------------------------------------------ SVG 自动存 PNG */
+
+test('creative svg intrinsic size: width/height first, viewBox fallback, junk ignored', () => {
+    const { creativeSVGIntrinsicSize } = v6();
+    assert.deepEqual(
+        creativeSVGIntrinsicSize('<svg xmlns="http://www.w3.org/2000/svg" width="500" height="450"><circle/></svg>'),
+        { width: 500, height: 450 },
+    );
+    assert.deepEqual(creativeSVGIntrinsicSize('<svg viewBox="0 0 500 450"></svg>'), { width: 500, height: 450 });
+    assert.deepEqual(creativeSVGIntrinsicSize("<svg viewBox='0 0 16 9'></svg>"), { width: 16, height: 9 });
+    // px 后缀认，百分比不认。
+    assert.deepEqual(creativeSVGIntrinsicSize('<svg width="100px" height="50px"></svg>'), { width: 100, height: 50 });
+    assert.equal(creativeSVGIntrinsicSize('<svg width="100%" height="50%"></svg>'), null);
+    // data-width 这类前缀属性不能误当成 width。
+    assert.equal(creativeSVGIntrinsicSize('<svg data-width="900"></svg>'), null);
+    // 只有一边时按 1:1 补另一边；什么都没有才返回 null。
+    assert.deepEqual(creativeSVGIntrinsicSize('<svg width="300"></svg>'), { width: 300, height: 300 });
+    assert.equal(creativeSVGIntrinsicSize('<svg><circle/></svg>'), null);
+    assert.equal(creativeSVGIntrinsicSize('not an svg at all'), null);
+});
+
+test('creative png raster size: long edge clamped to [512, 2048], default when unknown', () => {
+    const { creativePNGRasterSize } = v6();
+    assert.deepEqual(creativePNGRasterSize({ width: 500, height: 450 }), { width: 512, height: 461 });
+    assert.deepEqual(creativePNGRasterSize({ width: 100, height: 50 }), { width: 512, height: 256 });
+    assert.deepEqual(creativePNGRasterSize({ width: 4000, height: 2000 }), { width: 2048, height: 1024 });
+    assert.deepEqual(creativePNGRasterSize(null), { width: 1024, height: 768 });
+});
+
+test('creative png candidate: only a finished svg without a stored png gets captured', () => {
+    const { creativePNGCandidate, creativeHasPNG, creativePNGFileName } = v6();
+    assert.equal(creativeHasPNG({ png_size: 0 }), false);
+    assert.equal(creativeHasPNG({ png_size: 4321 }), true);
+    assert.equal(creativeHasPNG({}), false, 'missing png_size counts as none (old payload)');
+    const base = { status: 'done', format: 'svg', content: '<svg/>', png_size: 0 };
+    assert.equal(creativePNGCandidate(base), true);
+    assert.equal(creativePNGCandidate({ ...base, status: 'running' }), false);
+    assert.equal(creativePNGCandidate({ ...base, format: 'html' }), false, '整页 HTML 没有截图库，不自动存 PNG');
+    assert.equal(creativePNGCandidate({ ...base, content: '' }), false);
+    assert.equal(creativePNGCandidate({ ...base, png_size: 4096 }), false, 'already stored: never upload twice');
+    assert.equal(creativePNGFileName({ id: 42 }), 'creative-42.png');
+});
+
+test('pelican: a finished svg automatically rasterizes and uploads its png once', async () => {
+    const p = pelicanPage({
+        rounds: [{ round_id: 'r1', kind: 'pelican', prompt: 'x', created_at: new Date().toISOString(), total: 3, active: 0, pinned: 0 }],
+        items: [
+            creative({ id: 7 }),
+            creative({ id: 8, png_size: 99 }),
+            creative({ id: 9, format: 'html', content: '<!doctype html><html></html>' }),
+        ],
+    });
+    p.render();
+    p.runEffects();
+    await setImmediate();
+    await setImmediate();
+    assert.deepEqual(p.state.uploaded, [{ id: 7, size: 3 }], 'only the unfinished svg uploads; stored png/html do not');
+});
+
+test('pelican: a stored png offers a download, html explains why there is none', () => {
+    const p = pelicanPage({
+        rounds: [{ round_id: 'r1', kind: 'pelican', prompt: 'x', created_at: new Date().toISOString(), total: 3, active: 0, pinned: 0 }],
+        items: [
+            creative({ id: 1, png_size: 4096 }),
+            creative({ id: 2 }),
+            creative({ id: 3, format: 'html', content: '<!doctype html><html><body><p>hi</p></body></html>' }),
+        ],
+    });
+    const tree = p.render();
+    const downloads = findAll(tree, (n) => n.type === 'button' && n.props['aria-label'] === '下载 PNG');
+    assert.equal(downloads.length, 1, 'only the item with a stored png offers the download');
+    assert.equal(p.state.uploaded.length, 0, 'a plain render never uploads anything');
+
+    // 放大有 PNG 的那张：放大框里有「下载 PNG」。
+    findAll(tree, (n) => n.type === 'button' && n.props['aria-label'] === '放大看')[0].props.onClick();
+    assert.match(squash(p.render()), /下载 PNG/);
+    // 放大 HTML 那张：说明整页 HTML 暂不自动存 PNG（SVG 才自动存）。
+    const tree2 = p.render();
+    findAll(tree2, (n) => n.type === 'button' && n.props['aria-label'] === '放大看')[2].props.onClick();
+    assert.match(squash(p.render()), /整页 HTML 暂不自动存 PNG/);
 });
 
 /* ------------------------------------------------------------------ 任务页 */

@@ -184,21 +184,27 @@ func TestLogImageCaptureKeepsOutboundBytesIdentical(t *testing.T) {
 	}
 }
 
-func TestRedactKeepingImagesPreservesIDButStillRedacts(t *testing.T) {
+// 占位符里的 id 与客户端原文都原样保留：2026-12 起落库正文不再脱敏
+// （见 metrics.go 文件头），sha256 形状的 id 不会被打掉，正文文字也不会。
+func TestContentWithImagesKeepsIDAndClientTextVerbatim(t *testing.T) {
 	withLogImages(t)
 	img := fakeImage(t, 4000)
-	c := newImageCapture()
 	body := chatImageBody("data:image/png;base64," + b64(img))
-	out := redactKeepingImages(stripInlineBinaryWith(body, c), c)
+	var l upstreamBodyLog
+	out := l.contentWithImages(func(c *imageCapture) string {
+		return stripInlineBinaryWith(body, c)
+	})
 	if !strings.Contains(out, "id="+sha(img)+"]") {
 		t.Fatalf("image id lost: %s", out)
 	}
-	if strings.Contains(out, logCanaryKey) {
-		t.Fatalf("secrets must still be redacted in request/response content: %s", out)
+	if !strings.Contains(out, logCanaryKey) {
+		t.Fatalf("client text must stay verbatim in request/response content: %s", out)
 	}
-	// 没登记任何图时与 redactLogBody 完全一致。
-	if redactKeepingImages(body, nil) != redactLogBody(body) {
-		t.Fatal("nil capture must equal redactLogBody")
+	if strings.Contains(out, "[redacted]") {
+		t.Fatalf("client text must not be redacted: %s", out)
+	}
+	if len(l.contentImageHashes) != 1 || l.contentImageHashes[0] != sha(img) {
+		t.Fatalf("hashes = %v", l.contentImageHashes)
 	}
 }
 

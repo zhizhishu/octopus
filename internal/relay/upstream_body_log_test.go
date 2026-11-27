@@ -199,10 +199,11 @@ func TestUpstreamRequestBodyTruncationKeepsVerbatimPrefix(t *testing.T) {
 	}
 }
 
-// request_content 仍然脱敏。同一条密钥可以出现在出站快照里，但不能出现在请求内容列。
-func TestRequestContentStaysRedactedWhenUpstreamBodyIsVerbatim(t *testing.T) {
+// request_content 不再脱敏（2026-12 起下游正文原样落库，见 metrics.go 文件头）：
+// 同一条密钥同时出现在出站快照与请求内容列里，都不能有 [redacted]。
+func TestRequestContentVerbatimWhenUpstreamBodyIsVerbatim(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
-	const secret = "sk-should-not-be-logged-as-is"
+	const secret = "sk-should-now-be-logged-as-is"
 	text := "hello " + secret
 	req := kimiInternalRequest()
 	req.Messages[0].Content.Content = &text
@@ -226,11 +227,11 @@ func TestRequestContentStaysRedactedWhenUpstreamBodyIsVerbatim(t *testing.T) {
 	if !strings.Contains(full.UpstreamRequestBody, secret) {
 		t.Fatalf("upstream snapshot must keep the credential, got %s", full.UpstreamRequestBody)
 	}
-	if strings.Contains(full.RequestContent, secret) {
-		t.Fatalf("request_content must still redact the credential, got %s", full.RequestContent)
+	if !strings.Contains(full.RequestContent, secret) {
+		t.Fatalf("request_content must keep the client text verbatim, got %s", full.RequestContent)
 	}
-	if !strings.Contains(full.RequestContent, "[redacted]") {
-		t.Fatalf("request_content must mark the redacted credential, got %s", full.RequestContent)
+	if strings.Contains(full.RequestContent, "[redacted]") {
+		t.Fatalf("client text must stay unredacted, got %s", full.RequestContent)
 	}
 }
 

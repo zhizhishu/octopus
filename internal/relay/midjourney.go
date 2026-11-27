@@ -962,8 +962,10 @@ func finishMidjourneySubmit(c *gin.Context, ctx context.Context, plan midjourney
 		}
 		respBody = rewriteMidjourneySubmitBody(respBody, parsed.Code, plan.action)
 	}
+	// description 是上游生成的自由文本：落库前统一过 URLSecrets+Secrets，只护我们自己的
+	// 上游密钥（fix-ui1127b-r2 N1）；下游客户端发来的正文仍按原样存，不受影响。
 	metrics.ResponseContent = truncateString(fmt.Sprintf(`{"protocol":%q,"action":%q,"code":%d,"task_id":%q,"description":%q}`,
-		midjourneySubmitLogName, plan.action, parsed.Code, taskID, parsed.Description), 2048)
+		midjourneySubmitLogName, plan.action, parsed.Code, taskID, redactUpstreamFreeText(parsed.Description)), 2048)
 	if strings.TrimSpace(upstreamCT) == "" {
 		upstreamCT = "application/json"
 	}

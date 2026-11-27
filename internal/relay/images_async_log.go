@@ -21,7 +21,8 @@ import (
 // 现在每条任务在**到达终态时写一行**（完成 / 失败 / 过期各一行，只由赢得 CAS 的那个
 // 写者写，所以一条任务恰好一行），字段口径与同步图片日志（imagesRelayMetrics.saveLog）
 // 一致：
-//   - 请求内容：客户端提交的 JSON，同一个 buildImagesRequestContentForLog + redactLogBody；
+//   - 请求内容：客户端提交的 JSON，同一个 buildImagesRequestContentForLog，
+//     原样落库不脱敏（见 metrics.go 文件头「落库正文的脱敏边界」）；
 //   - 出站请求体：与同步路径同一个开关、同一个 captureOutboundJSONBody，原样不脱敏，
 //     内联图片按「图片另存」规则存文件；开关关闭时不读 body；
 //   - 结果：落库的 result_json（b64_json 已在 ImageTaskResultPayload 里剔除）；

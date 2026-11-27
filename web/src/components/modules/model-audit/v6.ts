@@ -223,6 +223,71 @@ export function creativeSrcDoc(item: Pick<CreativeItem, 'format' | 'content'>): 
     );
 }
 
+/**
+ * 鹈鹕 PNG 栅格化的隔离框 srcdoc（fix-ui1127b-r2 B1）。
+ *
+ * 威胁边界和显示框一模一样：模型输出的 SVG 是不可信内容，栅格化也必须在
+ * 同一个 sandbox="allow-scripts" + 内联 CSP 的隔离框里做——框里 CSP 只放行
+ * data:/blob:，SVG 里的外部 <image href>/外部字体根本发不出请求。主页面
+ * 从头到尾不碰这段 SVG（早期的实现是主页面 new Image 栅格化，外部引用会
+ * 在主页面上下文真实拉取，已废弃）。
+ *
+ * 框里脚本把 PNG 字节经 postMessage 回传；token 是每次栅格化的一次性随机串，
+ * 主页面只认 token 对得上的消息（模型输出在框里，理论上能伪造消息类型，
+ * 但猜不到 128 位随机 token）。
+ */
+export const CREATIVE_PNG_MESSAGE_TYPE = 'octopus-creative-png';
+
+export function creativeRasterSrcDoc(svgContent: string, token: string, width: number, height: number): string {
+    const csp = `<meta http-equiv="Content-Security-Policy" content="${CREATIVE_FRAME_CSP}">`;
+    const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgContent)}`;
+    // 宽高/token 都是主页面算好的数值与随机串，直接嵌进脚本；SVG 本体走 data URI，
+    // 不拼进 HTML/JS 源码，不存在注入逃逸面。
+    const script =
+        '<script>(function(){var img=new Image();' +
+        'img.onload=function(){try{' +
+        'var c=document.createElement("canvas");c.width=' +
+        '${W}' +
+        ';c.height=' +
+        '${H}' +
+        ';var x=c.getContext("2d");if(!x)throw 0;' +
+        'x.fillStyle="#ffffff";x.fillRect(0,0,c.width,c.height);x.drawImage(img,0,0,c.width,c.height);' +
+        'c.toBlob(function(b){if(!b){done(null);return};b.arrayBuffer().then(function(buf){done(buf)},function(){done(null)})},"image/png")' +
+        '}catch(e){done(null)}};' +
+        'img.onerror=function(){done(null)};' +
+        'function done(png){parent.postMessage({type:"${T}",token:"${K}",png:png},"*",png?[png]:[])};' +
+        'img.src="${U}";})();</script>';
+    const body = script
+        .replace('${W}', String(Math.max(1, Math.round(width))))
+        .replace('${H}', String(Math.max(1, Math.round(height))))
+        .replace('"${T}"', JSON.stringify(CREATIVE_PNG_MESSAGE_TYPE))
+        .replace('"${K}"', JSON.stringify(token))
+        .replace('${U}', dataUri);
+    return `<!doctype html><html><head>${csp}<meta charset="utf-8"></head><body>${body}</body></html>`;
+}
+
+/**
+ * 校验并取出栅格化回传消息。返回 undefined = 不是我们的消息（别的 postMessage 流量，
+ * 主页面该无视）；null = 是我们的但栅格化失败；ArrayBuffer = PNG 字节。
+ * 校验：类型/令牌精确相等、png 只能是 ArrayBuffer 或 null——格式之外的一概不认。
+ */
+export function creativePNGMessageParse(data: unknown, token: string): ArrayBuffer | null | undefined {
+    if (!data || typeof data !== 'object') return undefined;
+    const msg = data as { type?: unknown; token?: unknown; png?: unknown };
+    if (msg.type !== CREATIVE_PNG_MESSAGE_TYPE) return undefined;
+    if (typeof token !== 'string' || token.length < 16 || msg.token !== token) return undefined;
+    if (msg.png === null) return null;
+    if (msg.png instanceof ArrayBuffer && msg.png.byteLength > 0) return msg.png;
+    return undefined;
+}
+
+/** 每次栅格化的一次性令牌：128 位随机，框里的不可信脚本猜不到。 */
+export function creativePNGToken(): string {
+    const buf = new Uint8Array(16);
+    crypto.getRandomValues(buf);
+    return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** 卡片底部的「18 秒 · 1,920 token」。 */
 export function creativeMeta(item: Pick<CreativeItem, 'duration_ms' | 'output_tokens' | 'input_tokens'>): string {
     const parts: string[] = [];
@@ -249,4 +314,69 @@ export function creativeFailureText(item: Pick<CreativeItem, 'status' | 'error' 
         default:
             return '';
     }
+}
+
+/* ---------------------------- SVG 自动存 PNG ---------------------------- */
+
+/** 这张图有没有自动存的 PNG（列表只带 png_size，字节另取）。 */
+export function creativeHasPNG(item: Pick<CreativeItem, 'png_size'>): boolean {
+    return (item.png_size ?? 0) > 0;
+}
+
+/** 要不要给这张图自动截 PNG：出完、是 SVG、有内容、还没有 PNG。 */
+export function creativePNGCandidate(item: Pick<CreativeItem, 'status' | 'format' | 'content' | 'png_size'>): boolean {
+    return item.status === 'done' && item.format === 'svg' && item.content !== '' && !creativeHasPNG(item);
+}
+
+/** 下载时用的文件名，与后端 Content-Disposition 里的名字一致。 */
+export function creativePNGFileName(item: Pick<CreativeItem, 'id'>): string {
+    return `creative-${item.id}.png`;
+}
+
+/**
+ * 从 SVG 里读出「这张图本来的尺寸」：优先 <svg> 的 width/height 属性（px 数字），
+ * 退回 viewBox 的宽高。都读不出返回 null（栅格化时退回默认尺寸）。
+ * 百分比 / em / 负数 / 0 一律不算数。
+ */
+export function creativeSVGIntrinsicSize(content: string): { width: number; height: number } | null {
+    const open = /<svg\b[^>]*>/i.exec(content);
+    if (!open) return null;
+    const attrs = open[0];
+    const px = (name: string): number | null => {
+        const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']*)["']`, 'i').exec(attrs);
+        const raw = (m?.[1] ?? '').trim().replace(/px$/i, '');
+        if (!/^\d+(\.\d+)?$/.test(raw)) return null;
+        const n = Number(raw);
+        return n > 0 ? n : null;
+    };
+    const w = px('width');
+    const h = px('height');
+    if (w !== null && h !== null) return { width: w, height: h };
+    const vb = /(?:^|\s)viewBox\s*=\s*["']([^"']*)["']/i.exec(attrs);
+    if (vb) {
+        const parts = vb[1].trim().split(/[\s,]+/).map(Number);
+        if (parts.length === 4 && parts.every((n) => Number.isFinite(n)) && parts[2] > 0 && parts[3] > 0) {
+            return { width: parts[2], height: parts[3] };
+        }
+    }
+    // 只有一边时按 1:1 补另一边（浏览器对缺尺寸的 SVG 也这么猜）。
+    if (w !== null) return { width: w, height: w };
+    if (h !== null) return { width: h, height: h };
+    return null;
+}
+
+/**
+ * 栅格化目标尺寸：长边夹在 [512, 2048]，短边按比例；读不出尺寸时用 1024×768。
+ * 下限避免小图存出缩略图，上限避免超大 SVG 存出几十 MB 的 PNG。
+ */
+export function creativePNGRasterSize(intrinsic: { width: number; height: number } | null): { width: number; height: number } {
+    let width = intrinsic?.width ?? 0;
+    let height = intrinsic?.height ?? 0;
+    if (!(width > 0) || !(height > 0)) {
+        width = 1024;
+        height = 768;
+    }
+    const long = Math.max(width, height);
+    const scale = long < 512 ? 512 / long : long > 2048 ? 2048 / long : 1;
+    return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
 }
