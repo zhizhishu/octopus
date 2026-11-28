@@ -367,11 +367,11 @@ func fetchMidjourneyStatus(c *gin.Context, ctx context.Context, view *TaskView, 
 	// c 传 nil：不把 /v1/tasks 的查询参数（kind= 之类）带到上游。
 	_, body, _, err := midjourneyForward(ctx, nil, http.MethodGet, "/mj/task/"+url.PathEscape(view.TaskID)+"/fetch", nil, channel, key)
 	if err != nil {
-		metrics.Save(ctx, false, err, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, auditErrorMessage(err)))
+		metrics.Save(ctx, false, err, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, auditErrorMessage(err), 1))
 		return
 	}
 	metrics.ResponseContent = "midjourney task fetch (unified /v1/tasks)"
-	metrics.Save(ctx, true, nil, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, true, started, ""))
+	metrics.Save(ctx, true, nil, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, true, started, "", 1))
 	var u midjourneyUpstreamTask
 	if json.Unmarshal(body, &u) == nil {
 		applyMidjourneyUpstream(view, u)
@@ -677,11 +677,11 @@ func fillMidjourneyStatuses(c *gin.Context, ctx context.Context, page []TaskView
 		_, respBody, _, err := midjourneyForward(ctx, nil, http.MethodPost, "/mj/task/list-by-condition", body, channel, key)
 		if err != nil {
 			lastErr = err
-			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, auditErrorMessage(err))...)
+			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, auditErrorMessage(err), len(attempts)+1)...)
 			log.Warnf("unified task list: midjourney list-by-condition on channel %d failed: %v", channel.ID, err)
 			continue
 		}
-		attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", true, started, "")...)
+		attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", true, started, "", len(attempts)+1)...)
 		var items []midjourneyUpstreamTask
 		if json.Unmarshal(bytes.TrimSpace(respBody), &items) != nil {
 			continue
