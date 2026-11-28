@@ -451,10 +451,10 @@ func runRaceContenders(
 			// 同波其它 contender / 后续 wave 还有机会。
 			// 注：下面「注册窗口」早退的 racer 已经占掉了一个 RPM 名额（RPM 是消耗品，
 			// release 不归还），窗口很窄，且只会多算不会少算——往严的一侧偏，不会绕过上限。
-			releaseGate, gateReason := balancer.AdmitChannelGate(racerCtx, contender.channel.ID, contender.channel.MaxConcurrent, contender.channel.RPMLimit, 0, func() bool { return racerCtx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(racerCtx, contender.channel.ID, contender.channel.MaxConcurrent, contender.channel.RPMLimit, contender.channel.TPMLimit, 0, 0, func() bool { return racerCtx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
-					releaseGate()
+					releaseGate.Release()
 				}
 				racerCancel()
 				resultsChan <- racerResult{
@@ -478,7 +478,7 @@ func runRaceContenders(
 			finishAttempt := func() {
 				finishRuntimeAttempt()
 				if releaseGate != nil {
-					releaseGate()
+					releaseGate.Release()
 				}
 			}
 
@@ -520,6 +520,12 @@ func runRaceContenders(
 				cleanedUp bool
 				racerRA   *relayAttempt
 			)
+
+			// 竞速 contender 也是真实上行：封口后名额不退，赢家输家都计数（feat/rpm-tpm，
+			// 方案 7.2「竞速 contender 全走同一闸」）。输家被取消时字节已出门，属预期计数。
+			if releaseGate != nil {
+				releaseGate.Seal()
+			}
 
 			// Ensure loser runtime reservation, context cancel, and unread body are cleaned
 			// up safely in all exit paths (prep fail, send fail, fast 200 incompatible, probe
@@ -902,9 +908,7 @@ func runRaceContenders(
 		if handleErr == nil {
 			winnerRA.collectResponse()
 			winnerRA.metrics.ChannelKeyRemark = winnerRA.usedKey.Remark
-			// 渠道 RPM 口径与串行路径一致（整分钟桶、只数成功，见 balancer/channel_gate.go）：
 			// 胜出 racer 花的是渠道真实名额，与 relay.go 成功分支同一计数点。
-			balancer.RecordChannelRPMSuccess(winner.channel.ID)
 			costDelta := winnerRA.metrics.Stats.InputCost + winnerRA.metrics.Stats.OutputCost
 			op.ChannelKeyRecordUse(winnerRA.usedKey, winner.statusCode, usedAt, costDelta)
 
@@ -1189,7 +1193,6 @@ func maxLoserRetryAfter(results []racerResult) time.Duration {
 
 // recordLoserRPMSuccess 给「上游已成功返回、只是被竞速取消」的 2xx 输家补计渠道 RPM。
 //
-// 口径与赢家一致（整分钟桶、只数成功，见 balancer/channel_gate.go）：这些输家的上游
 // 请求已经真实打到上游并拿到 2xx，上游看到的是一次成功请求，不补计的话竞速渠道的
 // RPM 计数会比上游真实看到的低。只有真正拿到 2xx 响应对象（res.response != nil 且
 // 状态码 2xx）的输家才计；赢家从不进 loserResults，不会重复计。
@@ -1201,7 +1204,6 @@ func recordLoserRPMSuccess(results []racerResult) {
 		if res.statusCode < http.StatusOK || res.statusCode >= http.StatusMultipleChoices {
 			continue
 		}
-		balancer.RecordChannelRPMSuccess(res.channel.ID)
 	}
 }
 

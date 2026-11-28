@@ -670,9 +670,9 @@ func TestRunChannelImageSecondKeyHoldsOwnConcurrencySlot(t *testing.T) {
 		key2Hits++
 		mu.Unlock()
 		// 第二把 key 的在途期间：渠道唯一并发位必须被它占着——再试准入必须被拒。
-		releaseProbe, probeReason := balancer.AdmitChannelGate(context.Background(), int(channelID.Load()), 1, 0, 0, nil)
+		releaseProbe, probeReason := balancer.AdmitChannelGate(context.Background(), int(channelID.Load()), 1, 0, 0, 0, 0, nil)
 		if releaseProbe != nil {
-			releaseProbe()
+			releaseProbe.Release()
 		}
 		mu.Lock()
 		slotHeldByKey2 = probeReason != ""

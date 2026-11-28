@@ -1219,6 +1219,16 @@ func (ra *relayAttempt) resolveRuntimeModel() string {
 	return modelName
 }
 
+// estInputTokensForGate 把入站请求体字节数折算成渠道 TPM 闸门的估算输入 tokens。
+// len/4 口径：仓内既有近似（modelverify/fingerprint/detector.go:151、feature.go:122），
+// tier-1 接受误差；精确 tiktoken 输入计数留作第二档（见 balancer/channel_gate.go 头注释）。
+func estInputTokensForGate(internalRequest *model.InternalLLMRequest) int64 {
+	if internalRequest == nil || internalRequest.RawInboundBodyBytes <= 0 {
+		return 0
+	}
+	return int64(internalRequest.RawInboundBodyBytes) / 4
+}
+
 // attempt 统一管理一次通道尝试的完整生命周期
 func (ra *relayAttempt) attempt() attemptResult {
 	runtimeModel := ra.resolveRuntimeModel()
@@ -1230,10 +1240,10 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// maxWait=0：占不到位立即退，排队统一在 Handler 收尾按渠道排队配置只做一次。
 	gateCtx := ra.attemptGateContext()
 	clientGone := func() bool { return gateCtx.Err() != nil }
-	releaseGate, gateReason := balancer.AdmitChannelGate(gateCtx, ra.channel.ID, ra.channel.MaxConcurrent, ra.channel.RPMLimit, 0, clientGone)
+	releaseGate, gateReason := balancer.AdmitChannelGate(gateCtx, ra.channel.ID, ra.channel.MaxConcurrent, ra.channel.RPMLimit, ra.channel.TPMLimit, estInputTokensForGate(ra.internalRequest), 0, clientGone)
 	if gateReason != "" {
 		if releaseGate != nil {
-			releaseGate()
+			releaseGate.Release()
 		}
 		// 审计留给主循环（iter.Skip），这里把「没发，为什么没发」连渠道一起交回去。
 		return attemptResult{
@@ -1243,6 +1253,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 				ChannelID:      ra.channel.ID,
 				MaxConcurrent:  ra.channel.MaxConcurrent,
 				RPMLimit:       ra.channel.RPMLimit,
+				TPMLimit:       ra.channel.TPMLimit,
 				QueueSize:      ra.channel.QueueSize,
 				QueueTimeoutMs: ra.channel.QueueTimeoutMs,
 			}},
@@ -1251,7 +1262,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 第一层释放保险：成功/失败/客户端断开/流中断/panic 都会经过这个 defer。
 	// releaseGate 幂等，和后面 BeginRuntimeAttempt 自己的 finish closure 互不依赖。
 	if releaseGate != nil {
-		defer releaseGate()
+		defer releaseGate.Release()
 	}
 
 	span := ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
@@ -1262,7 +1273,11 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 凭据脱敏: 每次 attempt 自己的 session (占位符映射随 attempt 丢弃), attempt 返回即释放 VM。
 	defer ra.redactClose()
 
-	// 转发请求
+	// 转发请求。字节出门口在此：封口后 RPM/TPM 名额不再退还（feat/rpm-tpm 口径，
+	// 成败/超时都计数）；没走到这里的提前返回才会由 Release 退还预占。
+	if releaseGate != nil {
+		releaseGate.Seal()
+	}
 	statusCode, fwdErr := ra.forward(span)
 
 	usedAt := time.Now().Unix()
@@ -1270,15 +1285,15 @@ func (ra *relayAttempt) attempt() attemptResult {
 	if fwdErr == nil {
 		// ====== 成功 ======
 		ra.collectResponse()
-		// 渠道 RPM 口径：整分钟桶、只数成功（对齐 sub2api，见 balancer/channel_gate.go）。
 		// 失败/取消/被跳过的尝试不走这条分支，所以不计入 RPM。无论渠道有没有配
 		// RPMLimit 都记：渠道页要显示「本分钟 N」实时值，口径与 sub2api 的
 		// current_rpm 一致（那边也是所有转发成功都计数）；限流判定只在配了上限时读它。
 		// 渠道测试/模型检测也计（用户 2026-11-27 拍板，fix-1127）：测试走的就是
 		// 真实转发链路、花的是渠道真实名额，「层层约束」口径下与正常请求同一计数点。
-		balancer.RecordChannelRPMSuccess(ra.channel.ID)
 		costDelta := ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
 		op.ChannelKeyRecordUse(ra.usedKey, statusCode, usedAt, costDelta)
+		// TPM 第一档：观测到的输出 tokens 进滑动窗口（feat/rpm-tpm）。
+		balancer.RecordChannelTPMOutput(ra.channel.ID, ra.metrics.Stats.OutputToken)
 
 		// 纯观测: 流式分支若已记下输出不完整, 带到审计 span 上; 状态/消息/返回值一律不变。
 		span.SetOutputIncompleteReason(ra.outputIncompleteReason)
@@ -1426,6 +1441,9 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 
 	inAdapter := inbound.Get(inboundType)
 	internalRequest, err := inAdapter.TransformRequest(c.Request.Context(), body)
+	if internalRequest != nil {
+		internalRequest.RawInboundBodyBytes = len(body)
+	}
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		// 同上：入站转换失败（含 JSON 解析失败）此前不落库。

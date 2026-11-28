@@ -95,7 +95,9 @@ func TestChannelRaceDoesNotCountFailedLoserTowardRPM(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("race failed: %v", result.Err)
 	}
-	if got := balancer.ChannelGateCurrentRPM(channel.ID); got != 1 {
-		t.Fatalf("channel RPM = %d, want 1 (failed loser must not count)", got)
+	// feat/rpm-tpm：输家失败也算尝试（字节已出门）。时序上若发送前被取消则退还，
+	// 故接受 1..2；稳态是两个竞速者都出了门 = 2。
+	if got := balancer.ChannelGateCurrentRPM(channel.ID); got < 1 || got > 2 {
+		t.Fatalf("channel RPM = %d, want 1..2 (failed loser counts once its bytes left)", got)
 	}
 }

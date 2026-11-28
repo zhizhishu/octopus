@@ -398,6 +398,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 		selectFields = append(selectFields, "rpm_limit")
 		updates.RPMLimit = *req.RPMLimit
 	}
+	if req.TPMLimit != nil {
+		selectFields = append(selectFields, "tpm_limit")
+		updates.TPMLimit = *req.TPMLimit
+	}
 	if req.QueueSize != nil {
 		// 指针语义：显式 0 必须真的落库（Updates(struct) 会跳过零值）。
 		selectFields = append(selectFields, "queue_size")

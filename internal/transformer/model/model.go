@@ -27,6 +27,11 @@ const (
 // Request is the unified llm request model for AxonHub, to keep compatibility with major app and framework.
 // It choose to base on the OpenAI chat completion request, but add some extra fields to support more features.
 type InternalLLMRequest struct {
+	// RawInboundBodyBytes 是入站原始请求体的字节数（feat/rpm-tpm）：渠道 TPM 闸门的
+	// 本地估算输入按 len/4 口径从它折算（估算口径见 balancer/channel_gate.go 头注释）。
+	// 只在 parseRequest 填充，不进任何出站序列化。
+	RawInboundBodyBytes int `json:"-"`
+
 	// Messages is a list of messages to send to the llm model.
 	// For chat completion requests, this field is required.
 	// For embedding requests, this field should be empty and Input should be used instead.

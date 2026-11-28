@@ -76,6 +76,7 @@ export type Channel = {
     priority: number;
     max_concurrent: number;
     rpm_limit: number;
+    tpm_limit: number;
     // 排队可调：硬限流闸门占不到位时这条渠道最多让几个请求排队（0 = 不排队，满了立刻 429），
     // 以及每个排队请求最多等多少毫秒（0 = 后端默认 3 秒）。与后端 model.Channel 对齐。
     queue_size: number;
@@ -147,6 +148,7 @@ export type CreateChannelRequest = {
     priority?: number;
     max_concurrent?: number;
     rpm_limit?: number;
+    tpm_limit?: number;
     queue_size?: number;
     queue_timeout_ms?: number;
     key_select_strategy?: KeySelectStrategy;
@@ -198,6 +200,7 @@ export type UpdateChannelRequest = {
     priority?: number;
     max_concurrent?: number;
     rpm_limit?: number;
+    tpm_limit?: number;
     // 显式 0 有意义（关掉排队 / 用默认等待），所以更新时靠「和现值不同才发」表达，不靠缺省跳过。
     queue_size?: number;
     queue_timeout_ms?: number;

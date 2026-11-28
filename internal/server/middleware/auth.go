@@ -359,6 +359,7 @@ func apiKeyEndpointFamilyForPath(path string) model.APIKeyEndpointFamily {
 		// 🔴 新增任何 /v1/xxx 端点都必须在这里登记，否则落到下面的 Unclassified，
 		// 对所有 key 恒 403 —— 而且绕过中间件的 handler 测试照样全绿，查不出来。
 		path == "/v1/systemone" ||
+		path == "/v1/decisions" ||
 		strings.HasPrefix(path, "/v1/images/") ||
 		strings.HasPrefix(path, "/v1/audio/") ||
 		// xAI（Grok）语音 REST。与 /v1/audio/* 同族：同是音频、同走 raw 透传、

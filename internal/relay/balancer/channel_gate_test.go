@@ -84,7 +84,7 @@ func TestChannelGateHardCapsConcurrentAdmits(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			release, reason := AdmitChannelGate(context.Background(), channelID, gateCap, 0, 0, nil)
+			release, reason := AdmitChannelGate(context.Background(), channelID, gateCap, 0, 0, 0, 0, nil)
 			if reason != "" {
 				return // 占不到位：调用方立刻跳下一个候选（本测试只验峰值不越限）。
 			}
@@ -97,7 +97,7 @@ func TestChannelGateHardCapsConcurrentAdmits(t *testing.T) {
 			}
 			time.Sleep(4 * time.Millisecond) // 撑住一小段在途窗口，制造重叠
 			atomic.AddInt64(&current, -1)
-			release()
+			release.Release()
 		}()
 	}
 	wg.Wait()
@@ -108,87 +108,12 @@ func TestChannelGateHardCapsConcurrentAdmits(t *testing.T) {
 	if got := atomic.LoadInt64(&maxObserved); got > gateCap {
 		t.Fatalf("observed concurrency %d exceeds hard gateCap %d", got, gateCap)
 	}
-	if !ChannelGateHasRoom(channelID, gateCap, 0) {
+	if !ChannelGateHasRoom(channelID, gateCap, 0, 0) {
 		t.Fatalf("after full release the channel must have room again")
 	}
 }
 
 // TestChannelGateRPMCountsOnlySuccesses：RPM 口径对齐 sub2api（rpm:{id}:{unix/60} +
-// Forward 成功后才计数）——准入本身不消耗名额（失败/取消/被跳过的尝试都不算），只有
-// 成功转发落地才 +1；到顶后同一个整分钟桶内的 admit 一律被拒。
-func TestChannelGateRPMCountsOnlySuccesses(t *testing.T) {
-	ResetChannelGates()
-	defer ResetChannelGates()
-
-	const channelID = 7701
-	// 只占并发位、没有任何成功计数：RPM=3 时连占 5 次都不该被拒（失败尝试不消耗名额）。
-	for i := 0; i < 5; i++ {
-		release, reason := AdmitChannelGate(context.Background(), channelID, 0, 3, 0, nil)
-		if reason != "" {
-			t.Fatalf("admit %d must not be rejected before any success is counted, got %q", i, reason)
-		}
-		release()
-	}
-	if got := ChannelGateCurrentRPM(channelID); got != 0 {
-		t.Fatalf("admit alone must not raise the minute success count, got %d", got)
-	}
-
-	// 3 次成功落地后：当前分钟计数 3，RPM=3 到顶。
-	for i := 0; i < 3; i++ {
-		RecordChannelRPMSuccess(channelID)
-	}
-	if got := ChannelGateCurrentRPM(channelID); got != 3 {
-		t.Fatalf("after 3 recorded successes current rpm = %d, want 3", got)
-	}
-	if _, reason := AdmitChannelGate(context.Background(), channelID, 0, 3, 0, nil); reason != ChannelGateReasonRPM {
-		t.Fatalf("admit must be rejected once this minute already has 3 successes, got %q", reason)
-	}
-	if ChannelGateHasRoom(channelID, 0, 3) {
-		t.Fatalf("HasRoom must report no room when the minute success count reached the cap")
-	}
-	// 被拒的准入不改计数（它不是一次成功）。
-	if got := ChannelGateCurrentRPM(channelID); got != 3 {
-		t.Fatalf("a rejected admit must not change the success count, got %d", got)
-	}
-}
-
-// TestChannelGateRPMBucketResetsEachMinute：整分钟桶——上一分钟的计数在分钟翻转后一律
-// 不认（不像 60 秒滑动窗口那样还留着半分钟的账），准入与读数都从 0 重新开始。
-func TestChannelGateRPMBucketResetsEachMinute(t *testing.T) {
-	ResetChannelGates()
-	defer ResetChannelGates()
-
-	const channelID = 7702
-	RecordChannelRPMSuccess(channelID)
-	RecordChannelRPMSuccess(channelID)
-	if got := ChannelGateCurrentRPM(channelID); got != 2 {
-		t.Fatalf("current rpm after 2 successes = %d, want 2", got)
-	}
-
-	// 把这批成功算到上一分钟（等价于「时间跨过了分钟边界」）：当前分钟必须归零，
-	// 且 rpmLimit=1 的渠道又能准入（旧分钟的成功不占新分钟的额度）。
-	gate := channelGateFor(channelID)
-	gate.mu.Lock()
-	gate.rpmMinute = channelGateMinuteOf(time.Now()) - 1
-	gate.mu.Unlock()
-	if got := ChannelGateCurrentRPM(channelID); got != 0 {
-		t.Fatalf("counts from the previous minute must not be visible, got %d", got)
-	}
-	release, reason := AdmitChannelGate(context.Background(), channelID, 0, 1, 0, nil)
-	if reason != "" {
-		t.Fatalf("the previous minute's successes must not block this minute, got %q", reason)
-	}
-	release()
-
-	// 新一分钟的第一次成功重新从 1 开始。
-	RecordChannelRPMSuccess(channelID)
-	if got := ChannelGateCurrentRPM(channelID); got != 1 {
-		t.Fatalf("the new minute must restart the counter at 1, got %d", got)
-	}
-}
-
-// TestChannelGateCurrentRPMIsReadOnly：CurrentRPM 只读——没记录的渠道（含非法 ID）
-// 一律 0，反复探测不占位、不涨计数。
 func TestChannelGateCurrentRPMIsReadOnly(t *testing.T) {
 	ResetChannelGates()
 	defer ResetChannelGates()
@@ -205,7 +130,7 @@ func TestChannelGateCurrentRPMIsReadOnly(t *testing.T) {
 			t.Fatalf("read-only probe %d changed the count: %d", i, got)
 		}
 	}
-	if !ChannelGateHasRoom(channelID, 1, 1) {
+	if !ChannelGateHasRoom(channelID, 1, 1, 0) {
 		t.Fatalf("probing must not consume any slot/quota")
 	}
 }
@@ -217,26 +142,26 @@ func TestChannelGateHasRoomIsReadOnly(t *testing.T) {
 	defer ResetChannelGates()
 
 	const channelID = 7703
-	release, reason := AdmitChannelGate(context.Background(), channelID, 1, 0, 0, nil)
+	release, reason := AdmitChannelGate(context.Background(), channelID, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("first admit should succeed, got %q", reason)
 	}
-	if ChannelGateHasRoom(channelID, 1, 0) {
+	if ChannelGateHasRoom(channelID, 1, 0, 0) {
 		t.Fatalf("concurrency is full (1/1), HasRoom must report no room")
 	}
-	release()
-	if !ChannelGateHasRoom(channelID, 1, 0) {
+	release.Release()
+	if !ChannelGateHasRoom(channelID, 1, 0, 0) {
 		t.Fatalf("after release HasRoom must be true")
 	}
 	// 连续探测不占位：探测之后紧接的真实 admit 仍成功。
-	if !ChannelGateHasRoom(channelID, 1, 0) {
+	if !ChannelGateHasRoom(channelID, 1, 0, 0) {
 		t.Fatalf("HasRoom must not consume a slot")
 	}
-	release2, reason2 := AdmitChannelGate(context.Background(), channelID, 1, 0, 0, nil)
+	release2, reason2 := AdmitChannelGate(context.Background(), channelID, 1, 0, 0, 0, 0, nil)
 	if reason2 != "" {
 		t.Fatalf("real admit after read-only probes must succeed, got %q", reason2)
 	}
-	release2()
+	release2.Release()
 }
 
 // TestChannelGateUnlimitedNeverCreatesState：MaxConcurrent=0 且 RPMLimit=0 的渠道行为与
@@ -247,12 +172,12 @@ func TestChannelGateUnlimitedNeverCreatesState(t *testing.T) {
 
 	const channelID = 7704
 	for i := 0; i < 8; i++ {
-		release, reason := AdmitChannelGate(context.Background(), channelID, 0, 0, 0, nil)
+		release, reason := AdmitChannelGate(context.Background(), channelID, 0, 0, 0, 0, 0, nil)
 		if reason != "" {
 			t.Fatalf("unlimited channel admit %d must not be rejected, got %q", i, reason)
 		}
-		release()
-		if !ChannelGateHasRoom(channelID, 0, 0) {
+		release.Release()
+		if !ChannelGateHasRoom(channelID, 0, 0, 0) {
 			t.Fatalf("unlimited channel must always report room")
 		}
 	}
@@ -267,34 +192,43 @@ func TestChannelGateRejectsOnEitherDimension(t *testing.T) {
 
 	const channelID = 7705
 	// 并发=1：占住唯一并发位后，下一次 admit 被并发维度拒。
-	release, reason := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil)
+	release, reason := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("first admit should succeed, got %q", reason)
 	}
-	if ChannelGateHasRoom(channelID, 1, 1) {
+	if ChannelGateHasRoom(channelID, 1, 1, 0) {
 		t.Fatalf("concurrency is full (1/1), HasRoom must be false")
 	}
-	if _, reason := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil); reason != ChannelGateReasonConcurrency {
+	if _, reason := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, 0, 0, nil); reason != ChannelGateReasonConcurrency {
 		t.Fatalf("second admit must be rejected by the concurrency dimension, got %q", reason)
 	}
-	release()
+	release.Release()
 
-	// 归还并发位后仍能准入：RPM 维度还没花（准入不预占名额）。
-	release2, reason2 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil)
+	// 未封口就释放=发送前失败：RPM 预占退还，不占名额（feat/rpm-tpm 退款语义）。
+	release2, reason2 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, 0, 0, nil)
 	if reason2 != "" {
-		t.Fatalf("after release the slot is free and no success was counted yet, got %q", reason2)
+		t.Fatalf("after release the slot is free and no attempt was counted yet, got %q", reason2)
 	}
-	release2()
+	release2.Release() // 未 Seal：名额退还
+	if ChannelGateCurrentRPM(channelID) != 0 {
+		t.Fatalf("unsealed release must refund the rpm slot")
+	}
 
-	// 一次成功落地后：并发位是空的，但当前分钟成功数已到 rpm=1，于是被 RPM 维度拒。
-	RecordChannelRPMSuccess(channelID)
-	if _, reason3 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, nil); reason3 != ChannelGateReasonRPM {
-		t.Fatalf("after one success the rpm dimension is full, want channel_rpm_limit, got %q", reason3)
+	// 封口后释放=字节已出门：名额留在窗口。rpm=1 已满，下一次被 RPM 维度拒——
+	// 注意失败前那次尝试根本没过闸门，所以不再多计。
+	release3, reason3 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, 0, 0, nil)
+	if reason3 != "" {
+		t.Fatalf("admission before seal must pass, got %q", reason3)
 	}
-	if ChannelGateHasRoom(channelID, 1, 1) {
+	release3.Seal()
+	release3.Release()
+	if _, reason4 := AdmitChannelGate(context.Background(), channelID, 1, 1, 0, 0, 0, nil); reason4 != ChannelGateReasonRPM {
+		t.Fatalf("after one sealed attempt the rpm dimension is full, want channel_rpm_limit, got %q", reason4)
+	}
+	if ChannelGateHasRoom(channelID, 1, 1, 0) {
 		t.Fatalf("rpm is full (1/1), HasRoom must be false")
 	}
-	if !ChannelGateHasRoom(channelID, 1, 0) {
+	if !ChannelGateHasRoom(channelID, 1, 0, 0) {
 		t.Fatalf("after release the concurrency slot must be free again")
 	}
 }
@@ -310,16 +244,16 @@ func TestChannelGateWaitAnyOpenBudgetExhausts(t *testing.T) {
 		ch2 = 7707
 	)
 	// 两个候选都占满（并发=1）。
-	release1, reason1 := AdmitChannelGate(context.Background(), ch1, 1, 0, 0, nil)
+	release1, reason1 := AdmitChannelGate(context.Background(), ch1, 1, 0, 0, 0, 0, nil)
 	if reason1 != "" {
 		t.Fatalf("occupy ch1: %q", reason1)
 	}
-	defer release1()
-	release2, reason2 := AdmitChannelGate(context.Background(), ch2, 1, 0, 0, nil)
+	defer release1.Release()
+	release2, reason2 := AdmitChannelGate(context.Background(), ch2, 1, 0, 0, 0, 0, nil)
 	if reason2 != "" {
 		t.Fatalf("occupy ch2: %q", reason2)
 	}
-	defer release2()
+	defer release2.Release()
 
 	candidates := []GateCandidate{
 		{ChannelID: ch1, MaxConcurrent: 1, QueueSize: 1, QueueTimeoutMs: 150},
@@ -351,11 +285,11 @@ func TestChannelGateWaitAnyOpenReturnsOnFirstRoom(t *testing.T) {
 		chBusy = 7708
 		chFree = 7709
 	)
-	releaseBusy, reason := AdmitChannelGate(context.Background(), chBusy, 1, 0, 0, nil)
+	releaseBusy, reason := AdmitChannelGate(context.Background(), chBusy, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy busy channel: %q", reason)
 	}
-	defer releaseBusy()
+	defer releaseBusy.Release()
 
 	candidates := []GateCandidate{
 		{ChannelID: chBusy, MaxConcurrent: 1, QueueSize: 1},
@@ -376,11 +310,11 @@ func TestChannelGateWaitAnyOpenReturnsOnFirstRoom(t *testing.T) {
 		t.Fatalf("free channel waiters after success = %d, want 0", got)
 	}
 	// 只读探测不停留：空闲渠道仍可被真实 admit。
-	releaseFree, reasonFree := AdmitChannelGate(context.Background(), chFree, 1, 0, 0, nil)
+	releaseFree, reasonFree := AdmitChannelGate(context.Background(), chFree, 1, 0, 0, 0, 0, nil)
 	if reasonFree != "" {
 		t.Fatalf("real admit on the free channel must succeed, got %q", reasonFree)
 	}
-	releaseFree()
+	releaseFree.Release()
 }
 
 // TestChannelGateWaitAnyOpenStopsOnClientGone：clientGone（含 ctx 取消）必须立刻停——
@@ -390,8 +324,8 @@ func TestChannelGateWaitAnyOpenStopsOnClientGone(t *testing.T) {
 	defer ResetChannelGates()
 
 	const ch = 7710
-	release, _ := AdmitChannelGate(context.Background(), ch, 1, 0, 0, nil)
-	defer release()
+	release, _ := AdmitChannelGate(context.Background(), ch, 1, 0, 0, 0, 0, nil)
+	defer release.Release()
 
 	start := time.Now()
 	if ChannelGateWaitAnyOpen(context.Background(), []GateCandidate{{ChannelID: ch, MaxConcurrent: 1, QueueSize: 1, QueueTimeoutMs: 5000}}, 5*time.Second, func() bool { return true }) {
@@ -412,8 +346,8 @@ func TestChannelGateWaitAnyOpenStopsOnContextCancel(t *testing.T) {
 	defer ResetChannelGates()
 
 	const ch = 7711
-	release, _ := AdmitChannelGate(context.Background(), ch, 1, 0, 0, nil)
-	defer release()
+	release, _ := AdmitChannelGate(context.Background(), ch, 1, 0, 0, 0, 0, nil)
+	defer release.Release()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(80*time.Millisecond, cancel)
@@ -437,11 +371,11 @@ func TestChannelGateQueueSizeZeroNeverQueues(t *testing.T) {
 	defer ResetChannelGates()
 
 	const ch = 7712
-	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, nil)
+	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy channel: %q", reason)
 	}
-	defer release()
+	defer release.Release()
 
 	candidates := []GateCandidate{{ChannelID: ch, MaxConcurrent: 1, QueueSize: 0, QueueTimeoutMs: 5000}}
 	if budget := ChannelGateQueueBudget(candidates); budget != 0 {
@@ -466,11 +400,11 @@ func TestChannelGateQueueFullRejectsImmediately(t *testing.T) {
 	defer ResetChannelGates()
 
 	const ch = 7713
-	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, nil)
+	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy channel: %q", reason)
 	}
-	defer release()
+	defer release.Release()
 
 	candidates := []GateCandidate{{ChannelID: ch, MaxConcurrent: 1, QueueSize: 1, QueueTimeoutMs: 1200}}
 	firstDone := make(chan bool, 1)
@@ -509,11 +443,11 @@ func TestChannelGateQueueDuplicateCandidatesTakeOneSlot(t *testing.T) {
 	defer ResetChannelGates()
 
 	const ch = 7714
-	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, nil)
+	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy channel: %q", reason)
 	}
-	defer release()
+	defer release.Release()
 
 	duplicated := []GateCandidate{
 		{ChannelID: ch, MaxConcurrent: 1, QueueSize: 1, QueueTimeoutMs: 600},
@@ -543,12 +477,12 @@ func TestChannelGateQueueWakesWhenSlotOpens(t *testing.T) {
 	defer ResetChannelGates()
 
 	const ch = 7715
-	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, nil)
+	release, reason := AdmitChannelGate(context.Background(), ch, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy channel: %q", reason)
 	}
-	defer release()
-	time.AfterFunc(150*time.Millisecond, release)
+	defer release.Release()
+	time.AfterFunc(150*time.Millisecond, release.Release)
 
 	candidates := []GateCandidate{{ChannelID: ch, MaxConcurrent: 1, QueueSize: 1, QueueTimeoutMs: 2000}}
 	start := time.Now()
@@ -573,16 +507,16 @@ func TestChannelGateQueueHonoursPerCandidateTimeout(t *testing.T) {
 		shortCh = 7716
 		longCh  = 7717
 	)
-	releaseShort, reason := AdmitChannelGate(context.Background(), shortCh, 1, 0, 0, nil)
+	releaseShort, reason := AdmitChannelGate(context.Background(), shortCh, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy short channel: %q", reason)
 	}
-	defer releaseShort()
-	releaseLong, reason := AdmitChannelGate(context.Background(), longCh, 1, 0, 0, nil)
+	defer releaseShort.Release()
+	releaseLong, reason := AdmitChannelGate(context.Background(), longCh, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy long channel: %q", reason)
 	}
-	defer releaseLong()
+	defer releaseLong.Release()
 
 	candidates := []GateCandidate{
 		{ChannelID: shortCh, MaxConcurrent: 1, QueueSize: 1, QueueTimeoutMs: 120},
@@ -635,16 +569,16 @@ func TestChannelGateQueueMixedCandidatesOnlyQueueTheConfiguredOne(t *testing.T) 
 		noQueueCh = 7718
 		queueCh   = 7719
 	)
-	releaseNoQueue, reason := AdmitChannelGate(context.Background(), noQueueCh, 1, 0, 0, nil)
+	releaseNoQueue, reason := AdmitChannelGate(context.Background(), noQueueCh, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy channel without queue: %q", reason)
 	}
-	defer releaseNoQueue()
-	releaseQueue, reason := AdmitChannelGate(context.Background(), queueCh, 1, 0, 0, nil)
+	defer releaseNoQueue.Release()
+	releaseQueue, reason := AdmitChannelGate(context.Background(), queueCh, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy channel with queue: %q", reason)
 	}
-	defer releaseQueue()
+	defer releaseQueue.Release()
 
 	candidates := []GateCandidate{
 		{ChannelID: noQueueCh, MaxConcurrent: 1, QueueSize: 0, QueueTimeoutMs: 9000},

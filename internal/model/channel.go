@@ -40,7 +40,8 @@ type Channel struct {
 	Enabled           bool                  `json:"enabled" gorm:"default:true"`
 	Priority          int                   `json:"priority" gorm:"default:0"`
 	MaxConcurrent     int                   `json:"max_concurrent" gorm:"default:0"`      // 单渠道并发上限(在途+预约请求数), 0=不限. 达到上限后该渠道在选路中降档(让请求铺到其它渠道), 但不硬拉黑(无更优时仍可用)
-	RPMLimit          int                   `json:"rpm_limit" gorm:"default:0"`           // 单渠道每分钟请求上限(近60s在途/已发起的上游尝试数), 0=不限. 达到上限后该渠道在选路中降档(同 MaxConcurrent 的软降档语义, 让突发铺到其它渠道), 不硬拉黑
+	RPMLimit          int                   `json:"rpm_limit" gorm:"default:0"`           // 每分钟发往上游的尝试数上限(含失败、救援、竞速、探测, 滑动60秒, 发送前原子预占), 0=不限.  feat/rpm-tpm 起是硬闸门: 占不到名额就跳下一渠道, 全满排队后 429
+	TPMLimit          int                   `json:"tpm_limit" gorm:"default:0"`           // 每分钟发往上游的 token 上限(滑动60秒, 估算输入+观测输出混合口径, 第一档), 0=不限. 与 RPM 同一闸门/同一拦截语义
 	QueueSize         int                   `json:"queue_size" gorm:"default:0"`          // 硬限流闸门占不到位时最多让几个请求排队(按渠道整体算, 跨key/模型), 0=不排队. 照 axonhub ChannelRateLimit.QueueSize 搬过来
 	QueueTimeoutMs    int                   `json:"queue_timeout_ms" gorm:"default:0"`    // 排队最多等多少毫秒, 0=默认3000. 只在 QueueSize>0 时生效, 而 QueueSize>0 要求 MaxConcurrent>0
 	KeySelectStrategy KeySelectStrategy     `json:"key_select_strategy" gorm:"default:0"` // key 选取策略: 0=成本均衡(默认,按TotalCost升序) 1=同key优先(粘住最小ID的健康key,只在它冷却时让位、恢复即切回,最大化按key的prompt缓存命中)
@@ -283,6 +284,7 @@ type ChannelUpdateRequest struct {
 	Priority              *int                   `json:"priority,omitempty"`
 	MaxConcurrent         *int                   `json:"max_concurrent,omitempty"`
 	RPMLimit              *int                   `json:"rpm_limit,omitempty"`
+	TPMLimit              *int                   `json:"tpm_limit,omitempty"`
 	QueueSize             *int                   `json:"queue_size,omitempty"`
 	QueueTimeoutMs        *int                   `json:"queue_timeout_ms,omitempty"`
 	KeySelectStrategy     *KeySelectStrategy     `json:"key_select_strategy,omitempty"`

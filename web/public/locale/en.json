@@ -1575,11 +1575,11 @@
       "priorityHint": "Lower number = used first; channels with the same priority take turns.",
       "gateTitle": "Rate Limit",
       "gateMaxConcurrent": "Max concurrent requests",
-      "gateRpm": "Max successful requests per minute (whole minutes)",
+      "gateRpm": "RPM (upstream attempts per minute, incl. failures & rescues)",
       "gateZeroUnlimited": "0 = unlimited",
       "gateCurrentRpm": "{n} successes this minute",
       "gateCurrentRpmOfLimit": "{n} / {limit} successes this minute",
-      "gateCurrentRpmTip": "Successes counted per whole minute: failed, timed-out and rejected requests do not spend the quota, and the counter restarts at 0 each new minute.",
+      "gateCurrentRpmTip": "Upstream attempts in the sliding 60s window (incl. failures)",
       "gateWhenFull": "When everything is full",
       "gateFullReject": "Reject now (429)",
       "gateFullQueue": "Queue and wait",
@@ -1754,7 +1754,8 @@
         "summaryOn": "{count} on",
         "summaryNone": "Not set",
         "summaryHeaders": "{count} headers"
-      }
+      },
+      "gateTpm": "TPM (tokens per minute, est. input + observed output)"
     },
     "list": {
       "endpointFilter": "Protocol",

@@ -583,11 +583,11 @@ func TestImageTaskPollBusyGateDefersToBackOfQueue(t *testing.T) {
 	chB := mkChannel("image-task-poll-free-channel", freeStub.server(t).URL, 0)
 
 	// 占住 A 的唯一并发位：之后这一轮里 A 的闸门必然满。
-	hold, reason := balancer.AdmitChannelGate(ctx, chA.ID, chA.MaxConcurrent, chA.RPMLimit, 0, nil)
+	hold, reason := balancer.AdmitChannelGate(ctx, chA.ID, chA.MaxConcurrent, chA.RPMLimit, 0, 0, 0, nil)
 	if reason != "" || hold == nil {
 		t.Fatalf("pre-acquire gate on the busy channel failed: reason=%q", reason)
 	}
-	t.Cleanup(hold)
+	t.Cleanup(hold.Release)
 
 	user := createImageTaskPollTestUser(t, ctx, 10)
 	// 队头 20 条全在满渠道 A 上（id 先进先出，批上限恰好 20）。

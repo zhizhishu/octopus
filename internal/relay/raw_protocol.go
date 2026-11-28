@@ -49,6 +49,8 @@ type RawProtocolOptions struct {
 	// 正文，对这类上游就是往请求里凭空塞一个它不认识的字段。客户端自己带了 model
 	// 时仍照旧改写（model_mapping 照常生效）。零值 = 改动前行为，存量端点字节不变。
 	OmitAbsentModel bool
+	// RejectStream：客户端 stream=true 时直接 400（OpenAI Decisions API 不支持流式）。
+	RejectStream bool
 	// PerCallBilling：成功但响应里没有任何 token 用量时，按模型价格行的 per_call
 	// 计一次费（与 /v1/videos、异步图片同一口径）。零值 = 改动前行为。
 	PerCallBilling bool
@@ -113,6 +115,11 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 		jsonPayload = payload
 		requestModel = m
 		stream = s
+	}
+
+	if stream && options.RejectStream {
+		resp.Error(c, http.StatusBadRequest, "streaming is not supported on this endpoint")
+		return
 	}
 
 	supportedModels := strings.TrimSpace(c.GetString("supported_models"))
@@ -249,10 +256,10 @@ runIterator:
 			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
 			// 只记一条 skipped 审计。闸门只按渠道计数，同渠道剩下的 key 命中的是同一道闸，直接换渠道。
 			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
-			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
-					releaseGate()
+					releaseGate.Release()
 				}
 				iter.Skip(channel.ID, 0, channel.Name, gateReason)
 				gateSkippedCount++
@@ -279,7 +286,8 @@ runIterator:
 				defer finishRuntimeAttempt()
 				// 闸门位与在途位分开释放（两者都幂等）：成功/失败/panic 都会经这里。
 				if releaseGate != nil {
-					defer releaseGate()
+					defer releaseGate.Release()
+					releaseGate.Seal() // 这些协议的准入与发送之间无实质失败分支：就地封口，成败/超时都计数（feat/rpm-tpm）
 				}
 				return rawProtocolAttempt(ctx, options, c, bc, isMultipart, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, group.FirstTokenTimeOut, metrics, item.ModelName, clientSessionKey, forwardCompactCursor)
 			}()
@@ -288,6 +296,13 @@ runIterator:
 			if fwdErr == nil {
 				metrics.ActualModel = item.ModelName
 				if usage != nil && !options.NonBilling {
+					if isDecisionsRawProtocol(options) {
+						// OpenAI Decisions API（gpt-6-luna）：输出免费，只按输入计费
+						// （官方价目 output $0）。价格本身不写死、仍走模型价目表——
+						// 这里只是把输出 token 清零，等效于输出单价为零时的结果。
+						usage.OutputTokens = 0
+						usage.CompletionTokens = 0
+					}
 					metrics.SetUsage(item.ModelName, *usage)
 				}
 				if options.PerCallBilling && !options.NonBilling && !rawProtocolUsagePositive(usage) {
@@ -302,8 +317,6 @@ runIterator:
 					recordResponsesSessionOwned(ctx, upstreamResponseID, channel.ID, usedKey.ID, apiKeyID, userID, rootHash, responseSessionSourceResponses)
 				}
 
-				// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
-				balancer.RecordChannelRPMSuccess(channel.ID)
 				costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, costDelta)
 
@@ -841,6 +854,12 @@ func rawProtocolTargetURL(channel *model.Channel, options RawProtocolOptions) (s
 		return "", errCustomChannelNoFullURL
 	}
 	return xurl.JoinOpenAIPath(baseURL, endpoint)
+}
+
+func isDecisionsRawProtocol(options RawProtocolOptions) bool {
+	name := strings.Trim(strings.ToLower(options.Name), "/")
+	endpoint := strings.Trim(strings.ToLower(options.Endpoint), "/")
+	return name == "decisions" || endpoint == "decisions"
 }
 
 func isSystemoneRawProtocol(options RawProtocolOptions) bool {

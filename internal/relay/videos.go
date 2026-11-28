@@ -248,10 +248,10 @@ runIterator:
 			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
 			// 只记一条 skipped 审计。视频创建是花钱的副作用操作，绕过上限的代价尤其高。
 			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
-			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
-					releaseGate()
+					releaseGate.Release()
 				}
 				iter.Skip(channel.ID, 0, channel.Name, gateReason)
 				gateSkippedCount++
@@ -274,7 +274,8 @@ runIterator:
 				defer finish()
 				// 闸门位与在途位分开释放（两者都幂等）：成功/失败/panic 都会经这里。
 				if releaseGate != nil {
-					defer releaseGate()
+					defer releaseGate.Release()
+					releaseGate.Seal() // 这些协议的准入与发送之间无实质失败分支：就地封口，成败/超时都计数（feat/rpm-tpm）
 				}
 				return videoForward(ctx, c, http.MethodPost, videoUpstreamPathForChannel(channel, mediaKind, "", false), payload, item.ModelName, channel, usedKey.ChannelKey, metrics.bodyLog())
 			}()
@@ -292,10 +293,8 @@ runIterator:
 				// op.UserRecordUsage 第一行 `if cost <= 0 return nil` 直接返回 ——
 				// 余额、月卡、单 key 的 MaxCost 三个口子全都不动，持任意 key 可无限刷。
 				applyVideoCallCost(metrics, item.ModelName)
-				// 渠道 RPM 与串行路径同一计数点（整分钟桶、只数成功，见
 				// balancer/channel_gate.go）：视频创建是真实上游成功请求，必须占名额，
 				// 否则上游真实看到的 RPM 会比计数高（fix-1128 件2）。
-				balancer.RecordChannelRPMSuccess(channel.ID)
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, 0)
 				span.End(model.AttemptSuccess, statusCode, "")
 				balancer.RecordRuntimeSuccess(channel.ID, usedKey.ID, item.ModelName, balancer.AttemptRuntimeMetrics{

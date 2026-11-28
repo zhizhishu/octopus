@@ -245,10 +245,10 @@ runIterator:
 			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
 			// 只记一条 skipped 审计。闸门只按渠道计数，所以同渠道剩下的 key 命中的是同一道闸，直接换渠道。
 			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
-			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
-					releaseGate()
+					releaseGate.Release()
 				}
 				iter.Skip(channel.ID, 0, channel.Name, gateReason)
 				gateSkippedCount++
@@ -280,7 +280,8 @@ runIterator:
 				defer finishRuntimeAttempt()
 				// 闸门位与在途位分开释放（两者都幂等）：成功/失败/panic 都会经这里。
 				if releaseGate != nil {
-					defer releaseGate()
+					defer releaseGate.Release()
+					releaseGate.Seal() // 这些协议的准入与发送之间无实质失败分支：就地封口，成败/超时都计数（feat/rpm-tpm）
 				}
 				if channel.Type == outbound.OutboundTypeGemini {
 					statusCode, written, usage, upstreamCT, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, bc, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, item.ModelName)
@@ -311,8 +312,6 @@ runIterator:
 				})
 				metrics.ResponseContent = buildImagesResponseContentForLog(stream, upstreamCT, usage)
 
-				// 渠道 RPM 口径与 chat 一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
-				balancer.RecordChannelRPMSuccess(channel.ID)
 				costDelta := metrics.Stats.InputCost + metrics.Stats.OutputCost
 				op.ChannelKeyRecordUse(usedKey, statusCode, usedAt, costDelta)
 

@@ -139,6 +139,7 @@ export interface ChannelFormData {
     priority: number;
     max_concurrent: number;
     rpm_limit: number;
+    tpm_limit: number;
     queue_size: number;
     queue_timeout_ms: number;
     race_mode: boolean;
@@ -497,6 +498,7 @@ export function ChannelForm({
         priority: formData.priority,
         max_concurrent: formData.max_concurrent,
         rpm_limit: formData.rpm_limit,
+        tpm_limit: formData.tpm_limit,
         base_urls: formData.base_urls.map((item) => ({
             ...item,
             url: normalizeBaseUrlForChannelType(formData.type, item.url),
@@ -999,6 +1001,25 @@ export function ChannelForm({
                                 : t('gateCurrentRpm', { n: channelCurrentRpm })}
                         </p>
                     )}
+                </div>
+                <div className="space-y-2">
+                    <label htmlFor={`${idPrefix}-tpm-limit`} className="text-sm font-medium text-card-foreground">
+                        {t('gateTpm')}
+                    </label>
+                    <Input
+                        className='rounded-xl'
+                        id={`${idPrefix}-tpm-limit`}
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={String(formData.tpm_limit ?? 0)}
+                        onChange={(event) => {
+                            const n = Number.parseInt(event.target.value, 10);
+                            onFormDataChange({ ...formData, tpm_limit: Number.isFinite(n) && n > 0 ? n : 0 });
+                        }}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('gateZeroUnlimited')}</p>
                 </div>
             </div>
             <div className="space-y-2">

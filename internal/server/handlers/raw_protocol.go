@@ -69,6 +69,12 @@ func init() {
 		AddRoute(
 			router.NewRoute("/systemone", http.MethodPost).
 				Handle(systemone),
+		).
+		AddRoute(
+			// OpenAI Decisions API（gpt-6-luna）。与 systemone 同一类raw透传：
+			// 请求体 {input, questions, model} 原样进上游，不支持流式。
+			router.NewRoute("/decisions", http.MethodPost).
+				Handle(decisions),
 		)
 
 	router.NewGroupRouter("").
@@ -195,5 +201,18 @@ func systemone(c *gin.Context) {
 	relay.RawProtocolHandler(relay.RawProtocolOptions{
 		Endpoint: "/systemone",
 		Name:     "systemone",
+	}, c)
+}
+
+// decisions 透传 OpenAI Decisions API（{input, questions, model} -> {answers}）。
+//
+// 与 systemone 同族raw透传，两处不同：1) 官方不支持流式，stream=true 直接 400
+// （RejectStream）；2) gpt-6-luna 在 decisions 端点输出免费，计费时输出 token 清零
+// （relay 侧 decisionsOutputFree）。挂 1 号 OpenAI 类型渠道，上游拼 /v1/decisions。
+func decisions(c *gin.Context) {
+	relay.RawProtocolHandler(relay.RawProtocolOptions{
+		Endpoint:     "/decisions",
+		Name:         "decisions",
+		RejectStream: true,
 	}, c)
 }

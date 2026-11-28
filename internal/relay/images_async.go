@@ -670,10 +670,10 @@ func ImageTaskRunUpstream(
 	// 真正发往上游之前先过渠道闸门（并发位 + RPM 名额，balancer/channel_gate.go），
 	// 口径与同步图片/聊天路径一致。后台执行器没有别的渠道可换：占不到就把这次
 	// 执行按失败收，下一轮轮询重新走完整挑选+闸门。
-	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
 	if gateReason != "" {
 		if releaseGate != nil {
-			releaseGate()
+			releaseGate.Release()
 		}
 		// 闸门满不是上游失败：返回哨兵错误，轮询方据此把任务留在队列里
 		// 下一轮重试（image_task_poll.go），不判终态、不退款。
@@ -681,10 +681,14 @@ func ImageTaskRunUpstream(
 	}
 	defer func() {
 		if releaseGate != nil {
-			releaseGate()
+			releaseGate.Release()
 		}
 	}()
 	debugCall := taskLog.debugBegin(channel)
+	// 字节出门口：封口后名额不退（feat/rpm-tpm）。
+	if releaseGate != nil {
+		releaseGate.Seal()
+	}
 	respUp, derr := httpClient.Do(req)
 	debugCall.end(req, respUp, derr)
 	if derr != nil {
@@ -711,8 +715,6 @@ func ImageTaskRunUpstream(
 	if readErr != nil {
 		return respUp.StatusCode, respBody, "", fmt.Errorf("failed to read upstream image response: %w", readErr)
 	}
-	// 只有 2xx 才计 RPM 成功（整分钟桶，口径与 chat 一致）：非 2xx 在上面已经
 	// 按失败返回，不算成功流量。
-	balancer.RecordChannelRPMSuccess(channel.ID)
 	return respUp.StatusCode, respBody, "", nil
 }
