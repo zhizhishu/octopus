@@ -82,13 +82,27 @@ var credentialQueryParams = map[string]struct{}{
 	"x-goog-signature":     {},
 }
 
-var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(authorization\s*[:=]\s*bearer\s+)([^\s"',;{}\[\]]+)`),
-	regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9._~+\-/=]{8,})`),
-	regexp.MustCompile(`(?i)(x-api-key\s*[:=]\s*)([^\s"',;{}\[\]]+)`),
+var (
+	authorizationBearerPattern = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*bearer\s+)([^\s"',;{}\[\]]+)`)
+	bearerValuePattern         = regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9._~+\-/=]{8,})`)
+	xAPIKeyPattern             = regexp.MustCompile(`(?i)(x-api-key\s*[:=]\s*)([^\s"',;{}\[\]]+)`)
 	// & 排除在密钥字符集外：查询串里 apikey=SECRET&foo=1 的 & 不是密钥的一部分，
 	// 不排除会把相邻参数一起吞掉（fix-ui1127b-r2，errSafeMessage 统一打码后暴露）。
-	regexp.MustCompile(`(?i)((?:api[_-]?key|apikey|token|secret)\s*[:=]\s*)([^\s"',;{}\[\]&]+)`),
+	// pack-1128 E：password/passwd/pwd 归入同一类凭据 key=value。
+	credentialKeyValuePattern = regexp.MustCompile(`(?i)((?:password|passwd|pwd|api[_-]?key|apikey|token|secret)\s*[:=]\s*)([^\s"',;{}\[\]&]+)`)
+)
+
+// jsonCredentialKeyPattern 匹配 JSON 文本里密码类键的字符串值：键必须以
+// password/passwd/pwd/secret/token/api_key/apikey 结尾（独立词或 _/- 复合词），
+// 只打引号字符串值。max_tokens/tokens/token_type/input_tokens 这类计数与类型键
+// 结尾不是这些词，天然不中（pack-1128 E）。
+var jsonCredentialKeyPattern = regexp.MustCompile(`(?i)("(?:[A-Za-z0-9_.\-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|apikey))"\s*:\s*")((?:\\.|[^"\\])*)")`)
+
+var secretPatterns = []*regexp.Regexp{
+	authorizationBearerPattern,
+	bearerValuePattern,
+	xAPIKeyPattern,
+	credentialKeyValuePattern,
 	regexp.MustCompile(`\bsk-[A-Za-z0-9._-]{3,}\b`),
 	// Google API key 固定 39 位：AIza 前缀 + 35 位 URL-safe 字符。裸文本形态也要打，
 	// 不能只靠 URL query 规则（fix-ui1127m）。
@@ -116,6 +130,24 @@ func Secrets(value string) string {
 			value = pattern.ReplaceAllString(value, `[redacted]`)
 		}
 	}
+	value = jsonCredentialKeyPattern.ReplaceAllString(value, `${1}[redacted]"`)
+	return value
+}
+
+// PasswordSecrets 只打密码类文本（pack-1128 E）：URL 凭据参数、密码类 key=value、
+// JSON 密码类键的字符串值、Authorization/Bearer 头。与 Secrets 不同，它不动 sk-/AIza/
+// JWT/hex 这些上游凭据形状——下游请求/响应正文里的同形文本（哈希、base64 片段）不是
+// 凭据，不该误打。落库日志字段专用；复用本包既有规则，不另造轮子。
+func PasswordSecrets(value string) string {
+	if value == "" {
+		return ""
+	}
+	value = URLSecrets(value)
+	value = authorizationBearerPattern.ReplaceAllString(value, `${1}[redacted]`)
+	value = bearerValuePattern.ReplaceAllString(value, `Bearer [redacted]`)
+	value = xAPIKeyPattern.ReplaceAllString(value, `${1}[redacted]`)
+	value = credentialKeyValuePattern.ReplaceAllString(value, `${1}[redacted]`)
+	value = jsonCredentialKeyPattern.ReplaceAllString(value, `${1}[redacted]"`)
 	return value
 }
 

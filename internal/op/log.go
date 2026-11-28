@@ -19,6 +19,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
 	"github.com/zhizhishu/octopus/internal/utils/snowflake"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -465,6 +466,17 @@ func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
 	relayLog.ID = snowflake.GenerateID()
 	if relayLog.Time <= 0 {
 		relayLog.Time = time.Now().Unix()
+	}
+	// 落库密码类打码（pack-1128 E，用户拍板）：请求/响应正文、错误文本、逐次尝试
+	// msg 里的 password 类 JSON 键、key=value 与 Authorization 头在写日志这一刻统一打码。
+	// 只改这条日志副本——发往上游的请求字节在上游 shape 里，不经这一行，不受影响。
+	// 复用 xredact（ui-1127 上游自由文本打码同一套），不另造；用 PasswordSecrets 而非
+	// Secrets：sk-/JWT/hex 等上游凭据形状在下游正文里多为哈希/普通文本，不该误打。
+	relayLog.RequestContent = xredact.PasswordSecrets(relayLog.RequestContent)
+	relayLog.ResponseContent = xredact.PasswordSecrets(relayLog.ResponseContent)
+	relayLog.Error = xredact.PasswordSecrets(relayLog.Error)
+	for i := range relayLog.Attempts {
+		relayLog.Attempts[i].Msg = xredact.PasswordSecrets(relayLog.Attempts[i].Msg)
 	}
 	// 用户页「IP / 客户端」：只读这条日志已有的入站 IP / UA（纯内存，周期落库），
 	// 不看日志保留开关——关了日志也要知道这个人从哪来、用什么客户端。
