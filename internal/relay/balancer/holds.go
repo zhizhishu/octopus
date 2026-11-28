@@ -190,6 +190,13 @@ var circuitRulesSource = func() (string, error) {
 	return op.SettingGetString(model.SettingKeyCircuitBreakerErrorRules)
 }
 
+// CurrentCircuitRules returns the operator-configured error rules used by the
+// unified relay error judge. Keep currentCircuitRules private for the legacy hold
+// path; this wrapper is read-only and shares the same compiled cache.
+func CurrentCircuitRules() []model.CircuitErrorRule {
+	return currentCircuitRules()
+}
+
 func currentCircuitRules() []model.CircuitErrorRule {
 	raw, err := circuitRulesSource()
 	if err != nil {

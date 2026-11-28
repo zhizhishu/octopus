@@ -9,13 +9,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/db"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 func TestHandlerRetriesNextChannelKeyAfter429(t *testing.T) {
@@ -326,6 +326,64 @@ data: {"type":"message_stop"}
 	}
 	if !strings.Contains(body, "message_stop") {
 		t.Fatalf("expected healthy channel message_stop, got %s", body)
+	}
+}
+
+func TestHandlerCyberPolicyStreamErrorHitsUpstreamOnceAndDoesNotCountBreaker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayKeyRetryDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyRelayInterventionEnabled, "true"); err != nil {
+		t.Fatalf("enable intervention: %v", err)
+	}
+
+	var mu sync.Mutex
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"error","error":{"code":"cyber_policy","message":"blocked by upstream safety policy","type":"invalid_request_error"}}` + "\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "cyber-policy-upstream",
+		Type:     outbound.OutboundTypeOpenAIResponse,
+		Enabled:  true,
+		Model:    "gpt-5.5",
+		Priority: 1,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "policy-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.5",
+		"input":"trigger policy",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", 0)
+	c.Set("request_ip", "127.0.0.1")
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Fatalf("cyber_policy must hit upstream exactly once (no retry/rescue), got %d status=%d body=%s", gotHits, rec.Code, rec.Body.String())
+	}
+	runtime := balancer.SnapshotKeyRuntime(channel.ID, channel.Keys[0].ID, "gpt-5.5")
+	if runtime.ConsecutiveFailures != 0 || runtime.RequestFailed != 0 {
+		t.Fatalf("content-policy refusal must not count as channel/key failure, runtime=%+v", runtime)
 	}
 }
 

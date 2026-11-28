@@ -39,3 +39,16 @@ func TestParseCircuitErrorRulesValidatesAndNormalises(t *testing.T) {
 		t.Fatal("setting validation must reject invalid rules")
 	}
 }
+
+func TestParseCircuitErrorRulesAcceptsJudgeActions(t *testing.T) {
+	rules, err := ParseCircuitErrorRules(`[
+		{"name":"dead-key","status_codes":[401],"keywords":["user account is not active"],"retry":"next_key","effect":"disable_key"},
+		{"name":"policy","keywords":["cyber_policy"],"retry":"none","effect":"none"}
+	]`)
+	if err != nil {
+		t.Fatalf("judge action rules rejected: %v", err)
+	}
+	if rules[0].Retry != "next_key" || rules[0].Effect != "disable_key" || rules[1].CooldownSeconds != 0 {
+		t.Fatalf("rules = %+v", rules)
+	}
+}

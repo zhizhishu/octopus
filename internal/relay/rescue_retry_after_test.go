@@ -73,6 +73,42 @@ func TestRescueExhaustionRetryAfter(t *testing.T) {
 	}
 }
 
+func TestCircuitOpenFastFailsWithoutRescueLoop(t *testing.T) {
+	setupRescueDeadlineDB(t)
+	withAutoRescueCap(t, 2200*time.Millisecond)
+	setRetryAfterTestSetting(t, dbmodel.SettingKeyRelayInterventionEnabled, "true")
+	setRetryAfterTestSetting(t, dbmodel.SettingKeyCircuitBreakerThreshold, "1")
+
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstream.Close)
+	channel := newRetryAfterTestChannel(t, upstream.URL, false)
+	balancer.RecordFailureWithStatusScoped(channel.ID, channel.Keys[0].ID, "upstream-model", "chat", "stream", http.StatusInternalServerError)
+	if tripped, _ := balancer.IsTrippedScoped(channel.ID, channel.Keys[0].ID, "upstream-model", "chat", "stream"); !tripped {
+		t.Fatal("test setup did not trip the exact relay breaker scope")
+	}
+
+	rec, c := newChatGin()
+	started := time.Now()
+	Handler(inbound.InboundTypeOpenAIChat, c)
+	elapsed := time.Since(started)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("circuit-open route must fast-fail as 503, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Result().Header.Get("Retry-After") == "" {
+		t.Fatalf("circuit-open fast failure must carry Retry-After, body=%s", rec.Body.String())
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("circuit-open route entered a rescue loop instead of fast-failing: %s", elapsed)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("circuit-open route must not hit upstream, got %d", got)
+	}
+}
+
 func TestRelayShapeRejectionLeavesChannelHealthUnchanged(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

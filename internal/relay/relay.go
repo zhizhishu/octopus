@@ -25,6 +25,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/prompt"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	"github.com/zhizhishu/octopus/internal/relay/errorjudge"
 	"github.com/zhizhishu/octopus/internal/relay/intervention"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
@@ -1312,10 +1313,16 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 错误都指向真实原因; 调用端自己的取消照旧保留原有归因。
 	fwdErr = ra.classifyTotalTimeout(fwdErr)
 	recordStatusCode := attemptStatusCode(statusCode, fwdErr)
+	committed := ra.wroteMeaningfulDownstream
+	decision := judgeFailureEvidence(fwdErr, recordStatusCode, ra.upstreamResponded, committed)
 	op.ChannelKeyRecordUse(ra.usedKey, recordStatusCode, usedAt, 0)
+	applyErrorDecisionEffects(decision, ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), ra.usedKey)
 	span.End(dbmodel.AttemptFailed, recordStatusCode, attemptAuditMessage(ra.upstreamResponded, recordStatusCode, fwdErr))
 
-	breakerCounted := shouldRecordBreakerFailure(recordStatusCode, fwdErr)
+	// Built-in channel-health counting keeps the existing status whitelist. Operator
+	// rules may explicitly upgrade a normally non-channel failure (for example a
+	// provider-specific 400) to record_failure; the unified judge owns that override.
+	breakerCounted := decision.CountFailure && (shouldRecordBreakerFailure(recordStatusCode, fwdErr) || strings.HasPrefix(decision.RuleID, "custom."))
 	// A DisableCircuitBreaker channel never accumulates circuit/runtime failure state: a
 	// burst of upstream errors must neither trip its breaker nor soft-cool its keys
 	// (either would short-circuit later requests and defeat "forward every request like a
@@ -1339,7 +1346,6 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// Do not let downstream disconnects or caller-side timeouts poison channel health.
 	if recordChannelHealth {
 		balancer.RecordFailureWithStatusScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, ra.metrics.RequestEndpoint, ra.routingCapabilityKey(), recordStatusCode)
-		applyCircuitErrorRulesScoped(ra.channel.ID, ra.usedKey.ID, runtimeModel, recordStatusCode, fwdErr, ra.metrics.RequestEndpoint, ra.routingCapabilityKey())
 		if ra.iter != nil && ra.iter.IsStickyChannel(ra.channel.ID) {
 			balancer.ClearStickyWithSessionKey(ra.apiKeyID, ra.requestModel, ra.clientSessionKey)
 			log.Infof("cleared sticky route for api key %d model %s after channel %s failure", ra.apiKeyID, ra.requestModel, ra.channel.Name)
@@ -1356,7 +1362,6 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// message envelope was still buffered — that stream can still fail over cleanly.
 	// Only once meaningful content is flushed do we lose the ability to switch
 	// channels and must instead surface the failure as an in-band error event.
-	committed := ra.wroteMeaningfulDownstream
 	if committed {
 		writeCommittedStreamFailure(ra, fwdErr)
 		ra.collectResponse()
@@ -1371,9 +1376,10 @@ func (ra *relayAttempt) attempt() attemptResult {
 		// rejection is deterministic per ciphertext: a different channel may accept it.
 		// The !committed guard is not negotiable — once real content reached the client a
 		// replay would duplicate output, so the refusal is only remembered, never retried.
-		Retryable:  !committed && (isRetryableUpstreamStreamError(fwdErr) || isRetryableResponsesStreamRejection(fwdErr)),
-		Fatal:      isDeterministicClientRejection(fwdErr),
-		RetryAfter: upstreamRetryAfter(fwdErr),
+		Retryable:      !committed && decision.Retry != errorjudge.RetryNone,
+		RetryDirection: decision.Retry,
+		Fatal:          isDeterministicClientRejection(fwdErr) || decision.Category == errorjudge.CategoryContentPolicy || decision.Category == errorjudge.CategoryClientError,
+		RetryAfter:     upstreamRetryAfter(fwdErr),
 	}
 }
 
