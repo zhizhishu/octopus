@@ -53,5 +53,8 @@ test('CircuitBreaker wires structured editor and policy keyword setting', () => 
     const src = readFileSync(require('node:path').join(__dirname, '../src/components/modules/setting/CircuitBreaker.tsx'), 'utf8');
     assert.match(src, /ErrorRulesEditor value=\{rules\}/);
     assert.match(src, /relay_content_policy_keywords/);
-    assert.doesNotMatch(src, /<textarea[\s\S]*RULES_PLACEHOLDER/);
+    // 精确化（pack-1128 合并）：request-audit 的审查 JSON textarea 与规则编辑器同页共存，
+    // 原来「textarea 之后不得出现 RULES_PLACEHOLDER」的全文件序断言会误伤它。真正的
+    // 不变量没变：规则不再用 textarea 编辑（结构化 ErrorRulesEditor 接管）。
+    assert.doesNotMatch(src, /<textarea[^>]*value=\{rules\}/);
 });

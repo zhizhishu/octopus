@@ -686,7 +686,7 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 			releaseGate.Release()
 		}
 		gateErr := fmt.Errorf("channel gate rejected: %s", gateReason)
-		metrics.Save(ctx, false, gateErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, gateReason))
+		metrics.Save(ctx, false, gateErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, gateReason, 1))
 		writeMidjourneyError(c, http.StatusTooManyRequests, gateReason)
 		return
 	}
@@ -698,7 +698,7 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 		return midjourneyForward(ctx, c, http.MethodPost, upstreamPath, body, channel, channelKey)
 	}()
 	if fwdErr != nil {
-		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, auditErrorMessage(fwdErr)))
+		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, auditErrorMessage(fwdErr), 1))
 		status, _, message := relayErrorResponse(fwdErr)
 		writeMidjourneyError(c, status, message)
 		return
@@ -708,7 +708,7 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 	if !accepted {
 		metricsErr = midjourneyRejectedError(respBody)
 	}
-	metrics.Save(ctx, accepted, metricsErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, accepted, started, ""))
+	metrics.Save(ctx, accepted, metricsErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, accepted, started, "", 1))
 }
 
 // midjourneySubmitRouted：新任务按模型名走正常的分组 / 负载均衡。
@@ -1017,7 +1017,7 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 			releaseGate.Release()
 		}
 		gateErr := fmt.Errorf("channel gate rejected: %s", gateReason)
-		metrics.Save(ctx, false, gateErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, gateReason))
+		metrics.Save(ctx, false, gateErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, gateReason, 1))
 		writeMidjourneyError(c, http.StatusTooManyRequests, gateReason)
 		return
 	}
@@ -1029,7 +1029,7 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 		return midjourneyForward(ctx, c, http.MethodGet, "/mj/task/"+url.PathEscape(taskID)+"/"+suffix, nil, channel, channelKey)
 	}()
 	if fwdErr != nil {
-		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, auditErrorMessage(fwdErr)))
+		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, auditErrorMessage(fwdErr), 1))
 		status, _, message := relayErrorResponse(fwdErr)
 		writeMidjourneyError(c, status, message)
 		return
@@ -1040,7 +1040,7 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 	}
 	bindPassthroughIdentity(c, entry.requestModel, &metrics.passthroughIdentityEvidence)
 	writeVideoResponse(c, statusCode, upstreamCT, body)
-	metrics.Save(ctx, true, nil, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, true, started, ""))
+	metrics.Save(ctx, true, nil, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, true, started, "", 1))
 }
 
 // MidjourneyTaskListByConditionHandler 处理 POST /mj/task/list-by-condition {"ids":[...]}。
@@ -1115,7 +1115,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 		}()
 		if fwdErr != nil {
 			log.Warnf("midjourney list-by-condition on channel %d failed: %v", channel.ID, fwdErr)
-			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, auditErrorMessage(fwdErr, len(attempts)+1))...)
+			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, auditErrorMessage(fwdErr), len(attempts)+1)...)
 			continue
 		}
 		var part []json.RawMessage
@@ -1144,7 +1144,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 			}
 			results = append(results, item)
 		}
-		attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", true, started, "")...)
+		attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", true, started, "", len(attempts)+1)...)
 	}
 	metrics.ResponseContent = fmt.Sprintf("midjourney list-by-condition: %d of %d ids", len(results), len(req.IDs))
 	c.JSON(http.StatusOK, results)
