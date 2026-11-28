@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -29,7 +30,7 @@ func TestNilCallerFailsOpen(t *testing.T) {
 }
 
 func TestHighProbabilityBlocks(t *testing.T) {
-	a := requestaudit.NewAuditor(func(sc requestaudit.SampleContext, qs []requestaudit.Question) (map[string]float64, error) {
+	a := requestaudit.NewAuditor(func(_ context.Context, sc requestaudit.SampleContext, qs []requestaudit.Question) (map[string]float64, error) {
 		if sc.ChannelID != 68 || len(qs) != 1 || qs[0].RuleID != "r1" {
 			t.Fatalf("caller got sc=%+v qs=%+v", sc, qs)
 		}
@@ -45,7 +46,7 @@ func TestHighProbabilityBlocks(t *testing.T) {
 }
 
 func TestCallerErrorFailsOpen(t *testing.T) {
-	a := requestaudit.NewAuditor(func(sc requestaudit.SampleContext, qs []requestaudit.Question) (map[string]float64, error) {
+	a := requestaudit.NewAuditor(func(_ context.Context, sc requestaudit.SampleContext, qs []requestaudit.Question) (map[string]float64, error) {
 		return nil, errors.New("boom")
 	})
 	out := a.Audit(testCfg(), 68, "gpt-6-luna", []byte("other"))
