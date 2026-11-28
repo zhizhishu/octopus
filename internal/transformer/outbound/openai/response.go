@@ -1941,8 +1941,9 @@ func responsesStreamFailureReason(eventData []byte) string {
 		detail = flat
 	}
 	// Preserve every piece of the upstream reason (message plus code/type when
-	// present) so the failure is diagnosable, then redact so a provider error
-	// body can never leak credentials through the returned error text.
+	// present) so the failure is diagnosable. pack-1128 审查 P2：此处不打码——
+	// 这段 reason 会烤进 error 本体经 attempts.Msg/relayLogs.Error 落库，本地/管理端
+	// 按拍板必须原样；回下游客户端的打码由唯一出口 clientSafeUpstreamMessage 统一做。
 	var parts []string
 	if msg := strings.TrimSpace(detail.Message); msg != "" {
 		parts = append(parts, msg)
@@ -1953,7 +1954,7 @@ func responsesStreamFailureReason(eventData []byte) string {
 	if typ := strings.TrimSpace(detail.Type); typ != "" {
 		parts = append(parts, "type: "+typ)
 	}
-	reason := xredact.Secrets(strings.Join(parts, ", ")) // pack-1128：回下游的流错误 reason 打码
+	reason := strings.Join(parts, ", ")
 	if reason == "" {
 		return generic
 	}
