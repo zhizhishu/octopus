@@ -27,6 +27,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/errorjudge"
 	"github.com/zhizhishu/octopus/internal/relay/intervention"
+	"github.com/zhizhishu/octopus/internal/relay/retryafter"
 	"github.com/zhizhishu/octopus/internal/server/resp"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
@@ -1742,8 +1743,8 @@ retryWithAdapter:
 		}
 		ra.debugErrorBody(body)
 		upErr := newUpstreamError(response.StatusCode, body)
-		if d, ok := retryAfterFromHeader(response.Header); ok {
-			upErr.retryAfter = d
+		if parsed := retryafter.Parse(retryafter.Input{StatusCode: response.StatusCode, Header: response.Header, Body: body, ChannelType: int(ra.channel.Type)}); parsed.Wait > 0 {
+			upErr.retryAfter = parsed.Wait
 			upErr.hasRetryAfter = true
 		}
 		log.Warnf("upstream returned non-2xx: status=%d, code=%s, strategy=%s", upErr.StatusCode(), upErr.ErrorCode(), upErr.Strategy())
