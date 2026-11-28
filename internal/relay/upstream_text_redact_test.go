@@ -1,7 +1,8 @@
 package relay
 
-// fix-ui1127b-r2 N1/N2/N3：上游生成的自由文本落库/回下游前统一过
-// xredact.URLSecrets+xredact.Secrets——只护我们自己的上游密钥，下游客户端正文不受影响。
+// pack-1128（用户 2026-11-28 拍板）：oct 本地日志/审计/管理端原样保留上游文本，
+// 不再打码。本文件断言 errSafeMessage / redactUpstreamFreeText 原样透传。
+// 原 fix-ui1127b-r2 的打码断言随打码行为一并拆除。
 
 import (
 	"errors"
@@ -9,34 +10,29 @@ import (
 	"testing"
 )
 
-func TestErrSafeMessageRedactsKeyShapedStrings(t *testing.T) {
-	// 非 upstreamError 分支：错误文本里的密钥形状串必须被打掉（N3）。
-	keyLike := "sk-live1234567890abcdef1234567890abcdef1234567890abcdef"
-	msg := errSafeMessage(errors.New("upstream replied with key " + keyLike + " in body"))
-	if strings.Contains(msg, keyLike) {
-		t.Fatalf("key-shaped string survived errSafeMessage: %q", msg)
+func TestErrSafeMessagePreservesOriginalText(t *testing.T) {
+	keyLike := "sk-FAKEFAKEFAKEFAKE0000-test-only"
+	raw := "upstream replied with key " + keyLike + " in body"
+	if got := errSafeMessage(errors.New(raw)); got != raw {
+		t.Fatalf("errSafeMessage altered text: %q", got)
 	}
-	// URL 里的 key 参数同样（原有 URLSecrets 行为保持）。
-	urlMsg := errSafeMessage(errors.New("dial https://api.example.com/v1/x?key=abc123SECRETxyz fail"))
-	if strings.Contains(urlMsg, "abc123SECRETxyz") {
-		t.Fatalf("url key survived errSafeMessage: %q", urlMsg)
+	rawURL := "dial https://api.example.com/v1/x?key=abc123SECRETxyz fail"
+	if got := errSafeMessage(errors.New(rawURL)); got != rawURL {
+		t.Fatalf("errSafeMessage altered url text: %q", got)
 	}
 }
 
-func TestMidjourneyDescriptionRedactedInLog(t *testing.T) {
-	// N1：上游 description 里的密钥形状串/URL key 进不了 response_content。
-	keyLike := "sk-live1234567890abcdef1234567890abcdef1234567890abcdef"
-	redacted := redactUpstreamFreeText("bad key " + keyLike + " see https://h/?key=abc123SECRETxyz")
-	if strings.Contains(redacted, keyLike) || strings.Contains(redacted, "abc123SECRETxyz") {
-		t.Fatalf("upstream free text not redacted: %q", redacted)
+func TestUpstreamFreeTextPreservedForLog(t *testing.T) {
+	raw := "bad key sk-FAKEFAKEFAKEFAKE0000 see https://h/?key=abc123SECRETxyz"
+	if got := redactUpstreamFreeText(raw); got != raw {
+		t.Fatalf("upstream free text altered: %q", got)
 	}
 }
 
-func TestGrokCloseReasonRedacted(t *testing.T) {
-	// N2：grok 关闭帧文本同样打码——直接测生产用的同一组合。
-	keyLike := "sk-live1234567890abcdef1234567890abcdef1234567890abcdef"
-	out := truncateString(redactUpstreamFreeText("closed: "+keyLike), 256)
-	if strings.Contains(out, keyLike) {
-		t.Fatalf("close reason not redacted: %q", out)
+func TestGrokCloseReasonPreserved(t *testing.T) {
+	raw := "closed: sk-FAKEFAKEFAKEFAKE0000-test-only"
+	out := truncateString(redactUpstreamFreeText(raw), 256)
+	if !strings.Contains(out, raw) {
+		t.Fatalf("close reason altered: %q", out)
 	}
 }
