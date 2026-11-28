@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/db"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/requestaudit"
 	"github.com/zhizhishu/octopus/internal/utils/log"
@@ -86,7 +88,12 @@ func maybeAuditRequest(c *gin.Context, apiKeyID int, body []byte) bool {
 			cfg.Rules[i].Threshold = threshold
 		}
 	}
+	auditStart := time.Now()
 	outcome := requestAuditor.Audit(c.Request.Context(), cfg, cfg.ChannelID, "gpt-6-luna", body)
+	// next-1129 第 8 件：每笔审查记账一条（字段照 gpt-load jev/observation.go:5-24 适配）。
+	// 费用平台自担——本链路无任何下游扣费调用；成本按 tokens 记账，花费在查询侧按
+	// 审计模型价格换算。落库失败不阻塞请求路径（审查本身已出结论）。
+	recordAuditRecord(apiKeyID, cfg.ChannelID, body, outcome, time.Since(auditStart))
 	if !outcome.Audited {
 		// fail-open：放行但记「未审查」，原因带在日志里（不记原文、不记 key）。
 		log.Warnf("request audit unaudited (fail-open): key_id=%d reason=%s", apiKeyID, outcome.Reason)
@@ -104,6 +111,52 @@ func maybeAuditRequest(c *gin.Context, apiKeyID int, body []byte) bool {
 		return true
 	}
 	return false
+}
+
+// recordAuditRecord 把一笔审查写进 request_audit_records。同步插入（单行、本地库），
+// 相比刚做完的上游 decisions 调用开销可忽略；失败只记日志不影响放行/拦截结论。
+func recordAuditRecord(apiKeyID, channelID int, body []byte, outcome requestaudit.Outcome, dur time.Duration) {
+	rec := dbmodel.RequestAuditRecord{
+		APIKeyID:    apiKeyID,
+		ChannelID:   channelID,
+		AuditModel:  "gpt-6-luna",
+		DurationMs:  dur.Milliseconds(),
+		Called:      !outcome.CacheHit && outcome.Audited,
+		InputTokens: int64(len(body)) / 4,
+		CostState:   "platform",
+		Reason:      outcome.Reason,
+	}
+	switch {
+	case !outcome.Audited:
+		rec.Verdict = "unaudited"
+	case outcome.Blocked:
+		rec.Verdict = "block"
+	default:
+		rec.Verdict = "pass"
+	}
+	maxScore := 0.0
+	hit := make([]string, 0, len(outcome.Findings))
+	for _, f := range outcome.Findings {
+		if f.Action != "" {
+			hit = append(hit, f.RuleID)
+		}
+		if f.Probability > maxScore {
+			maxScore = f.Probability
+		}
+	}
+	rec.RulesHit = strings.Join(hit, ",")
+	rec.MaxScore = maxScore
+	if outcome.Blocked {
+		// 拦截记录要查原文（风控审查页四块之一）：原样存取样，不打码。
+		sample := body
+		if len(sample) > 24576 {
+			sample = sample[:24576]
+		}
+		rec.SampleText = string(sample)
+	}
+	if err := db.GetDB().Create(&rec).Error; err != nil {
+		log.Warnf("request audit record insert failed: %v", err)
+	}
 }
 
 // resp_ErrorAuditBlocked 用 400 原样形状回客户端（风控命中属客户端内容问题，

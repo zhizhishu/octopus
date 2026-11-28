@@ -148,6 +148,8 @@ func InitDB(dbType, dsn string, debug bool) error {
 		&model.ImageTask{},
 		&model.BatchImageJob{},
 		&model.BatchImageItem{},
+		// 风控审查逐笔记账（next-1129 第 8 件，平台自担费用口径）。
+		&model.RequestAuditRecord{},
 		&migrate.MigrationRecord{},
 	}
 	if err := dropMySQLTextDefaults(db, autoMigrateModels); err != nil {
