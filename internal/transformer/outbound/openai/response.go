@@ -12,7 +12,6 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/zhizhishu/octopus/internal/transformer/model"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
@@ -1953,7 +1952,7 @@ func responsesStreamFailureReason(eventData []byte) string {
 	if typ := strings.TrimSpace(detail.Type); typ != "" {
 		parts = append(parts, "type: "+typ)
 	}
-	reason := xredact.Secrets(strings.Join(parts, ", "))
+	reason := strings.Join(parts, ", ")
 	if reason == "" {
 		return generic
 	}

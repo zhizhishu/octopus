@@ -82,19 +82,16 @@ func TestResponseStreamFailureReasonGenericNoDetail(t *testing.T) {
 	}
 }
 
-// TestResponseStreamFailureReasonRedactsSecret ensures xredact.Secrets strips any
-// credential a provider error body might echo before it reaches error text.
-func TestResponseStreamFailureReasonRedactsSecret(t *testing.T) {
+// TestResponseStreamFailureReasonPreservesSecretText pins pack-1128 (user 11-28):
+// failure reasons are kept verbatim in error text; no credential-shaped text
+// is scrubbed on the oct side.
+func TestResponseStreamFailureReasonPreservesSecretText(t *testing.T) {
 	reason := responsesStreamFailureReason([]byte(`{
 		"type":"error",
-		"error":{"code":"auth","message":"invalid key Bearer sk-abcdef0123456789"}
+		"error":{"code":"auth","message":"invalid key Bearer sk-FAKEFAKEFAKE0000"}
 	}`))
-	if strings.Contains(reason, "sk-abcdef0123456789") ||
-		strings.Contains(reason, "Bearer sk-abcdef0123456789") {
-		t.Fatalf("provider secret must be redacted from the failure reason, got %q", reason)
-	}
-	if !strings.Contains(reason, "[redacted]") {
-		t.Fatalf("expected the redaction marker to remain, got %q", reason)
+	if !strings.Contains(reason, "Bearer sk-FAKEFAKEFAKE0000") {
+		t.Fatalf("failure reason must be preserved verbatim, got %q", reason)
 	}
 }
 
