@@ -23,7 +23,6 @@ import (
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // debugRecorder 在一次请求内共享（竞速的每个 racer 拿到的是 metrics 副本，
@@ -199,7 +198,7 @@ func (c *debugCall) end(req *http.Request, resp *http.Response, err error) {
 	if req != nil {
 		method = req.Method
 		if req.URL != nil {
-			url = truncateUTF8(xredact.URLSecrets(req.URL.String()), dbmodel.RelayLogDebugMaxHeaderValue*2)
+			url = truncateUTF8(req.URL.String(), dbmodel.RelayLogDebugMaxHeaderValue*2)
 		}
 		reqHeaders = debugHeaders(req.Header)
 	}
@@ -211,7 +210,7 @@ func (c *debugCall) end(req *http.Request, resp *http.Response, err error) {
 	}
 	var errText string
 	if err != nil {
-		errText = truncateUTF8(xredact.URLSecrets(xredact.Secrets(err.Error())), 1024)
+		errText = truncateUTF8(err.Error(), 1024)
 	}
 	c.d.mu.Lock()
 	c.rec.Method = method
@@ -229,7 +228,7 @@ func (c *debugCall) errorBody(body []byte) {
 	if c == nil || len(body) == 0 {
 		return
 	}
-	text := truncateUTF8(xredact.URLSecrets(xredact.Secrets(string(body))), dbmodel.RelayLogDebugMaxErrorBody)
+	text := truncateUTF8(string(body), dbmodel.RelayLogDebugMaxErrorBody)
 	c.d.mu.Lock()
 	c.rec.ErrorBody = text
 	c.d.mu.Unlock()
@@ -425,7 +424,7 @@ func debugHeaders(h http.Header) []dbmodel.RelayLogDebugHeader {
 		}
 		value := dbmodel.RelayLogDebugHeaderHiddenTag
 		if !debugHeaderIsSecret(name) {
-			value = truncateUTF8(xredact.Secrets(strings.Join(h[name], ", ")), dbmodel.RelayLogDebugMaxHeaderValue)
+			value = truncateUTF8(strings.Join(h[name], ", "), dbmodel.RelayLogDebugMaxHeaderValue)
 		}
 		out = append(out, dbmodel.RelayLogDebugHeader{Name: truncateUTF8(name, 128), Value: value})
 	}
