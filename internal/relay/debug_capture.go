@@ -7,8 +7,8 @@ package relay
 //   - 不读、不重挂请求体（出站 body 字节由「记录发给上游的实际请求」开关单独负责）；
 //   - 不碰 TLS、头序、路由、计费。关闭时 m.debug == nil，所有钩子第一行就返回。
 //
-// 🔴 不存凭据：Authorization / x-api-key / cookie 等凭据类头整值换成「[已隐藏]」，
-// 其余头值、URL、错误原文再过一遍 xredact 打码。每一项都有上限，整份再有总上限。
+// pack-1128（用户 11-28 拍板）：捕获内容含凭据类头一律原样落库，不再打码/隐藏。
+// 每一项都有上限，整份再有总上限。
 
 import (
 	"context"
@@ -390,21 +390,6 @@ func capDebugInfo(info *dbmodel.RelayLogDebugInfo) {
 	}
 }
 
-// debugHeaderIsSecret 判定一个头是不是凭据类：命中就整值隐藏，一个字符都不留。
-func debugHeaderIsSecret(name string) bool {
-	lower := strings.ToLower(strings.TrimSpace(name))
-	switch lower {
-	case "authorization", "proxy-authorization", "x-api-key", "api-key", "x-goog-api-key",
-		"cookie", "set-cookie", "x-amz-security-token", "x-amz-signature":
-		return true
-	}
-	for _, part := range []string{"auth", "token", "secret", "password", "api-key", "apikey", "api_key", "cookie", "credential", "signature"} {
-		if strings.Contains(lower, part) {
-			return true
-		}
-	}
-	return false
-}
 
 // debugHeaders 把一组头转成可落库的列表：按名字排序、凭据整值隐藏、其余值打码并截断。
 // 只读 h，不修改。
@@ -422,10 +407,7 @@ func debugHeaders(h http.Header) []dbmodel.RelayLogDebugHeader {
 		if len(out) >= dbmodel.RelayLogDebugMaxHeaders {
 			break
 		}
-		value := dbmodel.RelayLogDebugHeaderHiddenTag
-		if !debugHeaderIsSecret(name) {
-			value = truncateUTF8(strings.Join(h[name], ", "), dbmodel.RelayLogDebugMaxHeaderValue)
-		}
+		value := truncateUTF8(strings.Join(h[name], ", "), dbmodel.RelayLogDebugMaxHeaderValue)
 		out = append(out, dbmodel.RelayLogDebugHeader{Name: truncateUTF8(name, 128), Value: value})
 	}
 	return out

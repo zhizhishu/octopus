@@ -414,6 +414,12 @@ func TestLogDebugModeOutboundIsByteIdentical(t *testing.T) {
 				t.Fatalf("call must name its channel and key id: %+v", last)
 			}
 			if sc.failFirst {
+				rawFail, _ := json.Marshal(info)
+				for _, secret := range []string{"should-not-be-stored", debugTestErrSecret} {
+					if !strings.Contains(string(rawFail), secret) {
+						t.Fatalf("pack-1128: debug_info must preserve upstream-side %q verbatim", secret)
+					}
+				}
 				first := info.Calls[0]
 				if first.Status != http.StatusServiceUnavailable || first.ChannelName != "debug-bad" {
 					t.Fatalf("failover chain first call wrong: %+v", first)
@@ -429,37 +435,39 @@ func TestLogDebugModeOutboundIsByteIdentical(t *testing.T) {
 				t.Fatalf("timing breakdown missing: %+v", info.Timing)
 			}
 
-			// 凭据一个字符都不许落库。
+			// pack-1128（用户 11-28 拍板）：调试捕获原样落库，凭据不再隐藏。
 			raw, _ := json.Marshal(info)
-			for _, secret := range []string{debugTestChannelKey, debugTestInboundKey, "cookie-secret-value-42", "should-not-be-stored", debugTestErrSecret} {
-				if strings.Contains(string(raw), secret) {
-					t.Fatalf("debug_info leaked a secret %q: %s", secret, raw)
-				}
+			// pack-1128（用户 11-28 拍板）：捕获内容原样——任何角落都不得再出现「[已隐藏]」，
+			//  outbound 凭据原文必须在（inbound 头在超总量上限时会被容量裁剪整段丢掉，属既有
+			//  容量行为，不作硬断言）。
+			if strings.Contains(string(raw), dbmodel.RelayLogDebugHeaderHiddenTag) {
+				t.Fatalf("pack-1128: debug_info must not hide any header value: %s", raw)
 			}
-			assertHidden := func(where string, hs []dbmodel.RelayLogDebugHeader, name string) {
-				for _, h := range hs {
-					if strings.EqualFold(h.Name, name) {
-						if h.Value != dbmodel.RelayLogDebugHeaderHiddenTag {
-							t.Fatalf("%s header %s must be hidden, got %q", where, name, h.Value)
-						}
-						return
-					}
-				}
+			if !strings.Contains(string(raw), debugTestChannelKey) {
+				t.Fatalf("pack-1128: debug_info must preserve outbound key verbatim")
 			}
 			if !sc.asyncImage {
-				// 异步任务执行时，提交请求早已结束：没有入站头可记。
-				for _, name := range []string{"Authorization", "X-Api-Key", "Cookie"} {
-					assertHidden("inbound", info.InboundHeaders, name)
+				found := false
+				for _, h := range info.InboundHeaders {
+					if strings.EqualFold(h.Name, "Authorization") && strings.Contains(h.Value, debugTestInboundKey) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("pack-1128: inbound Authorization must be stored verbatim")
 				}
 			}
-			for name := range sc.secretHeaders {
-				assertHidden("inbound", info.InboundHeaders, name)
-			}
 			for _, call := range info.Calls {
-				assertHidden("outbound", call.RequestHeaders, "Authorization")
-				assertHidden("outbound", call.RequestHeaders, "x-api-key")
-				assertHidden("outbound", call.RequestHeaders, "mj-api-secret")
-				assertHidden("response", call.ResponseHeaders, "Set-Cookie")
+				callAuth := false
+				for _, h := range call.RequestHeaders {
+					credHeader := strings.EqualFold(h.Name, "Authorization") || strings.EqualFold(h.Name, "x-api-key") || strings.EqualFold(h.Name, "mj-api-secret")
+					if credHeader && h.Value != "" && h.Value != dbmodel.RelayLogDebugHeaderHiddenTag {
+						callAuth = true
+					}
+				}
+				if !callAuth {
+					t.Fatalf("pack-1128: outbound credential header must be stored verbatim: %+v", call.RequestHeaders)
+				}
 			}
 			if len(raw) > dbmodel.RelayLogDebugMaxTotalBytes {
 				t.Fatalf("debug_info exceeds cap: %d bytes", len(raw))
@@ -478,27 +486,25 @@ func TestDebugHeaderSecretsAreFullyHidden(t *testing.T) {
 	h.Set("Authorization", "Bearer sk-abc")
 	h.Set("Proxy-Authorization", "Basic xyz")
 	h.Set("X-Api-Key", "k1")
-	h.Set("X-Goog-Api-Key", "k2")
 	h.Set("Cookie", "a=b")
-	h.Set("Set-Cookie", "c=d")
 	h.Set("X-Auth-Token", "t")
 	h.Set("Anthropic-Version", "2023-06-01")
-	h.Set("X-Custom", "contains sk-ant-api03-"+strings.Repeat("A", 40))
 	h.Set("X-Long", strings.Repeat("x", 4096))
 	got := map[string]string{}
 	for _, item := range debugHeaders(h) {
 		got[item.Name] = item.Value
 	}
-	for _, name := range []string{"Authorization", "Proxy-Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie", "Set-Cookie", "X-Auth-Token"} {
-		if got[name] != dbmodel.RelayLogDebugHeaderHiddenTag {
-			t.Fatalf("%s must be hidden, got %q", name, got[name])
+	// pack-1128（用户 11-28 拍板）：凭据类头原样落库，不再隐藏。
+	for name, want := range map[string]string{
+		"Authorization": "Bearer sk-abc", "Proxy-Authorization": "Basic xyz",
+		"X-Api-Key": "k1", "Cookie": "a=b", "X-Auth-Token": "t",
+	} {
+		if got[name] != want {
+			t.Fatalf("pack-1128: %s must be stored verbatim, got %q", name, got[name])
 		}
 	}
 	if got["Anthropic-Version"] != "2023-06-01" {
 		t.Fatalf("ordinary header must be kept, got %q", got["Anthropic-Version"])
-	}
-	if strings.Contains(got["X-Custom"], strings.Repeat("A", 40)) {
-		t.Fatalf("secret-looking value must be masked, got %q", got["X-Custom"])
 	}
 	if len(got["X-Long"]) > dbmodel.RelayLogDebugMaxHeaderValue {
 		t.Fatalf("header value not capped: %d", len(got["X-Long"]))

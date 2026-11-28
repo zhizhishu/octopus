@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/zhizhishu/octopus/internal/model"
@@ -223,11 +222,7 @@ func jsonMarshalBaseURLs(values []model.BaseUrl) (string, error) {
 	return string(raw), nil
 }
 
+// pack-1128（用户 11-28 拍板）：迁移导入的日志 URL 原样保留，不再打码。
 func redactURLForLog(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if parsed, err := url.Parse(trimmed); err == nil && parsed != nil && parsed.User != nil {
-		parsed.User = url.User("redacted")
-		trimmed = parsed.String()
-	}
-	return trimmed
+	return strings.TrimSpace(raw)
 }
