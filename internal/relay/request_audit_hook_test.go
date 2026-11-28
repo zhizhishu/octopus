@@ -23,7 +23,7 @@ func testCfg() *requestaudit.Config {
 }
 
 func TestNilCallerFailsOpen(t *testing.T) {
-	out := requestaudit.NewAuditor(nil).Audit(testCfg(), 68, "gpt-6-luna", []byte("x"))
+	out := requestaudit.NewAuditor(nil).Audit(context.Background(), testCfg(), 68, "gpt-6-luna", []byte("x"))
 	if out.Audited || out.Blocked {
 		t.Fatalf("nil caller must fail open: %+v", out)
 	}
@@ -39,7 +39,7 @@ func TestHighProbabilityBlocks(t *testing.T) {
 		}
 		return map[string]float64{"r1": 0.95}, nil
 	})
-	out := a.Audit(testCfg(), 68, "gpt-6-luna", []byte("bad content"))
+	out := a.Audit(context.Background(), testCfg(), 68, "gpt-6-luna", []byte("bad content"))
 	if !out.Blocked || len(out.Findings) != 1 || out.Findings[0].RuleID != "r1" {
 		t.Fatalf("expected block: %+v", out)
 	}
@@ -49,7 +49,7 @@ func TestCallerErrorFailsOpen(t *testing.T) {
 	a := requestaudit.NewAuditor(func(_ context.Context, sc requestaudit.SampleContext, qs []requestaudit.Question) (map[string]float64, error) {
 		return nil, errors.New("boom")
 	})
-	out := a.Audit(testCfg(), 68, "gpt-6-luna", []byte("other"))
+	out := a.Audit(context.Background(), testCfg(), 68, "gpt-6-luna", []byte("other"))
 	if out.Audited || out.Blocked {
 		t.Fatalf("fail-open expected: %+v", out)
 	}
