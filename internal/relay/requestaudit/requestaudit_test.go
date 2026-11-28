@@ -1,6 +1,7 @@
 package requestaudit
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -48,11 +49,11 @@ func TestSampleCapsAt24KB(t *testing.T) {
 
 func TestAuditDisabledOrNoRules(t *testing.T) {
 	a := NewAuditor(nil)
-	out := a.Audit(&Config{Enabled: false}, 68, "gpt-6-luna", []byte("body"))
+	out := a.Audit(context.Background(), &Config{Enabled: false}, 68, "gpt-6-luna", []byte("body"))
 	if !out.Audited || out.Blocked {
 		t.Fatalf("disabled cfg should pass: %+v", out)
 	}
-	out = a.Audit(&Config{Enabled: true, Rules: []Rule{{ID: "x", Enabled: false, Instructions: "i", Action: "block", Threshold: 0.8}}}, 68, "", []byte("b"))
+	out = a.Audit(context.Background(), &Config{Enabled: true, Rules: []Rule{{ID: "x", Enabled: false, Instructions: "i", Action: "block", Threshold: 0.8}}}, 68, "", []byte("b"))
 	if !out.Audited {
 		t.Fatalf("all-disabled rules should pass: %+v", out)
 	}
@@ -66,7 +67,7 @@ func testRules() []Rule {
 }
 
 func TestAuditBlockWarnAndBelowThreshold(t *testing.T) {
-	caller := func(sc SampleContext, qs []Question) (map[string]float64, error) {
+	caller := func(_ context.Context, sc SampleContext, qs []Question) (map[string]float64, error) {
 		if len(qs) != 2 {
 			t.Fatalf("questions = %d", len(qs))
 		}
@@ -77,26 +78,26 @@ func TestAuditBlockWarnAndBelowThreshold(t *testing.T) {
 	}
 	a := NewAuditor(caller)
 	cfg := &Config{Enabled: true, Rules: testRules()}
-	out := a.Audit(cfg, 68, "", []byte("payload"))
+	out := a.Audit(context.Background(), cfg, 68, "", []byte("payload"))
 	if !out.Audited || !out.Blocked || len(out.Findings) != 2 {
 		t.Fatalf("out = %+v", out)
 	}
 
-	caller2 := func(sc SampleContext, qs []Question) (map[string]float64, error) {
+	caller2 := func(_ context.Context, sc SampleContext, qs []Question) (map[string]float64, error) {
 		return map[string]float64{"block-rule": 0.1}, nil
 	}
 	a2 := NewAuditor(caller2)
-	out2 := a2.Audit(cfg, 68, "", []byte("other-body"))
+	out2 := a2.Audit(context.Background(), cfg, 68, "", []byte("other-body"))
 	if out2.Blocked || len(out2.Findings) != 0 {
 		t.Fatalf("below threshold should pass clean: %+v", out2)
 	}
 }
 
 func TestAuditFailOpenOnError(t *testing.T) {
-	a := NewAuditor(func(sc SampleContext, qs []Question) (map[string]float64, error) {
+	a := NewAuditor(func(_ context.Context, sc SampleContext, qs []Question) (map[string]float64, error) {
 		return nil, errors.New("timeout")
 	})
-	out := a.Audit(&Config{Enabled: true, Rules: testRules()}, 68, "", []byte("x"))
+	out := a.Audit(context.Background(), &Config{Enabled: true, Rules: testRules()}, 68, "", []byte("x"))
 	if out.Audited || out.Blocked {
 		t.Fatalf("fail-open expected: %+v", out)
 	}
@@ -107,14 +108,14 @@ func TestAuditFailOpenOnError(t *testing.T) {
 
 func TestFingerprintCacheHitSkipsCaller(t *testing.T) {
 	calls := 0
-	a := NewAuditor(func(sc SampleContext, qs []Question) (map[string]float64, error) {
+	a := NewAuditor(func(_ context.Context, sc SampleContext, qs []Question) (map[string]float64, error) {
 		calls++
 		return map[string]float64{"block-rule": 0.1}, nil
 	})
 	cfg := &Config{Enabled: true, Rules: testRules()}
 	body := []byte("same body")
-	a.Audit(cfg, 68, "", body)
-	out := a.Audit(cfg, 68, "", body)
+	a.Audit(context.Background(), cfg, 68, "", body)
+	out := a.Audit(context.Background(), cfg, 68, "", body)
 	if calls != 1 {
 		t.Fatalf("cache miss: caller ran %d times", calls)
 	}
@@ -125,7 +126,7 @@ func TestFingerprintCacheHitSkipsCaller(t *testing.T) {
 
 func TestFingerprintCacheExpiresAfter1h(t *testing.T) {
 	calls := 0
-	a := NewAuditor(func(sc SampleContext, qs []Question) (map[string]float64, error) {
+	a := NewAuditor(func(_ context.Context, sc SampleContext, qs []Question) (map[string]float64, error) {
 		calls++
 		return map[string]float64{"block-rule": 0.1}, nil
 	})
@@ -133,9 +134,9 @@ func TestFingerprintCacheExpiresAfter1h(t *testing.T) {
 	a.now = func() time.Time { return now }
 	cfg := &Config{Enabled: true, Rules: testRules()}
 	body := []byte("b")
-	a.Audit(cfg, 68, "", body)
+	a.Audit(context.Background(), cfg, 68, "", body)
 	now = now.Add(61 * time.Minute)
-	a.Audit(cfg, 68, "", body)
+	a.Audit(context.Background(), cfg, 68, "", body)
 	if calls != 2 {
 		t.Fatalf("cache should expire after 1h: caller ran %d times", calls)
 	}

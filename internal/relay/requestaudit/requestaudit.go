@@ -10,6 +10,7 @@
 package requestaudit
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -195,7 +196,7 @@ type Outcome struct {
 
 // DecisionsCaller 生产实现见 upstream.go（走渠道闸门/RPM/2 秒超时）；
 // 测试注入 mock，绝不发真实请求。
-type DecisionsCaller func(ctx SampleContext, questions []Question) (map[string]float64, error)
+type DecisionsCaller func(ctx context.Context, sc SampleContext, questions []Question) (map[string]float64, error)
 
 // SampleContext 导出以便 relay 层与测试注入 caller。
 type SampleContext struct {
@@ -230,7 +231,7 @@ func NewAuditor(caller DecisionsCaller) *Auditor {
 }
 
 // Audit 对一段请求正文执行全部启用规则。任何失败/超时 → fail-open：Audited=false 放行。
-func (a *Auditor) Audit(cfg *Config, channelID int, model string, body []byte) Outcome {
+func (a *Auditor) Audit(ctx context.Context, cfg *Config, channelID int, model string, body []byte) Outcome {
 	if cfg == nil || !cfg.Enabled {
 		return Outcome{Audited: true}
 	}
@@ -250,7 +251,7 @@ func (a *Auditor) Audit(cfg *Config, channelID int, model string, body []byte) O
 	if a.caller == nil {
 		return Outcome{Audited: false, Reason: "no caller"}
 	}
-	verdicts, err := a.caller(SampleContext{ChannelID: channelID, Sample: sample, Model: model}, buildQuestions(rules))
+	verdicts, err := a.caller(ctx, SampleContext{ChannelID: channelID, Sample: sample, Model: model}, buildQuestions(rules))
 	if err != nil {
 		// fail-open：超时/上游失败都放行，调用方负责记「未审查」日志。
 		return Outcome{Audited: false, Reason: err.Error()}

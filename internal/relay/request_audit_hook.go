@@ -24,6 +24,12 @@ import (
 
 var requestAuditCaller = requestaudit.NewChannelDecisionsCaller(resolveAuditChannel)
 
+// requestAuditor 是进程级单例（pack-1128 审查 P1）：sha256 指纹缓存挂在 Auditor 上，
+// 原来每请求 NewAuditor 新建空缓存，1 小时缓存跨请求 0 命中，等于每个审查请求都白打
+// 一次 decisions 上游。缓存键是 取样+规则集 的哈希、存的是概率不是结论，按 key 的
+// 阈值覆盖在 finishOutcome 里逐请求套用，共享缓存不会串租户。
+var requestAuditor = requestaudit.NewAuditor(requestAuditCaller)
+
 // resolveAuditChannel：取配置渠道、闸门预占、执行 HTTP 调用、按结果记账。
 func resolveAuditChannel(ctx context.Context, channelID int, estInputTokens int64, fn func(baseURL, key string) (int, error)) error {
 	if channelID <= 0 {
@@ -80,8 +86,7 @@ func maybeAuditRequest(c *gin.Context, apiKeyID int, body []byte) bool {
 			cfg.Rules[i].Threshold = threshold
 		}
 	}
-	auditor := requestaudit.NewAuditor(requestAuditCaller)
-	outcome := auditor.Audit(cfg, cfg.ChannelID, "gpt-6-luna", body)
+	outcome := requestAuditor.Audit(c.Request.Context(), cfg, cfg.ChannelID, "gpt-6-luna", body)
 	if !outcome.Audited {
 		// fail-open：放行但记「未审查」，原因带在日志里（不记原文、不记 key）。
 		log.Warnf("request audit unaudited (fail-open): key_id=%d reason=%s", apiKeyID, outcome.Reason)

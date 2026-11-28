@@ -43,7 +43,7 @@ type ChannelResolver func(ctx context.Context, channelID int, estInputTokens int
 // resolver 内部必须：AdmitChannelGate 预占 RPM/TPM → 执行 fn（真正发 HTTP）→
 // 成败都按「上游尝试」记账（feat/rpm-tpm 语义），2 秒超时由本函数控制。
 func NewChannelDecisionsCaller(resolve ChannelResolver) DecisionsCaller {
-	return func(sc SampleContext, questions []Question) (map[string]float64, error) {
+	return func(ctx context.Context, sc SampleContext, questions []Question) (map[string]float64, error) {
 		payload := decisionsRequest{
 			Model:     sc.Model,
 			Input:     string(sc.Sample),
@@ -52,19 +52,23 @@ func NewChannelDecisionsCaller(resolve ChannelResolver) DecisionsCaller {
 		for i, q := range questions {
 			payload.Questions[i] = decisionsQuestion{ID: q.RuleID, Type: "predicate", Text: q.Query}
 		}
+		// pack-1128 审查 P3：默认 model 必须在 marshal 之前补上，否则 "gpt-6-luna"
+		// 永远进不了 body（原先 marshal 后补，补了个寂寞）。
+		if payload.Model == "" {
+			payload.Model = "gpt-6-luna"
+		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
 			return nil, err
 		}
-		if payload.Model == "" {
-			payload.Model = "gpt-6-luna"
-		}
 		var out map[string]float64
 		call := func(baseURL, key string) (int, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), AuditTimeout)
+			// pack-1128 审查 P3：超时壳从调用方 ctx 派生，不再 context.Background
+			// 裸奔——下游断开/上游慢都能正确取消。
+			reqCtx, cancel := context.WithTimeout(ctx, AuditTimeout)
 			defer cancel()
 			url := joinDecisionsURL(baseURL)
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(raw))
 			if err != nil {
 				return 0, err
 			}
@@ -93,7 +97,7 @@ func NewChannelDecisionsCaller(resolve ChannelResolver) DecisionsCaller {
 			return resp.StatusCode, nil
 		}
 		estTokens := estInputTokens(len(raw))
-		if err := resolve(context.Background(), sc.ChannelID, estTokens, call); err != nil {
+		if err := resolve(ctx, sc.ChannelID, estTokens, call); err != nil {
 			return nil, err
 		}
 		if out == nil {
