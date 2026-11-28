@@ -324,11 +324,11 @@ func listChannelCircuits(c *gin.Context) {
 // 轻量只读接口，超过这个数说明调用方用错了，直接拒掉而不是替它扫一遍。
 const channelRPMMaxIDs = 500
 
-// channelCurrentRPM 只读返回若干渠道「当前这分钟」的成功请求数（对齐 sub2api 账号页的
+// channelCurrentRPM 只读返回若干渠道滑动 60 秒内发往上游的尝试数（feat/rpm-tpm 口径：含失败、救援，对齐 sub2api 账号页的
 // current_rpm）：GET /api/v1/channel/rpm?ids=1,2,3 → data = {"1":12,"2":0}。
 //
-// 数字来自渠道闸门的整分钟桶（balancer.ChannelGateCurrentRPM）：不查库、不占并发位、
-// 不消耗名额；只数**成功**的转发，没配 RPMLimit 的渠道也照实给本分钟成功数。
+// 数字来自渠道闸门的滑动 60 秒窗口（balancer.ChannelGateCurrentRPM）：不查库、不占并发位、
+// 不消耗名额；成败都计的尝试数，没配 RPMLimit 的渠道也照实给。
 func channelCurrentRPM(c *gin.Context) {
 	raw := strings.TrimSpace(c.Query("ids"))
 	if raw == "" {

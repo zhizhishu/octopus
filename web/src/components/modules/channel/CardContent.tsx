@@ -49,6 +49,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         priority: channel.priority ?? 0,
         max_concurrent: channel.max_concurrent ?? 0,
         rpm_limit: channel.rpm_limit ?? 0,
+        tpm_limit: channel.tpm_limit ?? 0,
         // 编辑初值必须带上排队旋钮，否则一打开编辑就把它们当 0（保存时被当成「改成了 0」）。
         queue_size: channel.queue_size ?? 0,
         queue_timeout_ms: channel.queue_timeout_ms ?? 0,
@@ -128,6 +129,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if ((formData.priority ?? 0) !== (channel.priority ?? 0)) req.priority = formData.priority ?? 0;
         if ((formData.max_concurrent ?? 0) !== (channel.max_concurrent ?? 0)) req.max_concurrent = formData.max_concurrent ?? 0;
         if ((formData.rpm_limit ?? 0) !== (channel.rpm_limit ?? 0)) req.rpm_limit = formData.rpm_limit ?? 0;
+        if ((formData.tpm_limit ?? 0) !== (channel.tpm_limit ?? 0)) req.tpm_limit = formData.tpm_limit ?? 0;
         // 显式 0 也是有效配置（关掉排队 / 用默认等待），只在和现值不同时才发。
         if ((formData.queue_size ?? 0) !== (channel.queue_size ?? 0)) req.queue_size = formData.queue_size ?? 0;
         if ((formData.queue_timeout_ms ?? 0) !== (channel.queue_timeout_ms ?? 0)) req.queue_timeout_ms = formData.queue_timeout_ms ?? 0;

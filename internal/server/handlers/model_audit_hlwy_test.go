@@ -1032,18 +1032,25 @@ func TestHlwyGateBusyWaitByReason(t *testing.T) {
 	prod := hlwyGateBusyWait
 
 	// 并发位占满、无 RPM 限额：短退避。
-	release, reason := balancer.AdmitChannelGate(context.Background(), 900001, 1, 0, 0, nil)
+	release, reason := balancer.AdmitChannelGate(context.Background(), 900001, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("setup admission failed: %q", reason)
 	}
-	defer release()
+	defer release.Release()
 	if got := prod(900001, 0); got != time.Second {
 		t.Fatalf("concurrency-only busy wait = %v, want 1s short backoff", got)
 	}
 
 	// RPM 计满：等分钟桶（应远大于 1s、不超过 61s）。
-	balancer.RecordChannelRPMSuccess(900002)
-	balancer.RecordChannelRPMSuccess(900002)
+	// feat/rpm-tpm：计数在准入。两次封口准入=两次真实上行，RPM 计满。
+	for range 2 {
+		adm, r := balancer.AdmitChannelGate(context.Background(), 900002, 0, 0, 0, 0, 0, nil)
+		if r != "" {
+			t.Fatalf("setup rpm admission: %q", r)
+		}
+		adm.Seal()
+		adm.Release()
+	}
 	if got := prod(900002, 2); got <= time.Second || got > 61*time.Second {
 		t.Fatalf("rpm-full busy wait = %v, want minute-bucket scale (1s,61s]", got)
 	}

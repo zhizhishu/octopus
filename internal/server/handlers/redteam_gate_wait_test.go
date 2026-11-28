@@ -64,13 +64,13 @@ func TestRedTeamLabSendWaitsForGateRoomThenSucceeds(t *testing.T) {
 	channel := newRedTeamGateChannel(t, ctx, upstream.URL)
 
 	// 占住唯一并发位，100ms 后释放。
-	release, reason := balancer.AdmitChannelGate(context.Background(), channel.ID, 1, 0, 0, nil)
+	release, reason := balancer.AdmitChannelGate(context.Background(), channel.ID, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy gate: %q", reason)
 	}
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		release()
+		release.Release()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -96,11 +96,11 @@ func TestRedTeamLabSendGateBusyUntilContextExpires(t *testing.T) {
 	channel := newRedTeamGateChannel(t, ctx, upstream.URL)
 
 	// 占住唯一并发位，整个用例期间不放。
-	release, reason := balancer.AdmitChannelGate(context.Background(), channel.ID, 1, 0, 0, nil)
+	release, reason := balancer.AdmitChannelGate(context.Background(), channel.ID, 1, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy gate: %q", reason)
 	}
-	defer release()
+	defer release.Release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()

@@ -28,6 +28,7 @@ export function CreateDialogContent() {
         priority: 0,
         max_concurrent: 0,
         rpm_limit: 0,
+        tpm_limit: 0,
         // 新建默认不排队（0）+ 默认等待（0 = 后端 3 秒），与后端存量口径一致。
         queue_size: 0,
         queue_timeout_ms: 0,
@@ -100,6 +101,7 @@ export function CreateDialogContent() {
                 priority: formData.priority,
                 max_concurrent: formData.max_concurrent,
                 rpm_limit: formData.rpm_limit,
+                tpm_limit: formData.tpm_limit,
                 queue_size: formData.queue_size ?? 0,
                 queue_timeout_ms: formData.queue_timeout_ms ?? 0,
                 race_mode: formData.race_mode,
@@ -145,6 +147,7 @@ export function CreateDialogContent() {
                         priority: 0,
                         max_concurrent: 0,
                         rpm_limit: 0,
+                        tpm_limit: 0,
                         queue_size: 0,
                         queue_timeout_ms: 0,
                         race_mode: false,

@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"context"
 	"testing"
 
 	"github.com/zhizhishu/octopus/internal/model"
@@ -59,7 +60,7 @@ func TestRuntimeRecentRequestCount(t *testing.T) {
 // counters: a forwarded success recorded for the hard gate must not silently
 // inflate the soft-tier figure, and a BeginRuntimeAttempt must not spend the hard
 // gate's RPM budget.
-func TestChannelGateRPMSuccessDoesNotFeedSoftTierCounters(t *testing.T) {
+func TestChannelGateAttemptsDoNotFeedSoftTierCounters(t *testing.T) {
 	ResetChannelGates()
 	defer ResetChannelGates()
 	ResetRuntimeTelemetry()
@@ -68,12 +69,20 @@ func TestChannelGateRPMSuccessDoesNotFeedSoftTierCounters(t *testing.T) {
 	const channelID = 4322
 	const modelName = "rpm-model-split"
 
-	RecordChannelRPMSuccess(channelID)
-	RecordChannelRPMSuccess(channelID)
+	// feat/rpm-tpm 新口径：计数在准入预占。两次真实准入（封口=字节出门）后，
+	// 硬闸 RPM=2；这套计数绝不能喂给软降档的 telemetry 窗口。
+	for range 2 {
+		admission, reason := AdmitChannelGate(context.Background(), channelID, 0, 0, 0, 0, 0, nil)
+		if reason != "" {
+			t.Fatalf("admission must pass: %s", reason)
+		}
+		admission.Seal()
+		admission.Release()
+	}
 	snap := SnapshotRoutingRuntime(channelID, modelName,
 		[]model.ChannelKey{{ID: 8, Enabled: true, ChannelKey: "k"}}, false)
 	if snap.RecentRequestCount != 0 {
-		t.Fatalf("hard-gate successes must not feed the telemetry window, got %d", snap.RecentRequestCount)
+		t.Fatalf("hard-gate attempts must not feed the telemetry window, got %d", snap.RecentRequestCount)
 	}
 
 	done := BeginRuntimeAttempt(channelID, 8, modelName)

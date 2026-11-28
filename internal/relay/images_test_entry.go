@@ -200,10 +200,10 @@ func forwardImagesChannelTest(
 			written bool
 			fwdErr  error
 		)
-		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
 		if gateReason != "" {
 			if releaseGate != nil {
-				releaseGate()
+				releaseGate.Release()
 			}
 			// 渠道级闸门对同渠道所有 key 是同一道：这把占不到，换 key 也占不到，
 			// 直接收。终态口径与生产 429 一致（relay.go channelRateLimited*）：
@@ -214,7 +214,8 @@ func forwardImagesChannelTest(
 		func() {
 			// 闸门位与在途位分开释放（幂等）：成功/失败/panic 都会经这里，对齐生产路径。
 			if releaseGate != nil {
-				defer releaseGate()
+				defer releaseGate.Release()
+				releaseGate.Seal() // 这些协议的准入与发送之间无实质失败分支：就地封口，成败/超时都计数（feat/rpm-tpm）
 			}
 			if channel.Type == outbound.OutboundTypeGemini {
 				statusCode, written, _, _, fwdErr = geminiImagesAttempt(ctx, endpoint, c, isMultipart, bc, boundary, jsonPayload, stream, channel, usedKey.ChannelKey, metrics, actualModel)
@@ -224,8 +225,6 @@ func forwardImagesChannelTest(
 			}
 		}()
 		if fwdErr == nil {
-			// 渠道 RPM 口径与生产一致（整分钟桶、只数成功，见 balancer/channel_gate.go）。
-			balancer.RecordChannelRPMSuccess(channel.ID)
 			c.Set(imagesChannelTestUpstreamPathContextKey, imagesChannelTestUpstreamPath(channel, endpoint, actualModel, usedKey.ChannelKey, jsonPayload))
 			c.Set(imagesChannelTestKeyIDContextKey, usedKey.ID)
 			return

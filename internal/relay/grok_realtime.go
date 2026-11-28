@@ -215,10 +215,10 @@ runIterator:
 			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
 			// 只记一条 skipped 审计。闸门只按渠道计数，同渠道剩下的 key 命中的是同一道闸，直接换渠道。
 			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
-			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, 0, func() bool { return ctx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
-					releaseGate()
+					releaseGate.Release()
 				}
 				iter.Skip(channel.ID, 0, channel.Name, gateReason)
 				gateSkippedCount++
@@ -240,12 +240,16 @@ runIterator:
 			finishRuntimeAttempt := func() {
 				finishRuntime()
 				if releaseGate != nil {
-					releaseGate()
+					releaseGate.Release()
 				}
 			}
 			// 兜底：panic 会绕过上面那些显式调用。两个闭包都幂等，正常路径上这一行是空操作；
 			// 不挂它的话，一次 panic 会把渠道的并发位永久占死（比在途计数漏减严重得多）。
 			defer finishRuntimeAttempt()
+			// 字节出门口（dial 即上行）：封口后名额不退（feat/rpm-tpm）。
+			if releaseGate != nil {
+				releaseGate.Seal()
+			}
 			upstream, statusCode, dialErr := dialGrokRealtimeUpstream(ctx, c, channel, usedKey.ChannelKey, item.ModelName)
 			if dialErr != nil {
 				finishRuntimeAttempt()
@@ -274,10 +278,8 @@ runIterator:
 			}
 
 			// 上游握手成功，才接受客户端升级。
-			// RPM 成功计数就记在这一刻（口径与 chat 一致：整分钟桶、只数成功，见
 			// balancer/channel_gate.go）——websocket 会话可能拖很久，等会话结束再记
 			// 会把并发/限流口径整个推后；连上即成功。
-			balancer.RecordChannelRPMSuccess(channel.ID)
 			clientConn, upErr := grokRealtimeUpgrader(c.Request).Upgrade(c.Writer, c.Request, nil)
 			if upErr != nil {
 				// Upgrade 失败时 gorilla 已经写了 HTTP 错误。这不是上游的错，不记熔断。

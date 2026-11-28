@@ -111,11 +111,11 @@ func setupRelayChannelGateDB(t *testing.T) context.Context {
 // occupyChannelGate 用测试直接占住一个渠道的并发位（与 Handler 共享同一进程的闸门状态）。
 func occupyChannelGate(t *testing.T, channelID, maxConcurrent int) func() {
 	t.Helper()
-	release, reason := balancer.AdmitChannelGate(context.Background(), channelID, maxConcurrent, 0, 0, nil)
+	release, reason := balancer.AdmitChannelGate(context.Background(), channelID, maxConcurrent, 0, 0, 0, 0, nil)
 	if reason != "" {
 		t.Fatalf("occupy gate of channel %d: %q", channelID, reason)
 	}
-	return release
+	return func() { release.Release() }
 }
 
 // doGateChatRequest：非流式 chat 请求打到 Handler。返回状态码 / 响应体 / 响应头。
@@ -545,7 +545,7 @@ func TestChannelGateSlotReleasedAfterFailureAndCancel(t *testing.T) {
 	if hits := upXFail.hitCount(); hits != 1 {
 		t.Fatalf("request 1 should hit the failing upstream X once, got %d", hits)
 	}
-	if !balancer.ChannelGateHasRoom(channelX.ID, 1, 0) {
+	if !balancer.ChannelGateHasRoom(channelX.ID, 1, 0, 0) {
 		t.Fatalf("after the failed attempt returns, X's concurrency slot must be released (inFlight back to 0)")
 	}
 	code, _, _ = doGateChatRequest("gate-model-release")
@@ -555,7 +555,7 @@ func TestChannelGateSlotReleasedAfterFailureAndCancel(t *testing.T) {
 	if hits := upXFail.hitCount(); hits != 2 {
 		t.Fatalf("request 2 must be admitted into channel X once more, hits = %d", hits)
 	}
-	if !balancer.ChannelGateHasRoom(channelX.ID, 1, 0) {
+	if !balancer.ChannelGateHasRoom(channelX.ID, 1, 0, 0) {
 		t.Fatalf("after request 2 returns, X's slot must be released again")
 	}
 }
@@ -609,7 +609,7 @@ func TestChannelGateSlotReleasedAfterClientCancel(t *testing.T) {
 	if hits := upX.hitCount(); hits != 1 {
 		t.Fatalf("the canceled attempt must still have reached the upstream, hits = %d", hits)
 	}
-	if !balancer.ChannelGateHasRoom(channelX.ID, 1, 0) {
+	if !balancer.ChannelGateHasRoom(channelX.ID, 1, 0, 0) {
 		t.Fatalf("after the client canceled mid-flight, the concurrency slot must be released (inFlight back to 0)")
 	}
 }
@@ -632,7 +632,7 @@ func TestChannelGateUnlimitedChannelBehaviorUnchanged(t *testing.T) {
 	if err := op.ChannelCreate(&channelX, ctx); err != nil {
 		t.Fatalf("create channel X: %v", err)
 	}
-	if !balancer.ChannelGateHasRoom(channelX.ID, 0, 0) {
+	if !balancer.ChannelGateHasRoom(channelX.ID, 0, 0, 0) {
 		t.Fatalf("an unlimited channel must always report room")
 	}
 
@@ -829,7 +829,7 @@ func TestChannelGateQueueSharedAcrossModelsAndKeys(t *testing.T) {
 }
 
 // —— k：RPM 只数成功——上游失败不消耗名额，同一分钟内仍可继续准入 ——
-func TestChannelGateRPMCountsOnlySuccessesAcrossFailures(t *testing.T) {
+func TestChannelGateRPMFailuresConsumeSlotsAcrossFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := setupRelayChannelGateDB(t)
 
@@ -861,7 +861,7 @@ func TestChannelGateRPMCountsOnlySuccessesAcrossFailures(t *testing.T) {
 		t.Fatalf("create channel Y: %v", err)
 	}
 
-	// 请求 1：X 被准入（本分钟还是 0 次成功），上游 500 → 失败转移，落到 Y 成功。
+	// 请求 1：X 被准入、字节出门后上游 500 → 失败转移，落到 Y 成功。
 	code, body, _ := doGateChatRequest("gate-model-rpm-success")
 	if code != http.StatusOK {
 		t.Fatalf("request 1 must fail over to channel Y with 200, got %d: %s", code, body)
@@ -872,21 +872,21 @@ func TestChannelGateRPMCountsOnlySuccessesAcrossFailures(t *testing.T) {
 	if hits := upOK.hitCount(); hits != 1 {
 		t.Fatalf("request 1 must be served by channel Y, hits = %d", hits)
 	}
-	// 失败的尝试不计入 X 的本分钟成功数（对齐 sub2api：Forward 成功之后才计数）。
-	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 0 {
-		t.Fatalf("a failed upstream attempt must not count towards rpm, current rpm = %d", got)
+	// feat/rpm-tpm：失败的尝试也占 RPM（发出就算），X 滑窗内计 1。
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 1 {
+		t.Fatalf("a failed upstream attempt must count towards rpm (attempt-counted), current rpm = %d", got)
 	}
 
-	// 请求 2：X 的名额没被失败吃掉，同一分钟内仍会被准入（并发位也早已归还）。
+	// 请求 2：X 的 RPM 已被失败吃满（limit=1），闸门跳过 X 直落 Y——X 零新增命中。
 	code, body, _ = doGateChatRequest("gate-model-rpm-success")
 	if code != http.StatusOK {
-		t.Fatalf("request 2 must be served (fail over to Y), got %d: %s", code, body)
+		t.Fatalf("request 2 must be served by Y (X gate-skipped), got %d: %s", code, body)
 	}
-	if hits := upFail.hitCount(); hits != 2 {
-		t.Fatalf("request 2 must be admitted into channel X again (failures do not spend rpm), hits = %d", hits)
+	if hits := upFail.hitCount(); hits != 1 {
+		t.Fatalf("request 2 must NOT be admitted into channel X (rpm full from failure), hits = %d", hits)
 	}
-	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 0 {
-		t.Fatalf("channel X still has no success this minute, current rpm = %d", got)
+	if hits := upOK.hitCount(); hits != 2 {
+		t.Fatalf("request 2 must be served by channel Y, hits = %d", hits)
 	}
 }
 
@@ -965,7 +965,9 @@ func TestChannelGateRaceWinnerCountsTowardChannelRPM(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("race request must succeed, got %d: %s", code, body)
 	}
-	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got != 1 {
-		t.Fatalf("winner channel rpm after one successful race = %d, want 1 (winner counted, loser not)", got)
+	// feat/rpm-tpm：竞速按尝试计数——赢家必计；输家字节已出门的也计（发出就算），
+	// 发送前被 raced_out 取消的退还。胜负时序不定，故断言 1..2、至少含赢家。
+	if got := balancer.ChannelGateCurrentRPM(channelX.ID); got < 1 || got > 2 {
+		t.Fatalf("race rpm after one successful race = %d, want 1..2 (winner always counts; loser counts iff its bytes left)", got)
 	}
 }
