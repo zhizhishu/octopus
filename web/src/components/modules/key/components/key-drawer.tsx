@@ -48,6 +48,8 @@ export type KeyDrawerTab = 'settings' | 'usage';
 const EXPIRE_PRESETS = [1, 30, 90];
 
 interface Draft {
+    requestAudit: boolean;
+    requestAuditThreshold: string;
     name: string;
     userID?: number;
     enabled: boolean;
@@ -78,6 +80,8 @@ function draftFrom(key: APIKey | null, owner: User | undefined, plans: AccessPla
         modelMode: models.length > 0 ? 'only' : 'all',
         models,
         families: key ? keyFamilies(key) : [...KEY_FAMILIES],
+        requestAudit: key?.request_audit ?? false,
+        requestAuditThreshold: key?.request_audit_threshold ? String(key.request_audit_threshold) : '',
         planIDs,
         defaultPlanID: key?.default_access_plan_id || (owner && !key ? owner.default_access_plan_id : undefined) || planIDs[0],
     };
@@ -177,6 +181,8 @@ function DrawerBody({ apiKey, tab, onTabChange, users, plans, spentOf, onClose, 
             max_cost: capNum,
             supported_models: draft.modelMode === 'only' ? draft.models.join(',') : '',
             endpoint_families: draft.families,
+            request_audit: draft.requestAudit,
+            request_audit_threshold: Number.parseFloat(draft.requestAuditThreshold) || 0,
         };
         if (isAdmin && draft.planIDs.length > 0) {
             body.access_plan_ids = draft.planIDs;
@@ -238,6 +244,23 @@ function DrawerBody({ apiKey, tab, onTabChange, users, plans, spentOf, onClose, 
                                     <Switch checked={draft.enabled} onCheckedChange={(enabled) => set({ enabled })} />
                                 </label>
                                 {apiKey && <KeyLine value={apiKey.api_key} />}
+                                <label className="flex items-center gap-3 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3">
+                                    <div className="min-w-0 flex-1">
+                                        <div className="text-sm font-medium">{t('requestAudit')}</div>
+                                        <div className="text-xs text-muted-foreground">{t('requestAuditHint')}</div>
+                                    </div>
+                                    <Switch checked={draft.requestAudit} onCheckedChange={(requestAudit) => set({ requestAudit })} />
+                                </label>
+                                {draft.requestAudit && (
+                                    <input
+                                        type="number" min={0} max={1} step={0.05}
+                                        value={draft.requestAuditThreshold}
+                                        onChange={(e) => set({ requestAuditThreshold: e.target.value })}
+                                        placeholder={t('requestAuditThresholdPh')}
+                                        aria-label={t('requestAudit')}
+                                        className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+                                    />
+                                )}
                             </section>
 
                             <section className="space-y-4 rounded-2xl border border-border/70 bg-muted/20 p-4">

@@ -28,6 +28,8 @@ export function SettingCircuitBreaker() {
     const initialRules = useRef('');
     const [policyKeywords, setPolicyKeywords] = useState('');
     const initialPolicyKeywords = useRef('');
+    const [auditConfig, setAuditConfig] = useState('');
+    const initialAuditConfig = useRef('');
 
     // 主动探测（P3）：开关存 'true'/'false'，上限/停手次数存十进制整数（与后端 seed 默认值同形）。
     const [probeOpen, setProbeOpen] = useState(false);
@@ -83,6 +85,11 @@ export function SettingCircuitBreaker() {
             if (pk && pk.value !== initialPolicyKeywords.current) {
                 queueMicrotask(() => setPolicyKeywords(pk.value));
                 initialPolicyKeywords.current = pk.value;
+            }
+            const ra = settings.find(s => s.key === 'request_audit');
+            if (ra && ra.value !== initialAuditConfig.current) {
+                queueMicrotask(() => setAuditConfig(ra.value));
+                initialAuditConfig.current = ra.value;
             }
             if (th) {
                 if (th.value !== initialThreshold.current) {
@@ -178,6 +185,43 @@ export function SettingCircuitBreaker() {
         const next = Number.isFinite(parsed) ? String(Math.max(0, Math.trunc(parsed))) : fallback;
         if (next !== raw) setter(next);
         handleSave(key, next, initial.current);
+    };
+
+    // 上游前审查配置（request_audit）：JSON 编辑 + 客户端预检，与后端
+    // requestaudit.ParseConfig 同口径（id 唯一/非空、instructions 非空、
+    // action ∈ block|warn、threshold ∈ (0,1]）；服务端 Validate 是最终判官。
+    const handleSaveAuditConfig = () => {
+        if (setSetting.isPending) return;
+        const raw = auditConfig.trim();
+        let compact = '';
+        if (raw !== '') {
+            try {
+                const parsed = JSON.parse(raw);
+                const rules = Array.isArray(parsed.rules) ? parsed.rules : [];
+                const seen = new Set();
+                for (const r of rules) {
+                    if (!r.id || seen.has(r.id)) throw new Error('bad rule id');
+                    seen.add(r.id);
+                    if (!String(r.instructions ?? '').trim()) throw new Error('empty instructions');
+                    const action = r.action ?? 'block';
+                    if (action !== 'block' && action !== 'warn') throw new Error('bad action');
+                    const th = r.threshold ?? 0.8;
+                    if (!(th > 0 && th <= 1)) throw new Error('bad threshold');
+                }
+                compact = JSON.stringify(parsed);
+            } catch {
+                toast.error(t('circuitBreaker.rules.invalid'));
+                return;
+            }
+        }
+        if (compact === initialAuditConfig.current) return;
+        setSetting.mutate({ key: 'request_audit', value: compact }, {
+            onSuccess: () => {
+                toast.success(t('saved'));
+                initialAuditConfig.current = compact;
+            },
+            onError: (error) => toast.error(error?.message || t('saveFailed')),
+        });
     };
 
     const handleSaveRules = () => {
@@ -330,6 +374,25 @@ export function SettingCircuitBreaker() {
                         className="rounded-xl font-mono text-xs"
                     />
                 </div>
+            </div>
+
+            {/* 上游前风控审查（request_audit）：默认全关；审查渠道 id + 规则 JSON。 */}
+            <div className="space-y-2">
+                <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm font-medium">{t('circuitBreaker.audit.label')}</span>
+                    <Button size="sm" variant="outline" className="rounded-xl" onClick={handleSaveAuditConfig} disabled={setSetting.isPending}>
+                        {t('circuitBreaker.rules.save')}
+                    </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">{t('circuitBreaker.audit.hint')}</p>
+                <textarea
+                    value={auditConfig}
+                    onChange={(e) => setAuditConfig(e.target.value)}
+                    placeholder='{"enabled":true,"channel_id":68,"rules":[{"id":"r1","name":"violence","instructions":"是否含违规内容","action":"block","threshold":0.8}]}'
+                    spellCheck={false}
+                    rows={5}
+                    className="w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs"
+                />
             </div>
 
             {/* 主动探测（P3）：整块可折叠，标题行就是摘要（开关状态 + 今日已用/上限）。 */}

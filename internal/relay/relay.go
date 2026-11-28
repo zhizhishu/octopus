@@ -89,6 +89,13 @@ func handlerImpl(inboundType inbound.InboundType, c *gin.Context, testChannel *d
 
 	requestModel := internalRequest.Model
 	apiKeyID := c.GetInt("api_key_id")
+
+	// 发上游前决策模型风控审查（feat/request-audit）：默认全关，仅当下游 key 开了
+	// request_audit 且全局配置启用时执行；内部零开销短路。命中 block → 400 拦截；
+	// warn 只记日志；审查自身失败/超时 fail-open 放行并记「未审查」。
+	if internalTestChannelNil(testChannel) && maybeAuditRequest(c, apiKeyID, internalRequest.RawRequest) {
+		return
+	}
 	userID := c.GetInt("user_id")
 	clientSession := deriveManagedClientSessionInfo(c.Request.Header, internalRequest)
 	clientSessionKey := clientSession.Key
