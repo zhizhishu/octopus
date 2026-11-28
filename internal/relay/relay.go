@@ -35,7 +35,6 @@ import (
 	openaiOutbound "github.com/zhizhishu/octopus/internal/transformer/outbound/openai"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // Machine rescue keeps retrying until the request's total timeout or an explicit
@@ -1667,7 +1666,7 @@ retryWithAdapter:
 	ra.internalRequest.Stop = originalStop
 	ra.internalRequest.TransformOptions.VerbatimUpstreamURL = previousVerbatim
 	if err != nil {
-		log.Warnf("failed to create request: %v", xredact.URLSecrets(err.Error()))
+		log.Warnf("failed to create request: %v", err.Error())
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	if outboundRequest != nil && outboundRequest.URL != nil && span != nil {
@@ -2879,7 +2878,7 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 
 	response, err := helper.DoPreserveMethodRedirect(httpClient, req)
 	if err != nil {
-		log.Warnf("failed to send request: %v", xredact.URLSecrets(err.Error()))
+		log.Warnf("failed to send request: %v", err.Error())
 		return nil, err
 	}
 	if response == nil || response.Body == nil {

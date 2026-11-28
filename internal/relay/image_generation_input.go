@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // Only the image-generation bridge reads these inputs. Ordinary chat and
@@ -43,7 +42,7 @@ func (ra *relayAttempt) imageEditSources(ctx context.Context) ([]*transformerMod
 				// channel proxy. Its dialer checks redirects against SSRF.
 				downloaded, err := ra.downloadImageToBase64DataURL(ctx, source)
 				if err != nil {
-					return nil, fmt.Errorf("could not load image generation reference: %s", xredact.URLSecrets(err.Error()))
+					return nil, fmt.Errorf("could not load image generation reference: %s", err.Error())
 				}
 				source = downloaded
 			}

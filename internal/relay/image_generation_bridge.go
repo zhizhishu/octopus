@@ -22,7 +22,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	transformerModel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
@@ -384,7 +383,7 @@ func (ra *relayAttempt) ensureResponsesImageResultsBase64(ctx context.Context, r
 				// The URL is the UPSTREAM's (image CDNs hand out signed links:
 				// ?key= / ?sig= / ?token=). Never let the raw query reach the log.
 				log.Warnf("image bridge: could not fetch %s for base64 responses result, leaving URL: %s",
-					xredact.URLSecrets(u), xredact.URLSecrets(err.Error()))
+					u, err.Error())
 				continue
 			}
 			part.ImageURL.URL = dataURL
