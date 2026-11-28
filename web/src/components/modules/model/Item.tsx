@@ -142,8 +142,8 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
 
                 {source === 'none' ? (
                     <div className="min-w-0">
-                        <p className="text-sm font-medium text-destructive">{t('card.noPrice')}</p>
-                        {!isListLayout && <p className="truncate text-xs text-muted-foreground">{t('card.noPriceSub')}</p>}
+                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-border">{t('card.noPrice')}</span>
+                        {!isListLayout && <p className="truncate text-xs text-muted-foreground mt-1">{t('card.noPriceSub')}</p>}
                     </div>
                 ) : perCallOnly ? (
                     <p className="flex items-center gap-1.5 text-sm text-muted-foreground">

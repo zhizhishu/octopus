@@ -310,6 +310,15 @@ func GetLLMPrice(modelName string) *model.LLMPrice {
 	return nil
 }
 
+// Priced reports whether billing would actually charge for the model: it resolves
+// the price exactly the way billing does (GetLLMPrice: a non-zero DB row wins,
+// otherwise the built-in catalog with the vendor-prefix fallback) and asks whether
+// any rate is set. Display-only — it changes no billing behaviour (next-1129).
+func Priced(modelName string) bool {
+	p := GetLLMPrice(modelName)
+	return p != nil && !p.IsZero()
+}
+
 func lookupLLMPrice(modelName string) *model.LLMPrice {
 	// A DB row (manual override) wins ONLY when it carries a real price. A zero placeholder
 	// row — auto-created when a model is added to a channel before it had a catalog price —

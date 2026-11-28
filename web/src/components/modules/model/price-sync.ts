@@ -102,6 +102,8 @@ export interface PriceRowLike extends TokenPrice {
     source?: string;
     per_call?: number;
     library?: TokenPrice | null;
+    /** 后端计费口径真值（是否有价）；老后端不带，前端退回本地推算 */
+    priced?: boolean;
 }
 
 /**
@@ -113,8 +115,14 @@ export interface PriceRowLike extends TokenPrice {
  *   library price until a sync writes it in (see libraryPlaceholder).
  */
 export function displaySource(row: PriceRowLike): DisplaySource {
+    // 后端 priced=false 是计费口径真值（含价库回落），优先于前端本地推算：
+    // 价库同步后有了价、但行还是零占位时，本地推算会误标没价。
+    if (row.priced === false) return 'none';
     if (row.source === 'manual') return 'manual';
-    if (isZeroPrice(row) && !(row.per_call ?? 0) && !row.library) return 'none';
+    if (isZeroPrice(row) && !(row.per_call ?? 0) && !row.library) {
+        // 后端说有价但本地看不到价库条目：走的是内置价库快照，仍按有价显示。
+        return row.priced ? 'library' : 'none';
+    }
     return 'library';
 }
 

@@ -25,8 +25,10 @@ export function Model() {
     const visibleModels = useMemo(() => {
         const term = searchTerm.toLowerCase().trim();
         const byName = !term ? sortedModels : sortedModels.filter((m) => m.name.toLowerCase().includes(term));
+        // 优先用后端 priced（计费口径真值：零占位行回落价库后仍算有价）；
+        // 老后端不带 priced 时退回本地价格求和。
         const hasPricing = (model: (typeof byName)[number]) =>
-            model.input + model.output + model.cache_read + model.cache_write + (model.per_call ?? 0) > 0;
+            model.priced ?? (model.input + model.output + model.cache_read + model.cache_write + (model.per_call ?? 0) > 0);
 
         if (filter === 'priced') {
             return byName.filter(hasPricing);

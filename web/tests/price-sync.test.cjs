@@ -63,3 +63,14 @@ test('relative day labels and zero time', () => {
     assert.equal(ps.formatClock(new Date(2026, 9, 30, 9, 5)), '09:05');
     assert.equal(ps.parseServerTime('0001-01-01T00:00:00Z'), null);
 });
+
+test('backend priced=false forces none; priced=true rescues zero rows (next-1129)', () => {
+    // 后端计费真值优先：priced=false 就算本地看到价库条目也算没价（计费为 0）。
+    assert.equal(ps.displaySource({ ...p(0, 0), source: 'library', library: p(5, 25), priced: false }), 'none');
+    // 零占位行 + 无价库条目 + 后端说有价（内置快照供价）-> 不当没价。
+    assert.equal(ps.displaySource({ ...p(0, 0), source: 'library', priced: true }), 'library');
+    // 老后端不带 priced：维持本地推算。
+    assert.equal(ps.displaySource({ ...p(0, 0), source: 'library' }), 'none');
+    // 手动行不受 priced=false 之外的逻辑影响。
+    assert.equal(ps.displaySource({ ...p(1, 2), source: 'manual', priced: true }), 'manual');
+});

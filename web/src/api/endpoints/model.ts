@@ -25,6 +25,8 @@ export interface LLMInfo extends LLMPrice {
     source?: string;
     /** 价库(models.dev)里这个模型的 token 价；没有就不带 */
     library?: TokenPrice | null;
+    /** 后端算的「是否有价」（计费口径真值）：false = 未定价，调用按 0 计。老后端不带 */
+    priced?: boolean;
 }
 
 /**

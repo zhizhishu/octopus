@@ -213,6 +213,13 @@ func modelListAccessPlanHeader(c *gin.Context) string {
 type llmListItem struct {
 	model.LLMInfo
 	Library *price.SyncPrice `json:"library,omitempty"`
+	// Priced is billing truth ("是否有价"): whether a call to this model would be
+	// charged anything at all, resolved exactly the way billing resolves it
+	// (non-zero DB row wins, else the built-in catalog). Display-only; the
+	// frontend uses it for the 未定价 tag and the priced/free filter so a
+	// zero-placeholder row that really bills at the library price is not
+	// mislabelled as free (next-1129).
+	Priced bool `json:"priced"`
 }
 
 func listLLM(c *gin.Context) {
@@ -223,7 +230,7 @@ func listLLM(c *gin.Context) {
 	}
 	out := make([]llmListItem, 0, len(models))
 	for _, m := range models {
-		item := llmListItem{LLMInfo: m}
+		item := llmListItem{LLMInfo: m, Priced: price.Priced(m.Name)}
 		if lib, ok := price.CatalogPrice(m.Name); ok {
 			sp := price.SyncPrice{Input: lib.Input, Output: lib.Output, CacheRead: lib.CacheRead, CacheWrite: lib.CacheWrite}
 			item.Library = &sp
