@@ -15,7 +15,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
 	"github.com/zhizhishu/octopus/internal/relay/errorjudge"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 const upstreamErrorBodyLimit = 16 * 1024
@@ -426,17 +425,17 @@ func upstreamErrorPublicCode(fallback string) string {
 	return code
 }
 
-// redactUpstreamFreeText 是上游生成自由文本进入落库/错误文本前的统一打码
+// redactUpstreamFreeText 原为上游自由文本落库前打码；pack-1128（用户 11-28 拍板）
 // （fix-ui1127b-r2）：URLSecrets 管 URL 形态、Secrets 管密钥形状串。只护我们自己的
 // 上游密钥；下游协议转发正文不在此改写，仍按原文转发/落库。
 func redactUpstreamFreeText(s string) string {
-	return xredact.Secrets(xredact.URLSecrets(s))
+	return s
 }
 
 func errSafeMessage(err error) string {
 	var upErr *upstreamError
 	if errors.As(err, &upErr) {
-		return xredact.URLSecrets(upErr.Error())
+		return upErr.Error()
 	}
 	if err == nil {
 		return ""
@@ -527,7 +526,7 @@ func upstreamBodySummary(body string) string {
 	if msg == "" {
 		msg = trimmed
 	}
-	msg = strings.Join(strings.Fields(xredact.Secrets(msg)), " ")
+	msg = strings.Join(strings.Fields(msg), " ")
 	const maxRunes = 400
 	if r := []rune(msg); len(r) > maxRunes {
 		msg = string(r[:maxRunes]) + "…"
