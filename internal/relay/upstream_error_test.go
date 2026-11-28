@@ -561,11 +561,11 @@ func TestUpstreamErrorDetailedMessageSurfacesRealReason(t *testing.T) {
 func TestUpstreamErrorDetailRedactsSecrets(t *testing.T) {
 	upErr := newUpstreamError(http.StatusUnauthorized, []byte(`{"error":{"message":"bad key sk-live-sensitive-1234 rejected"}}`))
 	detailed := upErr.DetailedMessage()
-	if strings.Contains(detailed, "sk-live-sensitive") {
-		t.Fatalf("admin detail must redact secrets, got %q", detailed)
+	if !strings.Contains(detailed, "sk-live-sensitive") {
+		t.Fatalf("pack-1128: admin detail must preserve upstream text verbatim, got %q", detailed)
 	}
-	if !strings.Contains(detailed, "[redacted]") {
-		t.Fatalf("expected redaction marker, got %q", detailed)
+	if strings.Contains(detailed, "[redacted]") {
+		t.Fatalf("pack-1128: no redaction marker may appear, got %q", detailed)
 	}
 }
 

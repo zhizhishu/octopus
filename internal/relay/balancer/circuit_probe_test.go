@@ -1110,8 +1110,9 @@ func TestCircuitProbeHistoryStoresOnlySafeNumbers(t *testing.T) {
 		t.Fatalf("safe prompt length = %d runes, want %d", len([]rune(got)), probePromptLimit)
 	}
 	// 凭据即使在题面里（理论上不该发生）也会被抹掉，且抹完仍能通过校验。
-	if got := probeSafePrompt("sk-abcdef123456 加 12 + 3 = ?"); strings.Contains(got, "sk-abcdef") || got == "" {
-		t.Fatalf("safe prompt = %q, want the token redacted but the prompt kept", got)
+	// pack-1128（用户 11-28 拍板）：题面原样保留，不再抹凭据形状。
+	if got := probeSafePrompt("sk-abcdef123456 加 12 + 3 = ?"); !strings.Contains(got, "sk-abcdef123456") {
+		t.Fatalf("pack-1128: safe prompt must preserve text verbatim, got %q", got)
 	}
 }
 

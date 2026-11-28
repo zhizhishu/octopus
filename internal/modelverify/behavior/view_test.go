@@ -32,17 +32,14 @@ func TestToViewRedactsProbeErrorsAndKeepsDisclaimer(t *testing.T) {
 	if len(view.Results) != 1 {
 		t.Fatalf("results = %d, want 1", len(view.Results))
 	}
-	if strings.Contains(view.Results[0].Error, "sk-secret-key") {
-		t.Fatalf("result error leaked secret: %q", view.Results[0].Error)
-	}
-	if !strings.Contains(view.Results[0].Error, "[redacted]") {
-		t.Fatalf("result error missing redaction marker: %q", view.Results[0].Error)
+	if !strings.Contains(view.Results[0].Error, "sk-secret-key") {
+		t.Fatalf("pack-1128: result error must be verbatim: %q", view.Results[0].Error)
 	}
 	if len(view.Errors) != 1 {
 		t.Fatalf("errors = %d, want 1", len(view.Errors))
 	}
-	if strings.Contains(view.Errors[0].Error, "sk-secret-key") {
-		t.Fatalf("probe error leaked secret: %q", view.Errors[0].Error)
+	if !strings.Contains(view.Errors[0].Error, "sk-secret-key") {
+		t.Fatalf("pack-1128: probe error must be verbatim: %q", view.Errors[0].Error)
 	}
 }
 

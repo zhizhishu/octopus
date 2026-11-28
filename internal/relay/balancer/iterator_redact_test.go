@@ -23,14 +23,20 @@ func TestIteratorSkipAndEndRedactMsgPinnedMode(t *testing.T) {
 	span := it.StartAttempt(1, 0, "ch1")
 	span.End(model.AttemptFailed, 401, "upstream said sk-test1234567890abcdefgh "+jwt)
 
-	for i, a := range it.Attempts() {
-		for _, secret := range []string{jwt, hex, "sk-test1234567890abcdefgh"} {
-			if strings.Contains(a.Msg, secret) {
-				t.Fatalf("attempt %d msg leaked secret: %s", i, a.Msg)
-			}
-		}
-		if !strings.Contains(a.Msg, "[redacted]") {
-			t.Fatalf("attempt %d msg missing [redacted]: %s", i, a.Msg)
+	// pack-1128（用户 11-28 拍板）：attempts.msg 原样落库，不再打码。
+	attempts := it.Attempts()
+	if len(attempts) != 2 {
+		t.Fatalf("expected 2 attempts, got %d", len(attempts))
+	}
+	if !strings.Contains(attempts[0].Msg, jwt) || !strings.Contains(attempts[0].Msg, hex) {
+		t.Fatalf("pack-1128: skip msg must be verbatim: %s", attempts[0].Msg)
+	}
+	if !strings.Contains(attempts[1].Msg, "sk-test1234567890abcdefgh") || !strings.Contains(attempts[1].Msg, jwt) {
+		t.Fatalf("pack-1128: end msg must be verbatim: %s", attempts[1].Msg)
+	}
+	for i, a := range attempts {
+		if strings.Contains(a.Msg, "[redacted]") {
+			t.Fatalf("pack-1128: attempt %d msg must not carry redaction markers: %s", i, a.Msg)
 		}
 	}
 }

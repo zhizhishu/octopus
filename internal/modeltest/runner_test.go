@@ -1403,13 +1403,14 @@ func TestRunRedactsSecretsFromUpstreamErrorSummary(t *testing.T) {
 	if len(result.Attempts) > 0 {
 		combined += " " + result.Attempts[0].Msg
 	}
-	if strings.Contains(combined, "sk-leaked") || strings.Contains(combined, "sk-second") || strings.Contains(combined, "Bearer sk") {
-		t.Fatalf("model-test error leaked secret material: %#v", result)
+	// pack-1128 监工纠偏：runner 读的是「客户端线」上的响应文本——物理上就是下游
+	// 客户端看到的那份，按口径必须打码；原样原文在 relay 日志/审计侧（另由
+	// relay/client_redact_pack1128_test.go 双向钉住）。
+	if strings.Contains(combined, "sk-leaked") || strings.Contains(combined, "sk-second") {
+		t.Fatalf("client-wire error must not carry platform upstream key material: %#v", result)
 	}
-	// relay 链路不把上游错误码填进 result.ErrorCode（探针时代适配器元数据），
-	// 钉打码本身：上游原因透出来了，但密钥材料一字不漏。
 	if !strings.Contains(result.Error, "[redacted]") {
-		t.Fatalf("expected redacted provider error, got %#v", result)
+		t.Fatalf("expected redacted client-wire error, got %#v", result)
 	}
 }
 

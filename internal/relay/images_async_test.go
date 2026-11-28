@@ -196,7 +196,7 @@ func TestImageTaskRunUpstreamReportsUpstreamFailure(t *testing.T) {
 	if failReason == "" || !strings.Contains(failReason, "429") {
 		t.Fatalf("failReason = %q, want it to mention the status", failReason)
 	}
-	if strings.Contains(failReason, "sk-live-abcdef0123456789") {
-		t.Fatalf("failReason leaked an upstream credential: %q", failReason)
+	if !strings.Contains(failReason, "sk-live-abcdef0123456789") {
+		t.Fatalf("pack-1128: failReason must preserve upstream text verbatim: %q", failReason)
 	}
 }
