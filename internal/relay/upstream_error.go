@@ -13,6 +13,8 @@ import (
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
+	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	"github.com/zhizhishu/octopus/internal/relay/errorjudge"
 	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
@@ -218,6 +220,9 @@ func attemptStatusCode(statusCode int, err error) int {
 }
 
 func relayErrorResponse(err error) (status int, code string, message string) {
+	if status, _, code, message, ok := terminalContentPolicyResponse(err); ok {
+		return status, code, message
+	}
 	if status, code, _, ok := upstreamErrorDetails(err); ok && status >= 400 && status < 600 {
 		// A context-window overflow is a deterministic client error: no channel will
 		// accept the oversized prompt, so surface a clean 400 the client can act on
@@ -904,4 +909,52 @@ func upstreamRetryAfter(err error) time.Duration {
 		return 0
 	}
 	return value
+}
+
+// terminalContentPolicyResponse preserves a terminal upstream request-fault
+// rejection for the caller. Stream-in-band policy errors are not upstreamError
+// instances, so without this branch they used to collapse into the generic 502
+// octopus_all_channels_failed — a status many clients retry. A payload fault is
+// deterministic: surface a 4xx (default 400 when the stream carried no HTTP
+// status), the upstream type/code, and its redacted message.
+func terminalContentPolicyResponse(err error) (status int, typ string, code string, message string, ok bool) {
+	if err == nil {
+		return 0, "", "", "", false
+	}
+	ev := failureEvidenceFromError(err, 0, false, false)
+	d := errorjudge.Judge(ev, balancer.CurrentCircuitRules())
+	if d.Category != errorjudge.CategoryContentPolicy {
+		return 0, "", "", "", false
+	}
+	status = ev.StatusCode
+	if status < 400 || status >= 500 {
+		status = http.StatusBadRequest
+	}
+	typ = ev.Type
+	if typ == "" {
+		typ = "invalid_request_error"
+	}
+	code = ev.Code
+	if code == "" {
+		code = typ
+	}
+	message = ev.Message
+	if message == "" {
+		message = errSafeMessage(err)
+	}
+	return status, typ, code, message, true
+}
+
+func recoveryWaitFromError(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	if wait := upstreamRetryAfter(err); wait > 0 {
+		return wait
+	}
+	var localErr *localRelayError
+	if errors.As(err, &localErr) && localErr != nil {
+		return localErr.retryAfter
+	}
+	return 0
 }

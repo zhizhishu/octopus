@@ -162,3 +162,16 @@ func TestRescueRoundBackoffIsFixedOneSecond(t *testing.T) {
 		}
 	}
 }
+
+func TestRescueBackoffUsesEarliestRecoveryWait(t *testing.T) {
+	err := &localRelayError{retryAfter: 7 * time.Second}
+	if got := rescueBackoffWithRecoveryWait(time.Second, err); got != 7*time.Second {
+		t.Fatalf("backoff = %s, want recovery wait 7s", got)
+	}
+	if got := rescueBackoffWithRecoveryWait(8*time.Second, err); got != 8*time.Second {
+		t.Fatalf("backoff = %s, want longer round wait 8s", got)
+	}
+	if got := rescueBackoffWithRecoveryWait(time.Second, nil); got != time.Second {
+		t.Fatalf("nil-error backoff = %s, want 1s", got)
+	}
+}

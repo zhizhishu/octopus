@@ -959,6 +959,7 @@ attemptChannels:
 			for {
 				interventionRounds++
 				backoff := rescueRoundBackoff(interventionRounds, sawNoBreakerChannel)
+				backoff = rescueBackoffWithRecoveryWait(backoff, finalErr)
 				// 上游明确要求"多久之后再来"时，这个节奏归它：比它更早重试只会再吃一次
 				// 429/503，把一次短暂限流拖成自己打自己的循环。这里只把等待拉长到上游
 				// 要求的下限；救援窗口仍由 armRescueDeadline 收口——窗口比 Retry-After
@@ -1067,6 +1068,12 @@ attemptChannels:
 	// future path from ever relabeling a delivered response as rescue_timeout.
 	// gateExhausted 同样优先：救援超时标签盖不掉一条“一次都没发出去”的限流终态。
 	if stopErr := rescueStopError(interventionCtx, originalRequest.Context(), rescueFired); stopErr != nil && !req.wroteBusinessData && !carriesUpstreamStatus(lastErr) && !gateExhausted {
+		var stopLocal *localRelayError
+		if errors.As(stopErr, &stopLocal) && stopLocal != nil {
+			if wait := recoveryWaitFromError(finalErr); wait > stopLocal.retryAfter {
+				stopLocal.retryAfter = wait
+			}
+		}
 		// 救援超时标签只许覆盖"没有真实上游错误可报"的情况。每一次尝试都回了 429/5xx 时, 调用方
 		// 必须看到那个真实状态码 —— 用 504 octopus_rescue_timeout 盖掉它, 等于把"上游在限流"
 		// 这件事藏成一个笼统的网关超时。
@@ -1114,6 +1121,9 @@ attemptChannels:
 		return
 	}
 	errType := "api_error"
+	if _, typ, _, _, ok := terminalContentPolicyResponse(finalErr); ok && typ != "" {
+		errType = typ
+	}
 	if gateExhausted {
 		// 头部还没提交，才写得出节奏提示（写入后写头是无效的）。写在这里而不是靠
 		// writeFinalRetryAfterHint，是因为后者的 429 提示源自上游 Retry-After，

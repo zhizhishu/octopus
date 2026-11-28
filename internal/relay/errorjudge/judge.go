@@ -84,12 +84,28 @@ type Decision struct {
 
 func (d Decision) ShouldRetry() bool { return d.Retry != "" && d.Retry != RetryNone }
 
+// Terminal request-fault codes borrowed from CLIProxyAPI
+// internal/clienterror/client_error.go requestFaultCodes/requestFaultTypes.
+// These are payload faults: resending the same bytes to another credential or
+// channel can only fail the same way, so they must neither rescue nor poison
+// channel health.
 var defaultContentPolicyTerms = []string{
 	"cyber_policy",
+	"cyber_policy_violation",
+	"bio_policy",
+	"misalignment_policy_violation",
 	"content_policy_violation",
+	"image_content_policy_violation",
 	"content_policy",
 	"safety_policy",
-	"safety",
+	"context_length_exceeded",
+	"message_too_big",
+	"string_above_max_length",
+	"invalid_prompt",
+	"invalid_value",
+	"unsupported_value",
+	"invalid_request_error",
+	"previous_response_not_found",
 }
 
 func baseDecision(ev Evidence) Decision {
@@ -107,7 +123,7 @@ func baseDecision(ev Evidence) Decision {
 	}
 
 	if ev.LocalRoute || ev.CircuitOpen || ev.NoCandidates {
-		if ev.AllowCircuitRescue {
+		if ev.AllowCircuitRescue && ev.RetryAfter > 0 {
 			return Decision{Category: CategoryLocalUnavailable, Retry: RetryNone, KeyEffect: EffectNone, ChannelEffect: EffectNone, Rescue: true, CountFailure: false, Cooldown: ev.RetryAfter, RuleID: "local.wait_for_recovery", Reason: "local route/circuit state may recover inside the rescue window"}
 		}
 		return Decision{Category: CategoryLocalUnavailable, Retry: RetryNone, KeyEffect: EffectNone, ChannelEffect: EffectNone, Rescue: false, CountFailure: false, Cooldown: ev.RetryAfter, RuleID: "local.fast_fail", Reason: "local route/circuit state cannot be fixed by immediate rescue"}
@@ -149,7 +165,7 @@ func baseDecision(ev Evidence) Decision {
 			"api key revoked",
 			"invalid_api_key",
 		) {
-			return Decision{Category: CategoryStrongAuth, Retry: RetryNextKey, KeyEffect: EffectDisableKey, ChannelEffect: EffectNone, Rescue: false, CountFailure: false, RuleID: "auth.strong_disable_key", Reason: "upstream says the credential/account is dead"}
+			return Decision{Category: CategoryStrongAuth, Retry: RetryNextKey, KeyEffect: EffectDisableKey, ChannelEffect: EffectNone, Rescue: true, CountFailure: false, RuleID: "auth.strong_disable_key", Reason: "upstream says the credential/account is dead"}
 		}
 		return Decision{Category: CategoryAuth, Retry: RetryNextKey, KeyEffect: EffectCooldownKey, ChannelEffect: EffectRecordFailure, Rescue: true, CountFailure: true, Cooldown: 15 * time.Minute, RuleID: "auth.ambiguous_credential", Reason: "ambiguous 401 may be a flaky gateway"}
 	}

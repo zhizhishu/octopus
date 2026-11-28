@@ -381,6 +381,12 @@ func TestHandlerCyberPolicyStreamErrorHitsUpstreamOnceAndDoesNotCountBreaker(t *
 	if gotHits != 1 {
 		t.Fatalf("cyber_policy must hit upstream exactly once (no retry/rescue), got %d status=%d body=%s", gotHits, rec.Code, rec.Body.String())
 	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cyber_policy must be returned as a non-retryable 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "cyber_policy") || !strings.Contains(rec.Body.String(), "blocked by upstream safety policy") {
+		t.Fatalf("cyber_policy response must preserve upstream code/message, got %s", rec.Body.String())
+	}
 	runtime := balancer.SnapshotKeyRuntime(channel.ID, channel.Keys[0].ID, "gpt-5.5")
 	if runtime.ConsecutiveFailures != 0 || runtime.RequestFailed != 0 {
 		t.Fatalf("content-policy refusal must not count as channel/key failure, runtime=%+v", runtime)

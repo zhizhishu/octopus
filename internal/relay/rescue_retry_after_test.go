@@ -96,16 +96,19 @@ func TestCircuitOpenFastFailsWithoutRescueLoop(t *testing.T) {
 	Handler(inbound.InboundTypeOpenAIChat, c)
 	elapsed := time.Since(started)
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("circuit-open route must fast-fail as 503, got %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("circuit-open rescue exhaustion must return 503, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	if rec.Result().Header.Get("Retry-After") == "" {
-		t.Fatalf("circuit-open fast failure must carry Retry-After, body=%s", rec.Body.String())
+		t.Fatalf("circuit-open rescue exhaustion must carry Retry-After, body=%s", rec.Body.String())
 	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("circuit-open route entered a rescue loop instead of fast-failing: %s", elapsed)
+	if elapsed < 1800*time.Millisecond {
+		t.Fatalf("all candidates cooling must wait inside the rescue window instead of fast-failing: %s", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("rescue wait must still stop at the test rescue deadline: %s", elapsed)
 	}
 	if got := hits.Load(); got != 0 {
-		t.Fatalf("circuit-open route must not hit upstream, got %d", got)
+		t.Fatalf("pre-tripped circuit-open route must not hit upstream, got %d", got)
 	}
 }
 

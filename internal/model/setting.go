@@ -703,7 +703,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒); 自动救援总计已封顶300s, 此值仅可再收紧(<300), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大300(自动救援总计上限), 0=关闭
 		{Key: SettingKeyRelayContentPolicyKeywords, Value: ""},                                          // 额外内容风控关键词(逗号分隔); 内置 cyber_policy/content_policy_violation/content_policy/safety_policy
-		{Key: SettingKeyRelayCircuitRescueWait, Value: "false"},                                         // 默认关: 熔断全开/无候选立即503; 开=进自动救援等待, 不改变300秒总窗口
+		{Key: SettingKeyRelayCircuitRescueWait, Value: "true"},                                          // 默认开: 熔断/冷却全满时在300秒救援窗内等到最早恢复; 关=立即503
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},

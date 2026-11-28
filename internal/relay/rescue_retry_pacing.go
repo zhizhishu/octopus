@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"errors"
 	"time"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
@@ -56,4 +57,17 @@ func excludeAttemptedChannels(group dbmodel.Group, attempts []dbmodel.ChannelAtt
 	}
 	group.Items = kept
 	return group, len(kept) > 0
+}
+
+// rescueBackoffWithRecoveryWait implements the 2026-11-28 all-candidates-cooling
+// rule: when route selection already knows the earliest cooldown/half-open
+// recovery time, the rescue loop sleeps until that time instead of polling the
+// same closed breaker once a second. The rescue deadline and client cancellation
+// still bound the wait; this helper only chooses the per-round sleep length.
+func rescueBackoffWithRecoveryWait(backoff time.Duration, err error) time.Duration {
+	var localErr *localRelayError
+	if errors.As(err, &localErr) && localErr != nil && localErr.retryAfter > backoff {
+		return localErr.retryAfter
+	}
+	return backoff
 }

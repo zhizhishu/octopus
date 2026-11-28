@@ -113,7 +113,7 @@ func rescueStopError(rescueCtx, clientCtx context.Context, rescueFired *atomic.B
 		return nil
 	}
 	if rescueFired != nil && rescueFired.Load() {
-		return &localRelayError{status: http.StatusGatewayTimeout, code: "octopus_rescue_timeout", strategy: "rescue_timeout", message: "automatic rescue timed out"}
+		return &localRelayError{status: http.StatusServiceUnavailable, code: "octopus_rescue_timeout", strategy: "rescue_timeout", message: "automatic rescue timed out"}
 	}
 	return &localRelayError{status: http.StatusServiceUnavailable, code: "octopus_rescue_stopped", strategy: "rescue_stopped", message: "automatic rescue stopped"}
 }
