@@ -232,6 +232,12 @@ test('saved snapshot polling updates unchanged log cards: empty, new, changed, f
     await tick();
     assert.equal(requests.length, beforeHidden + 1, 'visible page resumes polling');
     unsubscribe();
+    // react-query 的通知走 setTimeout(0) 调度（notifyManager defaultScheduler），
+    // 卸载前已排队的零时回调属于「卸载前排期的工作收尾」，不是卸载后的轮询。
+    // 先放干这些回调再记基线——否则基线记数点对 fake-timer 对齐敏感，
+    // 在不同 node/机器上同一回调落进卸载前后的 tick 不定，断言会脆（曾见 12/11）。
+    t.mock.timers.tick(1);
+    await setImmediate();
     const beforeUnmount = requests.length;
     await tick();
     assert.equal(requests.length, beforeUnmount, 'unmounted query does not poll');
