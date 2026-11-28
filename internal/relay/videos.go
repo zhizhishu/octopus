@@ -359,6 +359,7 @@ runIterator:
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, false)
 			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, "", false)
+			fallbackIter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			metrics.debug.route("fallback", fallbackGroup, fallbackIter, false)
 			if fallbackIter.Len() > 0 {
 				group = fallbackGroup
@@ -377,6 +378,7 @@ runIterator:
 		gateRequeued = true
 		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateQueueBudget(gateSkippedChannels), func() bool { return ctx.Err() != nil }) {
 			iter = balancer.NewIteratorWithSession(group, apiKeyID, requestModel, "", false)
+			iter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			metrics.debug.route("gate-requeue", group, iter, false)
 			goto runIterator
 		}

@@ -400,6 +400,7 @@ runIterator:
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, stream)
 			stickyEnabled = routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
 			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
+			fallbackIter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			if isResponsesCompactRawProtocol(options) {
 				prioritizeRawProtocolResponsesOwner(ctx, fallbackIter, compactPreviousResponseID, apiKeyID, userID)
 			}
@@ -420,6 +421,7 @@ runIterator:
 		gateRequeued = true
 		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateQueueBudget(gateSkippedChannels), func() bool { return ctx.Err() != nil }) {
 			iter = balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSessionKey, stickyEnabled)
+			iter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			if isResponsesCompactRawProtocol(options) {
 				prioritizeRawProtocolResponsesOwner(ctx, iter, compactPreviousResponseID, apiKeyID, userID)
 			}

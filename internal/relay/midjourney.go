@@ -568,7 +568,7 @@ func midjourneyTaskChannel(ctx context.Context, entry midjourneyTaskEntry) (*mod
 	return channel, true
 }
 
-func midjourneySingleAttempt(channel *model.Channel, keyID int, modelName string, success bool, started time.Time, msg string) []model.ChannelAttempt {
+func midjourneySingleAttempt(channel *model.Channel, keyID int, modelName string, success bool, started time.Time, msg string, num int) []model.ChannelAttempt {
 	status := model.AttemptFailed
 	if success {
 		status = model.AttemptSuccess
@@ -578,7 +578,7 @@ func midjourneySingleAttempt(channel *model.Channel, keyID int, modelName string
 		ChannelKeyID: keyID,
 		ChannelName:  channel.Name,
 		ModelName:    modelName,
-		AttemptNum:   1,
+		AttemptNum:   num,
 		Status:       status,
 		Duration:     int(time.Since(started).Milliseconds()),
 		Msg:          msg,
@@ -891,6 +891,7 @@ runIterator:
 		} else {
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, false)
 			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, plan.model, "", false)
+			fallbackIter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			metrics.debug.route("fallback", fallbackGroup, fallbackIter, false)
 			if fallbackIter.Len() > 0 {
 				iter = fallbackIter
@@ -907,6 +908,7 @@ runIterator:
 		gateRequeued = true
 		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateQueueBudget(gateSkippedChannels), func() bool { return ctx.Err() != nil }) {
 			iter = balancer.NewIteratorWithSession(group, apiKeyID, plan.model, "", false)
+			iter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			metrics.debug.route("gate-requeue", group, iter, false)
 			goto runIterator
 		}
@@ -1101,7 +1103,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 			if releaseGate != nil {
 				releaseGate.Release()
 			}
-			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, gateReason)...)
+			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, gateReason, len(attempts)+1)...)
 			continue
 		}
 		_, respBody, _, fwdErr := func() (int, []byte, string, error) {
@@ -1113,13 +1115,13 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 		}()
 		if fwdErr != nil {
 			log.Warnf("midjourney list-by-condition on channel %d failed: %v", channel.ID, fwdErr)
-			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, auditErrorMessage(fwdErr))...)
+			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, auditErrorMessage(fwdErr, len(attempts)+1))...)
 			continue
 		}
 		var part []json.RawMessage
 		if err := json.Unmarshal(respBody, &part); err != nil {
 			log.Warnf("midjourney list-by-condition on channel %d returned a non-array body", channel.ID)
-			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, "non-array response")...)
+			attempts = append(attempts, midjourneySingleAttempt(channel, k.keyID, "", false, started, "non-array response", len(attempts)+1)...)
 			continue
 		}
 		for _, item := range part {

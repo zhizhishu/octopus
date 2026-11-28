@@ -796,6 +796,7 @@ attemptChannels:
 			} else {
 				fallbackSticky := routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
 				fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSessionKey, fallbackSticky)
+				fallbackIter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 				fallbackIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, fallbackGroup.Items))
 				prioritizeResponsesSessionOwner(c.Request.Context(), fallbackIter, internalRequest, apiKeyID, userID)
 				metrics.debugRoute("fallback", fallbackGroup, fallbackIter, fallbackSticky)
@@ -829,6 +830,7 @@ attemptChannels:
 		}) {
 			requeueSticky := routeStickyEnabled(group.Mode, clientSession.Source)
 			iter = balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSessionKey, requeueSticky)
+			iter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			iter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, group.Items))
 			req.stickyEnabled = requeueSticky
 			metrics.debugRoute("gate-requeue", group, iter, requeueSticky)
@@ -1012,6 +1014,7 @@ attemptChannels:
 					interventionGroup := singleChannelGroup(resolution, requestModel)
 					interventionGroup = enrichGroupForSmartRouting(c.Request.Context(), interventionGroup, preferStreamRouting)
 					interventionIter := balancer.NewIteratorWithSession(interventionGroup, apiKeyID, requestModel, "", false)
+					interventionIter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 					interventionIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, interventionGroup.Items))
 					metrics.debugRoute("manual", interventionGroup, interventionIter, false)
 					if interventionIter.Len() > 0 {
@@ -1041,6 +1044,7 @@ attemptChannels:
 				// 连续失败 6 次后成功。循环只由救援窗口 / 总钟预算 / 取消收口。
 				freshSticky := routeStickyEnabled(freshGroup.Mode, clientSession.Source)
 				freshIter := balancer.NewIteratorWithSession(freshGroup, apiKeyID, requestModel, clientSessionKey, freshSticky)
+				freshIter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 				freshIter.PrioritizeChannels(nativeProtocolChannelIDs(c.Request.Context(), inboundType, freshGroup.Items))
 				prioritizeResponsesSessionOwner(c.Request.Context(), freshIter, internalRequest, apiKeyID, userID)
 				metrics.debugRoute("rescue", freshGroup, freshIter, freshSticky)

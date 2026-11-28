@@ -349,6 +349,15 @@ func (it *Iterator) Index() int {
 	return it.index
 }
 
+// SeedCount 把尝试计数器抬到 n（只升不降）：救援轮/重排队重建迭代器时从已记录的
+// 尝试数继续编号，新一轮不从 1 重启（pack-1128 D；生产证据：单条日志 200+ 次救援
+// 尝试 attempt_num 全是 1，因为每轮换新迭代器计数清零）。
+func (it *Iterator) SeedCount(n int) {
+	if n > it.count {
+		it.count = n
+	}
+}
+
 // Skip 记录当前通道被跳过（通道禁用、无Key、类型不兼容等）
 func (it *Iterator) Skip(channelID, channelKeyID int, channelName, msg string) {
 	it.count++

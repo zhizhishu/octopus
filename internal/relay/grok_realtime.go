@@ -332,6 +332,7 @@ runIterator:
 			fallbackGroup = enrichGroupForSmartRouting(ctx, fallbackGroup, true)
 			stickyEnabled = routeStickyEnabled(fallbackGroup.Mode, clientSession.Source)
 			fallbackIter := balancer.NewIteratorWithSession(fallbackGroup, apiKeyID, requestModel, clientSession.Key, stickyEnabled)
+			fallbackIter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			if fallbackIter.Len() > 0 {
 				iter = fallbackIter
 				goto runIterator
@@ -348,6 +349,7 @@ runIterator:
 		gateRequeued = true
 		if balancer.ChannelGateWaitAnyOpen(ctx, gateSkippedChannels, balancer.ChannelGateQueueBudget(gateSkippedChannels), func() bool { return ctx.Err() != nil }) {
 			iter = balancer.NewIteratorWithSession(group, apiKeyID, requestModel, clientSession.Key, stickyEnabled)
+			iter.SeedCount(len(allAttempts)) // pack-1128 D: 接力迭代器序号连续
 			metrics.debug.route("gate-requeue", group, iter, stickyEnabled)
 			goto runIterator
 		}
