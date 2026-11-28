@@ -198,6 +198,8 @@ test('endpoint option labels are English-only and cover the agreed set', () => {
         gemini_generate_content: 'Gemini',
         openai_embeddings: 'Embeddings',
         openai_images_generations: 'Image Generation',
+        // next-1129 第 10 件：流式出图是独立的检测端点。
+        openai_images_generations_stream: 'Streaming Image Generation',
         systemone: 'Decision',
     };
     assert.deepEqual(Object.fromEntries(MODEL_TEST_ENDPOINTS.map((endpoint) => [endpoint.value, endpoint.label])), want);
@@ -232,7 +234,7 @@ test('custom endpoint option is offered to type 6 only, every other endpoint sta
         assert.ok(!values.includes('custom'), `channel type ${type} 不该出现 custom`);
         // 其它端点仍然全部可用。
         assert.equal(values.length, MODEL_TEST_ENDPOINTS.length - 1, `channel type ${type} 少了端点`);
-        for (const endpoint of ['openai_chat', 'openai_responses', 'anthropic_messages', 'gemini_generate_content', 'openai_embeddings', 'openai_images_generations', 'systemone']) {
+        for (const endpoint of ['openai_chat', 'openai_responses', 'anthropic_messages', 'gemini_generate_content', 'openai_embeddings', 'openai_images_generations', 'openai_images_generations_stream', 'systemone']) {
             assert.ok(values.includes(endpoint), `channel type ${type} 少了 ${endpoint}`);
         }
     }

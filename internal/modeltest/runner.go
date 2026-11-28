@@ -72,6 +72,14 @@ const (
 	// 必须走 relay 的真转发实现（见 image_channel.go），不能走本包
 	// "自建 request → 出站适配器 transform" 那条路。
 	imageGenerationTestEndpointName = "openai_images_generations"
+	// streamImageGenerationTestEndpointName 是「流式出图」端点的名字（next-1129 第 10 件）。
+	//
+	// 它不是 imageGenerationTestEndpointName 的 stream 开关，而是一个**独立端点**：
+	// 非流式出图的判定口径是「整份 JSON 里有没有 data[] 图片」，流式出图的判定口径
+	// 是「SSE 帧里累积出几张图、首图多久到」，两者不能共用一套判定（见
+	// image_stream_channel.go 顶部的口径说明）。独立端点 = 用户点哪个测哪个，
+	// 老端点发出的字节与判定一个都不变。
+	streamImageGenerationTestEndpointName = "openai_images_generations_stream"
 )
 
 var defaultPromptCounter uint64
@@ -375,6 +383,8 @@ func modelTestAuditEndpoint(endpoint string) string {
 		return "model_test_embeddings"
 	case imageGenerationTestEndpointName:
 		return "model_test_images"
+	case streamImageGenerationTestEndpointName:
+		return "model_test_images_stream"
 	case "":
 		return "model_test"
 	default:
@@ -586,6 +596,16 @@ func normalizeEndpoint(value string) (testEndpoint, error) {
 			// images 没有独立的 inbound 类型：这个字段只在 testChannelKey 的
 			// ApplyChannelWireHeaders 里用，而图片分支根本不走那里（转发由 relay
 			// 的 ImagesHandler 负责）。填 OpenAI 家族里的 chat 值只是为了不留零值陷阱。
+			inbound: inbound.InboundTypeOpenAIChat,
+			path:    func(string) string { return "/v1/images/generations" },
+		}, nil
+	case streamImageGenerationTestEndpointName, "images_stream", "images_generations_stream", "openai_images_stream":
+		// 流式出图与上面的非流式图片端点打**同一个**上游地址，差别只在请求体多一个
+		// "stream":true 与下游侧的判定口径（累积 SSE 帧判图，见 image_stream_channel.go）。
+		return testEndpoint{
+			name:      streamImageGenerationTestEndpointName,
+			apiFormat: transformermodel.APIFormatOpenAIImageGeneration,
+			// 同非流式：这个字段不参与图片分支，填 chat 值只为不留零值陷阱。
 			inbound: inbound.InboundTypeOpenAIChat,
 			path:    func(string) string { return "/v1/images/generations" },
 		}, nil

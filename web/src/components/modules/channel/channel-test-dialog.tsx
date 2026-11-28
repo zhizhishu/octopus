@@ -30,6 +30,7 @@ import {
     channelTypeForTestEndpoint,
     defaultModelTestEndpointForChannel,
     isImageTestEndpoint,
+    isStreamImageTestEndpoint,
     makeModelTestPrompt,
     modelTestEndpointsForChannel,
     sanitizeChannelTestError,
@@ -186,6 +187,9 @@ function AdvancedChannelTestDialog({
         const selected = [...endpoints];
         const locked = selected.filter((ep) => perEndpoint.get(ep) === true);
         const images = selected.filter((ep) => isImageTestEndpoint(ep));
+        // next-1129 第 10 件：流式出图端点虽然也是图片端点（开关同样对它无效），
+        // 但后端会真的按 SSE 逐步推图，界面不能再说"一次返回"。
+        const streamImages = selected.filter((ep) => isStreamImageTestEndpoint(ep));
         // 一个端点都没选时没有"逐端点"可算，开关外观沿用渠道级判据（此时按钮本来就禁用）。
         const channelWideLock = shouldForceChannelTestStream({
             channelType: channel.type,
@@ -203,6 +207,7 @@ function AdvancedChannelTestDialog({
             anyLocked: locked.length > 0,
             imageOnly,
             includesImage: images.length > 0,
+            includesStreamImage: streamImages.length > 0,
             // 开关被锁：要么全部恒流式，要么全部固定非流式（图片）。
             switchLocked: allLocked || imageOnly,
         };
@@ -511,9 +516,13 @@ function AdvancedChannelTestDialog({
                         ) : (
                             <span className="text-xs text-muted-foreground">
                                 {streamLock.imageOnly
-                                    ? '图片会一次返回，当前不测试逐步出图。'
+                                    ? streamLock.includesStreamImage
+                                        ? '流式出图端点按 SSE 逐步出图，结果里记张数/首图/总耗时；非流式图片端点仍一次返回。开关对图片端点无效。'
+                                        : '图片会一次返回，当前不测试逐步出图。选「Streaming Image Generation」才走 SSE。'
                                     : streamLock.includesImage
-                                        ? '图片端点固定非流式，其余端点按此开关（chat / gemini 真开真关）'
+                                        ? streamLock.includesStreamImage
+                                            ? '流式出图端点走 SSE，非流式图片端点一次返回，其余端点按此开关（chat / gemini 真开真关）'
+                                            : '图片端点固定非流式，其余端点按此开关（chat / gemini 真开真关）'
                                         : '（chat / gemini 真开真关；关掉后思考模型可能因非流超时，日志会如实标注）'}
                             </span>
                         )}

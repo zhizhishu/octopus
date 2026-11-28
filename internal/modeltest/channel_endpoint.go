@@ -122,10 +122,13 @@ func customChannelTestEndpoint(channel *dbmodel.Channel, endpointName string) (*
 		copy.Type = outbound.OutboundTypeOpenAIEmbedding
 	case "systemone":
 		copy.Type = outbound.OutboundTypeSystemOne
-	case imageGenerationTestEndpointName:
+	case imageGenerationTestEndpointName, streamImageGenerationTestEndpointName:
 		// Images ride the same chat-compatible type as production: with the stored
 		// path overrides cleared, relay.openAIUpstreamURL joins the standard
 		// <origin>/v1/images/generations onto the derived base, query included.
+		// 流式出图（next-1129 第 10 件）与非流式图片端点同源同路，只差一个 stream 字段，
+		// 所以这里必须同一待遇：否则 type 6 选流式出图会带着自定义路径/自定义类型去发，
+		// 与非流式那条路不一致。
 		copy.Type = outbound.OutboundTypeOpenAIChat
 	default:
 		channelType, chatProtocol := testEndpointChannelType(endpointName)

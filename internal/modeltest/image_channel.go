@@ -29,14 +29,18 @@ const (
 	imageTestEndpointPath = "/images/generations"
 )
 
-// isImageTestEndpoint 判断端点名是否为图片端点。空值按默认端点（openai_chat）处理，
-// 与 isEmbeddingTestEndpoint 的语义一致。
+// isImageTestEndpoint 判断端点名是否为图片端点（含 next-1129 第 10 件的流式出图）。
+// 空值按默认端点（openai_chat）处理，与 isEmbeddingTestEndpoint 的语义一致。
+//
+// 两个图片端点走**同一条**转发与准入路径（relay.ImagesHandler + 能力位），只有
+// 请求体里的 stream 与下游判定口径不同；因此判定"是不是图片端点"必须两个都认，
+// 否则流式出图会被当成 chat 端点去做能力位/形状判定。
 func isImageTestEndpoint(endpoint string) bool {
 	normalized, err := normalizeEndpoint(endpoint)
 	if err != nil {
 		return false
 	}
-	return normalized.name == imageGenerationTestEndpointName
+	return normalized.name == imageGenerationTestEndpointName || normalized.name == streamImageGenerationTestEndpointName
 }
 
 // imageTestOutcome 是一次图片渠道测试的结果载体。
@@ -117,15 +121,18 @@ func (r *modelRunner) tryImageChannel(ctx context.Context, channel *dbmodel.Chan
 // （api_key_id / user_id / request_ip / supported_models），再把这次转发钉在
 // 目标渠道上，交给真链路去发。
 func (r *modelRunner) forwardImageTest(ctx context.Context, channel *dbmodel.Channel, upstreamModel string) imageTestOutcome {
-	// 图片探针**固定非流式**，不读 r.request.Stream。
+	// 图片探针默认**固定非流式**，不读 r.request.Stream（第 10 件之前的老口径）。
 	//
 	// 理由（宁可少测一种模式，也不许测出一条假红）：OpenAI Images 的流式响应没有
 	// 统一的判定口径——gpt-image 系列推的是 image_generation.partial_image 事件，
 	// 别的厂商干脆只在最后一帧给 data[]，而 relay 的 Images 流式分支（proxySSE）
 	// 是原样透传。若在这里按流式打，结果解析只能猜形状，猜错就会把一条好渠道报成
 	// "上游没给图片数据"。因此图片探针发送普通的非流式 ImageRequest。
-	// 流式图片渠道要测，得先定义清楚 SSE 判定口径，那是另一轮的事（已写进交接报告）。
-	stream := false
+	//
+	// next-1129 第 10 件把「流式图片」做成了一个**独立端点**而不是这个端点上的
+	// stream 开关：那个端点自己带 stream=true 与一套写明的 SSE 判图口径
+	// （image_stream_channel.go），所以这里的非流式字节与判定依然一个字符都不变。
+	stream := isStreamImageTestEndpoint(r.request.Endpoint)
 	prompt := strings.TrimSpace(r.request.Prompt)
 	if prompt == "" || prompt == defaultPromptSentinel {
 		prompt = imageTestPrompt
@@ -143,13 +150,25 @@ func (r *modelRunner) forwardImageTest(ctx context.Context, channel *dbmodel.Cha
 	if quality := strings.TrimSpace(r.request.Quality); quality != "" {
 		payload["quality"] = quality
 	}
+	if stream {
+		// 流式端点必须真的让上游按 SSE 推图，否则 relay 会按 content-type 走非流式
+		// 透传，那测的就不是流式了。
+		payload["stream"] = true
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return imageTestOutcome{stream: stream, err: fmt.Errorf("build images request: %w", err)}
 	}
 
 	recorder := newImageTestRecorder()
-	c, _ := gin.CreateTestContext(recorder)
+	var streamRecorder *imageStreamTestRecorder
+	// gin 只要求一个 http.ResponseWriter；两个 recorder 都实现它，非流式那条原样用老 recorder。
+	var downstream http.ResponseWriter = recorder
+	if stream {
+		streamRecorder = newImageStreamTestRecorder()
+		downstream = streamRecorder
+	}
+	c, _ := gin.CreateTestContext(downstream)
 	// URL 里的主机没有意义：ImagesHandler 用渠道的 base_url 拼上游地址，这里只是给
 	// 真链路一个形状正确的下游请求。路径必须与生产路由一致。
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://octopus.internal/v1/images/generations", bytes.NewReader(body))
@@ -168,6 +187,11 @@ func (r *modelRunner) forwardImageTest(ctx context.Context, channel *dbmodel.Cha
 	relay.WithImagesChannelTest(c, channel)
 
 	relay.ImagesHandler(imageTestEndpointPath, c)
+
+	if stream {
+		// 流式出图：收尾与判图口径全在 image_stream_channel.go，非流式那段原样不动。
+		return finishStreamImageTestOutcome(streamRecorder, c)
+	}
 
 	outcome := imageTestOutcome{
 		status:       recorder.StatusCode(),

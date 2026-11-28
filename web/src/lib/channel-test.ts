@@ -17,6 +17,10 @@ export const MODEL_TEST_ENDPOINTS = [
     { value: 'gemini_generate_content', label: 'Gemini' },
     { value: 'openai_embeddings', label: 'Embeddings' },
     { value: 'openai_images_generations', label: 'Image Generation' },
+    // next-1129 第 10 件：流式出图是**独立端点**，不是上一个端点的 stream 开关。
+    // 判定口径不同（SSE 帧累积判图 vs 整份 JSON 的 data[]），后端也把它当成另一个
+    // 端点在跑（internal/modeltest/image_stream_channel.go）。
+    { value: 'openai_images_generations_stream', label: 'Streaming Image Generation' },
     { value: 'systemone', label: 'Decision' },
 ] as const;
 
@@ -30,6 +34,7 @@ export const MODEL_TEST_ENDPOINT_LABELS: Record<ModelTestEndpoint, string> = {
     gemini_generate_content: 'Gemini',
     openai_embeddings: 'Embeddings',
     openai_images_generations: 'Image Generation',
+    openai_images_generations_stream: 'Streaming Image Generation',
     systemone: 'Decision',
 };
 
@@ -57,6 +62,20 @@ const IMAGE_TEST_ENDPOINT_NAMES = new Set([
     'images', // runner.go:535 的别名
     'images_generations',
     'openai_images',
+    // next-1129 第 10 件：流式出图（另一个端点名，但同一个图片转发路径与同一套
+    // 图片专属 UI：尺寸/质量/张数提示、不锁流式、预览打码都按图片走）。
+    'openai_images_generations_stream',
+    'images_stream',
+    'images_generations_stream',
+    'openai_images_stream',
+]);
+
+/** 流式出图端点名（含后端 normalizeEndpoint 接受的别名）。 */
+const STREAM_IMAGE_TEST_ENDPOINT_NAMES = new Set([
+    'openai_images_generations_stream',
+    'images_stream',
+    'images_generations_stream',
+    'openai_images_stream',
 ]);
 
 /**
@@ -69,6 +88,18 @@ const IMAGE_TEST_ENDPOINT_NAMES = new Set([
 export function isImageTestEndpoint(endpoint?: string): boolean {
     const name = (endpoint ?? '').toLowerCase().trim().replace(/[-/]/g, '_');
     return IMAGE_TEST_ENDPOINT_NAMES.has(name);
+}
+
+/**
+ * 该端点是不是 next-1129 第 10 件新增的「流式出图」端点（含别名）。
+ *
+ * 与后端 `isStreamImageTestEndpoint` 同一口径：它**仍然是**图片端点（走同一个
+ * relay.ImagesHandler、同一套尺寸/质量控件），只是后端对它固定发 stream:true 并按
+ * SSE 帧累积判图，所以界面要说“逐步出图”，不能继续写“图片会一次返回”。
+ */
+export function isStreamImageTestEndpoint(endpoint?: string): boolean {
+    const name = (endpoint ?? '').toLowerCase().trim().replace(/[-/]/g, '_');
+    return STREAM_IMAGE_TEST_ENDPOINT_NAMES.has(name);
 }
 
 export const DEFAULT_MODEL_TEST_TIMEOUT_SECONDS = 180;
@@ -159,7 +190,9 @@ export function channelTypeForTestEndpoint(type: ChannelType, endpoint: ModelTes
             // 图片走 relay 的同源标准路径（不经渠道自定义地址），按 chat 形状算。
             // 图片端点本身固定非流式 + 通用 UA，两个判据都不看渠道类型，这里只是让
             // 「同源标准路径」这个口径在身份/流式判据里保持一致。
+            // 流式出图同理：上游地址还是 /v1/images/generations，身份也还是通用 UA。
             case 'openai_images_generations': return ChannelType.OpenAIChat;
+            case 'openai_images_generations_stream': return ChannelType.OpenAIChat;
             default: return type;
         }
     }

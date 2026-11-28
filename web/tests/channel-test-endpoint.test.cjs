@@ -17,7 +17,7 @@ const ChannelType = {
     SystemOne: 7,
 };
 
-const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channelTestIdentityFor, makeModelTestPrompt, channelTypeForTestEndpoint, channelTestUpstreamPath, MODEL_TEST_ENDPOINTS } =
+const { defaultModelTestEndpointForChannel, shouldForceChannelTestStream, channelTestIdentityFor, makeModelTestPrompt, channelTypeForTestEndpoint, channelTestUpstreamPath, isImageTestEndpoint, isStreamImageTestEndpoint, MODEL_TEST_ENDPOINTS } =
     load('src/lib/channel-test.ts', {
         '@/api/endpoints/channel': { ChannelType },
         // 用真实语义的迷你替身：gpt-5.5 / [1m] / context-1m 命中。
@@ -197,18 +197,39 @@ test('非 Chat 族渠道的残留 shape 不生效', () => {
  * images_generations / openai_images，且 normalizeEndpoint 会小写、去空白、
  * 把 '-' 和 '/' 换成 '_'（runner.go:499-506）。
  */
-const IMAGE_ENDPOINTS = ['openai_images_generations', 'images', 'images_generations', 'openai_images'];
+const IMAGE_ENDPOINTS = ['openai_images_generations', 'images', 'images_generations', 'openai_images',
+    // next-1129 第 10 件：流式出图端点（含别名）同样是图片端点，同样用出图题面。
+    'openai_images_generations_stream', 'images_stream', 'images_generations_stream', 'openai_images_stream'];
+const IMAGE_ENDPOINT_VALUES = new Set(IMAGE_ENDPOINTS);
 
 test('image prompts describe an image; all other endpoints retain arithmetic and no-arg compatibility', () => {
     for (const endpoint of IMAGE_ENDPOINTS) assert.equal(makeModelTestPrompt(endpoint), 'a cute cat');
-    for (const { value } of MODEL_TEST_ENDPOINTS.filter((e) => e.value !== 'openai_images_generations')) {
+    for (const { value } of MODEL_TEST_ENDPOINTS.filter((e) => !IMAGE_ENDPOINT_VALUES.has(e.value))) {
         assert.match(makeModelTestPrompt(value), /请只回答算式结果，不要解释：\d{4} \+ \d{4} = \?/);
     }
     assert.match(makeModelTestPrompt(), /算式结果/);
 });
 
-test('explicit upstream tests remap only ordinary chat protocol types', () => {
-    const targets = { openai_chat: 0, openai_responses: 1, anthropic_messages: 2, gemini_generate_content: 3 };
+/**
+ * next-1129 第 10 件：流式出图端点与既有图片端点共用图片 UI/判定，但是另一个端点名：
+ * 两个都算"图片端点"（共用尺寸/质量/题面/不锁流式），只有新的那个算"流式出图"。
+ */
+test('streaming image endpoint is an image endpoint but its own endpoint', () => {
+    for (const name of ['openai_images_generations_stream', 'images_stream', 'images_generations_stream', 'openai_images_stream', 'OpenAI-Images-Generations-Stream']) {
+        assert.equal(isImageTestEndpoint(name), true, `${name} 必须被当成图片端点`);
+        assert.equal(isStreamImageTestEndpoint(name), true, `${name} 必须被当成流式出图端点`);
+    }
+    for (const name of ['openai_images_generations', 'images', 'openai_chat', 'openai_embeddings', 'systemone']) {
+        assert.equal(isStreamImageTestEndpoint(name), false, `${name} 不是流式出图端点`);
+    }
+    assert.equal(isImageTestEndpoint('openai_images_generations'), true, '非流式图片端点仍是图片端点');
+    // type 6 选择流式出图时走同源标准路径，身份/形状按 chat 算（与非流式图片端点一致）。
+    assert.equal(channelTypeForTestEndpoint(6, 'openai_images_generations_stream'), 0);
+    // 图片端点（含流式）不参与"强制流式"锁：后端对它写死 stream，不看开关。
+    assert.equal(shouldForceChannelTestStream({ endpoint: 'openai_images_generations_stream', channelType: 1 }), false);
+});
+
+test('explicit upstream tests remap only ordinary chat protocol types', () => {    const targets = { openai_chat: 0, openai_responses: 1, anthropic_messages: 2, gemini_generate_content: 3 };
     for (const source of [0, 1, 2, 3]) {
         for (const [endpoint, target] of Object.entries(targets)) assert.equal(channelTypeForTestEndpoint(source, endpoint), target);
         for (const endpoint of ['openai_embeddings', 'openai_images_generations', 'systemone']) assert.equal(channelTypeForTestEndpoint(source, endpoint), source);
