@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/zhizhishu/octopus/internal/modelverify/tokenbank"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // ViewReport 是给管理面板用的只读报告。
@@ -114,14 +113,14 @@ func ToView(report Report) ViewReport {
 			Data:    jsonSafeMap(res.Data),
 		}
 		if res.Err != nil {
-			item.Error = xredact.Secrets(res.Err.Error())
+			item.Error = res.Err.Error()
 		}
 		out.Results = append(out.Results, item)
 	}
 	for _, e := range report.Errors {
 		out.Errors = append(out.Errors, ProbeError{
 			Probe: e.Probe,
-			Error: xredact.Secrets(e.Error),
+			Error: e.Error,
 		})
 	}
 

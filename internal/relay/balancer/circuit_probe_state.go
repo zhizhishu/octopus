@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // ── 熔断探测 · 状态与持久化 ────────────────────────────────────────────────
@@ -418,7 +417,7 @@ const probePromptSymbols = "+-−×*·÷=/?.,:;!()[]？。，、：；！（）�
 //     （控制符、emoji、引号、@ $ # & | \ < > % ^ ~ 等）就**整条丢掉**，而不是
 //     偷偷裁成半句话——历史里宁可不留题面，也不留半句可疑文本。
 func probeSafePrompt(prompt string) string {
-	prompt = strings.Join(strings.Fields(xredact.Secrets(prompt)), " ")
+	prompt = strings.Join(strings.Fields(prompt), " ")
 	if prompt == "" {
 		return ""
 	}

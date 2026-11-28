@@ -26,7 +26,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
 	"github.com/zhizhishu/octopus/internal/utils/safe"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
@@ -828,7 +827,7 @@ func (r *modelRunner) tryChannel(ctx context.Context, channel *dbmodel.Channel, 
 			return true
 		}
 		r.recordAttempt(channel.ID, key.ID, channelName, upstreamModel, r.result.UpstreamPath, dbmodel.AttemptFailed, status, duration, err.Error())
-		r.result.Error = xredact.Secrets(err.Error())
+		r.result.Error = err.Error()
 		r.result.StatusCode = status
 		if status != http.StatusTooManyRequests {
 			break
@@ -845,7 +844,7 @@ func (r *modelRunner) tryChannelViaRelay(ctx context.Context, channel *dbmodel.C
 	sender, err := NewRelaySender(*channel, upstreamModel, r.request.Endpoint)
 	if err != nil {
 		r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptSkipped, 0, 0, err.Error())
-		r.result.Error = xredact.Secrets(err.Error())
+		r.result.Error = err.Error()
 		return false
 	}
 	prompt := strings.TrimSpace(r.request.Prompt)
@@ -865,7 +864,7 @@ func (r *modelRunner) tryChannelViaRelay(ctx context.Context, channel *dbmodel.C
 		status = statusErr.Status
 	}
 	r.recordAttempt(channel.ID, 0, channelName, upstreamModel, "", dbmodel.AttemptFailed, status, duration, sendErr.Error())
-	r.result.Error = xredact.Secrets(sendErr.Error())
+	r.result.Error = sendErr.Error()
 	r.result.StatusCode = status
 	return false
 }
@@ -1070,7 +1069,7 @@ func (r *modelRunner) testChannelKey(ctx context.Context, adapter transformermod
 		}
 		code, message := upstreamErrorSummary(body)
 		if message == "" {
-			message = xredact.Secrets(string(body))
+			message = string(body)
 		}
 		if message == "" {
 			message = http.StatusText(response.StatusCode)
@@ -1320,7 +1319,7 @@ func channelDisplayName(channel *dbmodel.Channel) string {
 
 func (r *modelRunner) fail(err error) {
 	r.result.Success = false
-	r.result.Error = xredact.Secrets(err.Error())
+	r.result.Error = err.Error()
 }
 
 func (r *modelRunner) ensureProxyConnectivity(ctx context.Context, channel *dbmodel.Channel, upstreamModel string) bool {
@@ -1339,7 +1338,7 @@ func (r *modelRunner) ensureProxyConnectivity(ctx context.Context, channel *dbmo
 		msg = fmt.Sprintf("%s: %s", info.Description, msg)
 	}
 	r.recordAttempt(channel.ID, 0, channelDisplayName(channel), upstreamModel, "", dbmodel.AttemptFailed, status, duration, fmt.Sprintf("proxy connectivity failed: %s", msg))
-	r.result.Error = xredact.Secrets(fmt.Sprintf("proxy connectivity failed: %s", msg))
+	r.result.Error = fmt.Sprintf("proxy connectivity failed: %s", msg)
 	r.result.ErrorCode = "proxy_connectivity_failed"
 	r.result.StatusCode = status
 	return false
@@ -1381,7 +1380,7 @@ func (r *modelRunner) recordAttempt(channelID, keyID int, channelName, modelName
 		AttemptNum:   r.attempt,
 		Status:       status,
 		Duration:     duration,
-		Msg:          xredact.Secrets(msg),
+		Msg:          msg,
 		ProxyUsed:    r.result.ProxyUsed,
 		ProxySource:  r.result.ProxySource,
 		ProxyScheme:  r.result.ProxyScheme,
@@ -1737,13 +1736,13 @@ func upstreamErrorSummary(body []byte) (string, string) {
 	switch value := payload.Error.(type) {
 	case map[string]any:
 		code := stringify(value["code"])
-		message := xredact.Secrets(stringify(value["message"]))
+		message := stringify(value["message"])
 		if message == "" {
-			message = xredact.Secrets(stringify(value["type"]))
+			message = stringify(value["type"])
 		}
 		return code, message
 	case string:
-		return "", xredact.Secrets(value)
+		return "", value
 	default:
 		return "", ""
 	}
@@ -1991,13 +1990,13 @@ func summarizeNonJSONErrorBody(body []byte) string {
 		server := lastBetween(text, "<center>", "</center>")
 		if title != "" {
 			if server != "" && !strings.EqualFold(server, title) {
-				return xredact.Secrets(fmt.Sprintf("upstream returned HTML error page: %s (%s)", cleanHTMLText(title), cleanHTMLText(server)))
+				return fmt.Sprintf("upstream returned HTML error page: %s (%s)", cleanHTMLText(title), cleanHTMLText(server))
 			}
-			return xredact.Secrets(fmt.Sprintf("upstream returned HTML error page: %s", cleanHTMLText(title)))
+			return fmt.Sprintf("upstream returned HTML error page: %s", cleanHTMLText(title))
 		}
 		return "upstream returned HTML error page"
 	}
-	return xredact.Secrets(trimErrorText(text))
+	return trimErrorText(text)
 }
 
 func firstBetween(value, start, end string) string {

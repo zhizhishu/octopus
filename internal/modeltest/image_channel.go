@@ -15,7 +15,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/relay"
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
@@ -99,7 +98,7 @@ func (r *modelRunner) tryImageChannel(ctx context.Context, channel *dbmodel.Chan
 	r.result.IsStream = outcome.stream
 	if outcome.err != nil {
 		r.recordAttempt(channel.ID, outcome.keyID, channelName, upstreamModel, outcome.upstreamPath, dbmodel.AttemptFailed, outcome.status, duration, outcome.err.Error())
-		r.result.Error = xredact.Secrets(outcome.err.Error())
+		r.result.Error = outcome.err.Error()
 		r.result.StatusCode = outcome.status
 		if outcome.errorCode != "" {
 			r.result.ErrorCode = outcome.errorCode
@@ -290,14 +289,14 @@ func imageTestErrorMessage(body []byte) string {
 	}
 	if err := json.Unmarshal(body, &payload); err == nil {
 		if message := strings.TrimSpace(payload.Message); message != "" {
-			return xredact.Secrets(trimErrorText(message))
+			return trimErrorText(message)
 		}
 		if message := strings.TrimSpace(payload.Error.Message); message != "" {
-			return xredact.Secrets(trimErrorText(message))
+			return trimErrorText(message)
 		}
 	}
 	if text := strings.TrimSpace(string(body)); text != "" {
-		return xredact.Secrets(trimErrorText(text))
+		return trimErrorText(text)
 	}
 	return "images upstream failed without a response body"
 }

@@ -16,7 +16,6 @@ import (
 	transformermodel "github.com/zhizhishu/octopus/internal/transformer/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 )
 
 // ── 断路器探测（breaker probe）──────────────────────────────────────────────
@@ -727,7 +726,7 @@ func circuitProbeHistoryAnswer(text, channelKey string) string {
 		return ""
 	}
 	text = circuitProbeRedactExactKey(text, channelKey)
-	text = xredact.Secrets(text)
+	text = text
 	return circuitProbeTruncateRunes(text, circuitProbeAnswerLimit)
 }
 

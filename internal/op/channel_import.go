@@ -11,7 +11,6 @@ import (
 
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xstrings"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
@@ -333,5 +332,5 @@ func safeChannelCSVError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return xredact.Secrets(err.Error())
+	return err.Error()
 }

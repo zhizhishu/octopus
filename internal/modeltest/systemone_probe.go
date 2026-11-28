@@ -12,7 +12,6 @@ import (
 
 	"github.com/zhizhishu/octopus/internal/helper"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
@@ -78,7 +77,7 @@ func (r *modelRunner) trySystemOneChannel(ctx context.Context, channel *dbmodel.
 			return true
 		}
 		r.recordAttempt(channel.ID, key.ID, channelName, upstreamModel, r.result.UpstreamPath, dbmodel.AttemptFailed, status, duration, err.Error())
-		r.result.Error = xredact.Secrets(err.Error())
+		r.result.Error = err.Error()
 		r.result.StatusCode = status
 		if status != http.StatusTooManyRequests {
 			break
@@ -132,7 +131,7 @@ func postSystemOneProbe(ctx context.Context, channel *dbmodel.Channel, key, mode
 		if preview == "" {
 			preview = http.StatusText(resp.StatusCode)
 		}
-		return resp.StatusCode, "", fmt.Errorf("upstream status %d: %s", resp.StatusCode, xredact.Secrets(preview))
+		return resp.StatusCode, "", fmt.Errorf("upstream status %d: %s", resp.StatusCode, preview)
 	}
 	return resp.StatusCode, preview, nil
 }
