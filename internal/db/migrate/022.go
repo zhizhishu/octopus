@@ -10,7 +10,6 @@ import (
 	"github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
 	"github.com/zhizhishu/octopus/internal/utils/log"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 	"gorm.io/gorm"
 )
@@ -230,5 +229,5 @@ func redactURLForLog(raw string) string {
 		parsed.User = url.User("redacted")
 		trimmed = parsed.String()
 	}
-	return xredact.Secrets(xredact.URLSecrets(trimmed))
+	return trimmed
 }
