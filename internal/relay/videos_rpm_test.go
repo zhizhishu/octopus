@@ -92,3 +92,48 @@ func TestVideosCreateCountsChannelRPMPollDoesNot(t *testing.T) {
 		t.Fatalf("channel RPM after poll = %d, want 1 (poll must not count)", got)
 	}
 }
+
+// 视频创建走「入站 body len/4」的 TPM 估算输入：非 chat 协议不能再按 0 进闸。
+func TestVideosCreateCountsEstimatedInputTPM(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	balancer.ResetChannelGates()
+	t.Cleanup(balancer.ResetChannelGates)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"vid_tpm_task","status":"queued"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	ch := dbmodel.Channel{
+		Name:     "video-tpm-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "tpm-video-model",
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "tpm-secret-key"}},
+	}
+	if err := op.ChannelCreate(&ch, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	body := `{"model":"tpm-video-model","prompt":"generate a sunset video"}`
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set("api_key_id", 0)
+	c.Set("user_id", videoTestOwnerUserID)
+	c.Set("request_ip", "127.0.0.1")
+
+	VideosHandler(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected video create to succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	want := int64(len(body)) / 4
+	if got := balancer.ChannelGateCurrentTPM(ch.ID); got != want {
+		t.Fatalf("channel TPM after create = %d, want estimated input %d", got, want)
+	}
+}
