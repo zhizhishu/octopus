@@ -49,6 +49,8 @@ type RawProtocolOptions struct {
 	// 正文，对这类上游就是往请求里凭空塞一个它不认识的字段。客户端自己带了 model
 	// 时仍照旧改写（model_mapping 照常生效）。零值 = 改动前行为，存量端点字节不变。
 	OmitAbsentModel bool
+	// RejectStream：客户端 stream=true 时直接 400（OpenAI Decisions API 不支持流式）。
+	RejectStream bool
 	// PerCallBilling：成功但响应里没有任何 token 用量时，按模型价格行的 per_call
 	// 计一次费（与 /v1/videos、异步图片同一口径）。零值 = 改动前行为。
 	PerCallBilling bool
@@ -113,6 +115,11 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 		jsonPayload = payload
 		requestModel = m
 		stream = s
+	}
+
+	if stream && options.RejectStream {
+		resp.Error(c, http.StatusBadRequest, "streaming is not supported on this endpoint")
+		return
 	}
 
 	supportedModels := strings.TrimSpace(c.GetString("supported_models"))
@@ -289,6 +296,13 @@ runIterator:
 			if fwdErr == nil {
 				metrics.ActualModel = item.ModelName
 				if usage != nil && !options.NonBilling {
+					if isDecisionsRawProtocol(options) {
+						// OpenAI Decisions API（gpt-6-luna）：输出免费，只按输入计费
+						// （官方价目 output $0）。价格本身不写死、仍走模型价目表——
+						// 这里只是把输出 token 清零，等效于输出单价为零时的结果。
+						usage.OutputTokens = 0
+						usage.CompletionTokens = 0
+					}
 					metrics.SetUsage(item.ModelName, *usage)
 				}
 				if options.PerCallBilling && !options.NonBilling && !rawProtocolUsagePositive(usage) {
@@ -840,6 +854,12 @@ func rawProtocolTargetURL(channel *model.Channel, options RawProtocolOptions) (s
 		return "", errCustomChannelNoFullURL
 	}
 	return xurl.JoinOpenAIPath(baseURL, endpoint)
+}
+
+func isDecisionsRawProtocol(options RawProtocolOptions) bool {
+	name := strings.Trim(strings.ToLower(options.Name), "/")
+	endpoint := strings.Trim(strings.ToLower(options.Endpoint), "/")
+	return name == "decisions" || endpoint == "decisions"
 }
 
 func isSystemoneRawProtocol(options RawProtocolOptions) bool {
