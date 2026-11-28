@@ -451,7 +451,7 @@ func runRaceContenders(
 			// 同波其它 contender / 后续 wave 还有机会。
 			// 注：下面「注册窗口」早退的 racer 已经占掉了一个 RPM 名额（RPM 是消耗品，
 			// release 不归还），窗口很窄，且只会多算不会少算——往严的一侧偏，不会绕过上限。
-			releaseGate, gateReason := balancer.AdmitChannelGate(racerCtx, contender.channel.ID, contender.channel.MaxConcurrent, contender.channel.RPMLimit, contender.channel.TPMLimit, 0, 0, func() bool { return racerCtx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(racerCtx, contender.channel.ID, contender.channel.MaxConcurrent, contender.channel.RPMLimit, contender.channel.TPMLimit, estInputTokensForGate(contender.internalRequest), 0, func() bool { return racerCtx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
 					releaseGate.Release()

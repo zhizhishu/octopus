@@ -3,6 +3,7 @@ package errorjudge
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/zhizhishu/octopus/internal/model"
 )
@@ -51,6 +52,19 @@ func TestCircuitOpenFastFailsWithoutRescue(t *testing.T) {
 	d := Judge(Evidence{LocalRoute: true, CircuitOpen: true, ErrorText: "octopus_channel_circuit_open"}, nil)
 	if d.Category != CategoryLocalUnavailable || d.Rescue || d.Retry != RetryNone || d.CountFailure {
 		t.Fatalf("circuit decision = %+v", d)
+	}
+}
+
+func TestCircuitRescueWaitSwitchKeepsDefaultFastFailAndOptInRescue(t *testing.T) {
+	ev := Evidence{LocalRoute: true, CircuitOpen: true, RetryAfter: 3 * time.Second, ErrorText: "octopus_channel_circuit_open"}
+	fast := Judge(ev, nil)
+	if fast.Rescue || fast.RuleID != "local.fast_fail" || fast.Cooldown != 3*time.Second {
+		t.Fatalf("default circuit decision = %+v", fast)
+	}
+	ev.AllowCircuitRescue = true
+	wait := Judge(ev, nil)
+	if !wait.Rescue || wait.RuleID != "local.wait_for_recovery" || wait.Cooldown != 3*time.Second {
+		t.Fatalf("opt-in circuit decision = %+v", wait)
 	}
 }
 

@@ -200,7 +200,7 @@ func forwardImagesChannelTest(
 			written bool
 			fwdErr  error
 		)
-		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
+		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, estInputTokensForBodyBytes(bc.Size()), 0, func() bool { return ctx.Err() != nil })
 		if gateReason != "" {
 			if releaseGate != nil {
 				releaseGate.Release()

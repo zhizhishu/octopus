@@ -32,6 +32,7 @@ func failureEvidenceFromError(err error, statusCode int, upstreamAnswered bool, 
 		ExplicitClientRejection: isContextWindowError(err) || isRequestInvalidUpstreamError(err) || isDeterministicClientRejection(err),
 		TransientCapacity:       isTransientCapacityUpstreamError(err),
 		NonRescuable:            isClientAbortError(err),
+		AllowCircuitRescue:      circuitRescueWaitEnabled(),
 	}
 	if ev.RetryAfter == 0 {
 		ev.RetryAfter, _ = retryAfterFromError(err)
@@ -75,12 +76,20 @@ func failureEvidenceFromError(err error, statusCode int, upstreamAnswered bool, 
 			ev.LocalRoute = true
 			ev.NoCandidates = true
 		}
+		if localErr.retryAfter > ev.RetryAfter {
+			ev.RetryAfter = localErr.retryAfter
+		}
 	}
 	lower := strings.ToLower(ev.ErrorText)
 	if strings.Contains(lower, "circuit_break") || strings.Contains(lower, "circuit open") || strings.Contains(lower, "no available channel") {
 		ev.LocalRoute = true
 	}
 	return ev
+}
+
+func circuitRescueWaitEnabled() bool {
+	enabled, err := op.SettingGetBool(model.SettingKeyRelayCircuitRescueWait)
+	return err == nil && enabled
 }
 
 func configuredContentPolicyTerms() []string {

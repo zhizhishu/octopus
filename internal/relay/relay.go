@@ -1223,10 +1223,17 @@ func (ra *relayAttempt) resolveRuntimeModel() string {
 // len/4 口径：仓内既有近似（modelverify/fingerprint/detector.go:151、feature.go:122），
 // tier-1 接受误差；精确 tiktoken 输入计数留作第二档（见 balancer/channel_gate.go 头注释）。
 func estInputTokensForGate(internalRequest *model.InternalLLMRequest) int64 {
-	if internalRequest == nil || internalRequest.RawInboundBodyBytes <= 0 {
+	if internalRequest == nil {
 		return 0
 	}
-	return int64(internalRequest.RawInboundBodyBytes) / 4
+	return estInputTokensForBodyBytes(int64(internalRequest.RawInboundBodyBytes))
+}
+
+func estInputTokensForBodyBytes(size int64) int64 {
+	if size <= 0 {
+		return 0
+	}
+	return size / 4
 }
 
 // attempt 统一管理一次通道尝试的完整生命周期

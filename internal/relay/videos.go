@@ -248,7 +248,7 @@ runIterator:
 			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
 			// 只记一条 skipped 审计。视频创建是花钱的副作用操作，绕过上限的代价尤其高。
 			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
-			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, estInputTokensForBodyBytes(bc.Size()), 0, func() bool { return ctx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
 					releaseGate.Release()

@@ -680,7 +680,7 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 	metrics.debug.target(channel, entry.channelKeyID)
 	// 钉扎的后续动作也是真发往上游的请求，与路由路径同一道闸门（balancer/channel_gate.go）：
 	// 占不到并发位/RPM 名额就是「此刻发不出去」，直接 429，不碰熔断/健康分。
-	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
+	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, estInputTokensForBodyBytes(int64(len(body))), 0, func() bool { return ctx.Err() != nil })
 	if gateReason != "" {
 		if releaseGate != nil {
 			releaseGate.Release()
@@ -798,7 +798,7 @@ runIterator:
 			// 「并发位 + RPM 名额」。占不到就不是失败，是「此刻发不出去」——不碰熔断/健康分/失败统计，
 			// 只记一条 skipped 审计。闸门只按渠道计数，同渠道剩下的 key 命中的是同一道闸，直接换渠道。
 			// maxWait=0：占不到位立即退，整轮排队在收尾统一做（绝不在单个候选内各等 3s）。
-			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
+			releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, estInputTokensForBodyBytes(int64(len(body))), 0, func() bool { return ctx.Err() != nil })
 			if gateReason != "" {
 				if releaseGate != nil {
 					releaseGate.Release()
@@ -1096,7 +1096,7 @@ func MidjourneyTaskListByConditionHandler(c *gin.Context) {
 		metrics.debug.target(channel, k.keyID)
 		// 与路由路径同一道闸门（见 midjourneySubmitPinned 的注释）；占不到就跳过这条
 		// 渠道分组，不算失败。
-		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
+		releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, estInputTokensForBodyBytes(int64(len(body))), 0, func() bool { return ctx.Err() != nil })
 		if gateReason != "" {
 			if releaseGate != nil {
 				releaseGate.Release()

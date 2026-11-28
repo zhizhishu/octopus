@@ -670,7 +670,7 @@ func ImageTaskRunUpstream(
 	// 真正发往上游之前先过渠道闸门（并发位 + RPM 名额，balancer/channel_gate.go），
 	// 口径与同步图片/聊天路径一致。后台执行器没有别的渠道可换：占不到就把这次
 	// 执行按失败收，下一轮轮询重新走完整挑选+闸门。
-	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, 0, 0, func() bool { return ctx.Err() != nil })
+	releaseGate, gateReason := balancer.AdmitChannelGate(ctx, channel.ID, channel.MaxConcurrent, channel.RPMLimit, channel.TPMLimit, estInputTokensForBodyBytes(int64(len(upstreamBody))), 0, func() bool { return ctx.Err() != nil })
 	if gateReason != "" {
 		if releaseGate != nil {
 			releaseGate.Release()

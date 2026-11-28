@@ -65,6 +65,7 @@ type Evidence struct {
 	ExplicitClientRejection bool
 	TransientCapacity       bool
 	NonRescuable            bool
+	AllowCircuitRescue      bool
 	Now                     time.Time
 	ContentPolicyTerms      []string
 }
@@ -106,7 +107,10 @@ func baseDecision(ev Evidence) Decision {
 	}
 
 	if ev.LocalRoute || ev.CircuitOpen || ev.NoCandidates {
-		return Decision{Category: CategoryLocalUnavailable, Retry: RetryNone, KeyEffect: EffectNone, ChannelEffect: EffectNone, Rescue: false, CountFailure: false, RuleID: "local.fast_fail", Reason: "local route/circuit state cannot be fixed by immediate rescue"}
+		if ev.AllowCircuitRescue {
+			return Decision{Category: CategoryLocalUnavailable, Retry: RetryNone, KeyEffect: EffectNone, ChannelEffect: EffectNone, Rescue: true, CountFailure: false, Cooldown: ev.RetryAfter, RuleID: "local.wait_for_recovery", Reason: "local route/circuit state may recover inside the rescue window"}
+		}
+		return Decision{Category: CategoryLocalUnavailable, Retry: RetryNone, KeyEffect: EffectNone, ChannelEffect: EffectNone, Rescue: false, CountFailure: false, Cooldown: ev.RetryAfter, RuleID: "local.fast_fail", Reason: "local route/circuit state cannot be fixed by immediate rescue"}
 	}
 
 	terms := append([]string(nil), defaultContentPolicyTerms...)
