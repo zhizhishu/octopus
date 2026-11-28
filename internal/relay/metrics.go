@@ -17,12 +17,11 @@ import (
 	"github.com/zhizhishu/octopus/internal/utils/tokenizer"
 )
 
-// 落库正文的脱敏边界（2026-12 用户决定，pack-1128 E 修订）：octopus 是中间层，
-// 下游调用日志要完整收集——管理员日志页就是要看到客户端发来/收到的原文，抓滥用。
-// 唯一例外是密码类文本：request_content / response_content / error / attempts.msg
-// 在 op.RelayLogAdd 入队时统一过 xredact.PasswordSecrets（password 类 JSON 键、
-// key=value、Authorization 头），其余正文仍按原文存储，只做剥离内联二进制、
-// 图片占位、长度截断（capLogColumn）。
+// 落库正文的脱敏边界（2026-12 用户决定）：侧边栏「凭据脱敏」只管 octopus 发给
+// 上游的内容；octopus 是中间层，下游调用日志要完整收集、不打码——管理员日志页
+// 就是要看到客户端发来/收到的原文，抓滥用。所以 request_content / response_content
+// 这两列（以及客户端校验、图片/原始协议/视频/异步图片等所有落库路径的客户端
+// 正文）按原文存储，只做剥离内联二进制、图片占位、长度截断（capLogColumn）。
 // 上游凭据仍照旧打码：调试捕获（debug_capture.go）里的上游 URL key / 授权头、
 // 上游错误信息（upstream_error.go）与探测/modeltest 路径的 xredact 打码不变。
 // 出站请求体快照（upstream_body_log.go）本来就是原样字节，与本约定一致。
@@ -36,12 +35,12 @@ type RelayMetrics struct {
 	// 一轮上百次采样会刷出上百行，日志页失去可读性（fix-1127 第 3 项）。只压
 	// saveLog 的 relay_logs 落库，Stats 统计与 RPM 计数不受影响；汇总行由调用方
 	// 在整轮结束时自己落一条。
-	suppressRelayLog bool
+	suppressRelayLog  bool
 	// internalTest：本请求是「渠道测试/模型检测」的内部转发（HandlerForChannelTest
 	// 进程内入口，见 channel_test_entry.go）。为 true 时计费闸门整段跳过——不扣任何
 	// 用户余额/额度（检测没有任何用户资产），费用仍随转发日志照记；UserRecordRelayIP
 	// 也不写（127.0.0.1 的内部来源不该污染用户客户端指纹记录）。
-	internalTest     bool
+	internalTest      bool
 	APIKeyID         int
 	UserID           int
 	RequestIP        string
