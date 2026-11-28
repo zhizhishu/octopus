@@ -63,12 +63,6 @@ const (
 	circuitProbeAnswerLimit = 200
 	// circuitProbeReasonLimit 同上，用于一句给人看的归因说明。
 	circuitProbeReasonLimit = 160
-	// circuitProbeKeyRedactPlaceholder 是精确剔除密钥字节后的占位符，与 xredact 的
-	// URL 凭据占位符同款（不可还原，探测答案本来也不需要还原）。
-	circuitProbeKeyRedactPlaceholder = "***"
-	// circuitProbeRedactMinKeyRunes 是最短做精确替换的密钥长度：更短的串会把正常文字
-	// 吃掉，而且这种 key 没有任何保密价值。
-	circuitProbeRedactMinKeyRunes = 4
 )
 
 // 探测结论。这些字符串是给调度方/UI 分支用的稳定取值。
@@ -727,28 +721,6 @@ func circuitProbeHistoryAnswer(text, channelKey string) string {
 	}
 	// pack-1128（用户 11-28）：探测回答原样保留，不再剔除选中密钥字节。
 	return circuitProbeTruncateRunes(text, circuitProbeAnswerLimit)
-}
-
-// circuitProbeRedactExactKey 把**本次实际选中的那个渠道密钥**的字节从文本里剔除。
-//
-// 为什么要单独做一次：xredact 的模式表只认常见云厂商格式（sk-… / JWT / 32+ 位 hex），
-// 中转自定义格式的 key 它未必认得；而这个 key 正是本次出站真正用到的凭据，
-// "上游把密钥回显在正文里"这种情况必须连字节一起去掉。
-func circuitProbeRedactExactKey(text, channelKey string) string {
-	if text == "" {
-		return text
-	}
-	trimmed := strings.TrimSpace(channelKey)
-	for _, candidate := range []string{channelKey, trimmed} {
-		if candidate == "" || !strings.Contains(text, candidate) {
-			continue
-		}
-		if len([]rune(candidate)) < circuitProbeRedactMinKeyRunes {
-			return ""
-		}
-		text = strings.ReplaceAll(text, candidate, circuitProbeKeyRedactPlaceholder)
-	}
-	return text
 }
 
 // circuitProbeBounded 折叠空白并截断，用于一句给人看的归因说明。

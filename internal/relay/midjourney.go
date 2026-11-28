@@ -699,7 +699,7 @@ func midjourneySubmitPinned(c *gin.Context, ctx context.Context, plan midjourney
 	}()
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, actualModel, false, started, auditErrorMessage(fwdErr), 1))
-		status, _, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, "")...)
+		status, _, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, channelKey)...)
 		writeMidjourneyError(c, status, message)
 		return
 	}
@@ -874,7 +874,7 @@ runIterator:
 			if statusCode == 0 {
 				allAttempts = append(allAttempts, iter.Attempts()...)
 				metrics.Save(ctx, false, lastErr, allAttempts)
-				status, _, message := relayErrorResponse(lastErr, attemptSecretValues(channel, "")...)
+				status, _, message := relayErrorResponse(lastErr, attemptSecretValues(channel, usedKey.ChannelKey)...)
 				writeMidjourneyError(c, status, message)
 				return
 			}
@@ -967,7 +967,7 @@ func finishMidjourneySubmit(c *gin.Context, ctx context.Context, plan midjourney
 	// description 是上游生成的自由文本：落库前统一过 URLSecrets+Secrets，只护我们自己的
 	// 上游密钥（fix-ui1127b-r2 N1）；下游客户端发来的正文仍按原样存，不受影响。
 	metrics.ResponseContent = truncateString(fmt.Sprintf(`{"protocol":%q,"action":%q,"code":%d,"task_id":%q,"description":%q}`,
-		midjourneySubmitLogName, plan.action, parsed.Code, taskID, redactUpstreamFreeText(parsed.Description)), 2048)
+		midjourneySubmitLogName, plan.action, parsed.Code, taskID, parsed.Description), 2048)
 	if strings.TrimSpace(upstreamCT) == "" {
 		upstreamCT = "application/json"
 	}
@@ -1032,7 +1032,7 @@ func MidjourneyTaskFetchHandler(c *gin.Context, suffix string) {
 	}()
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, midjourneySingleAttempt(channel, entry.channelKeyID, entry.model, false, started, auditErrorMessage(fwdErr), 1))
-		status, _, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, "")...)
+		status, _, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, channelKey)...)
 		writeMidjourneyError(c, status, message)
 		return
 	}

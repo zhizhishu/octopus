@@ -434,13 +434,6 @@ func upstreamErrorPublicCode(fallback string) string {
 	return code
 }
 
-// redactUpstreamFreeText 原为上游自由文本落库前打码；pack-1128（用户 11-28 拍板）
-// （fix-ui1127b-r2）：URLSecrets 管 URL 形态、Secrets 管密钥形状串。只护我们自己的
-// 上游密钥；下游协议转发正文不在此改写，仍按原文转发/落库。
-func redactUpstreamFreeText(s string) string {
-	return s
-}
-
 func errSafeMessage(err error) string {
 	var upErr *upstreamError
 	if errors.As(err, &upErr) {
@@ -449,9 +442,9 @@ func errSafeMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	// 非 upstreamError 的任意错误文本同样统一打码：错误链路可能拼进上游
-	// 响应片段，漏了密钥形状的串就是泄我们自己的上游 key（fix-ui1127b-r2 N3）。
-	return redactUpstreamFreeText(err.Error())
+	// pack-1128：本地一律原样（用户 11-28 拍板）；回下游的打码在唯一出口
+	// clientSafeUpstreamMessage 统一做（pack-1128 审查 P5：拆除恒等打码机件）。
+	return err.Error()
 }
 
 // clientSafeUpstreamText 是返回下游客户端的报错文本专用打码（pack-1128 监工纠偏）：

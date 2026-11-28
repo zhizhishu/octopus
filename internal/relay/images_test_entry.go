@@ -194,7 +194,10 @@ func forwardImagesChannelTest(
 	// 各自释放**——闸门是渠道级的，但占位生命周期跟着单次上游调用走，而不是循环外
 	// 占一次靠第一把 key 的 defer 顺带释放（那样第二把 key 起就在闸门外裸奔）。
 	var lastErr error
+	// pack-1128 审查 P4：逐 key 累积精确打码材料，出错出口才能精确替换渠道 key/host。
+	var attemptSecrets []string
 	for _, usedKey := range keys {
+		attemptSecrets = append(attemptSecrets, attemptSecretValues(channel, usedKey.ChannelKey)...)
 		statusCode := 0
 		var (
 			written bool
@@ -243,7 +246,7 @@ func forwardImagesChannelTest(
 		}
 	}
 
-	status, code, message := relayErrorResponse(lastErr)
+	status, code, message := relayErrorResponse(lastErr, attemptSecrets...)
 	resp.ErrorWithCode(c, status, code, message)
 }
 

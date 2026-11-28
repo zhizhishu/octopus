@@ -1,8 +1,8 @@
 package relay
 
 // pack-1128（用户 2026-11-28 拍板）：oct 本地日志/审计/管理端原样保留上游文本，
-// 不再打码。本文件断言 errSafeMessage / redactUpstreamFreeText 原样透传。
-// 原 fix-ui1127b-r2 的打码断言随打码行为一并拆除。
+// 不再打码。本文件断言 errSafeMessage 与 grok 关闭原因原样透传。
+// pack-1128 审查 P5：恒等函数 redactUpstreamFreeText 已拆除，断言改走真正存活的出口。
 
 import (
 	"errors"
@@ -22,16 +22,9 @@ func TestErrSafeMessagePreservesOriginalText(t *testing.T) {
 	}
 }
 
-func TestUpstreamFreeTextPreservedForLog(t *testing.T) {
-	raw := "bad key sk-FAKEFAKEFAKEFAKE0000 see https://h/?key=abc123SECRETxyz"
-	if got := redactUpstreamFreeText(raw); got != raw {
-		t.Fatalf("upstream free text altered: %q", got)
-	}
-}
-
 func TestGrokCloseReasonPreserved(t *testing.T) {
 	raw := "closed: sk-FAKEFAKEFAKEFAKE0000-test-only"
-	out := truncateString(redactUpstreamFreeText(raw), 256)
+	out := truncateString(raw, 256)
 	if !strings.Contains(out, raw) {
 		t.Fatalf("close reason altered: %q", out)
 	}

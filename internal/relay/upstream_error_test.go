@@ -557,8 +557,8 @@ func TestUpstreamErrorDetailedMessageSurfacesRealReason(t *testing.T) {
 	}
 }
 
-// Even in the admin audit, upstream-echoed credentials must be redacted.
-func TestUpstreamErrorDetailRedactsSecrets(t *testing.T) {
+// pack-1128：本地/管理端原样保留上游文本（含上游回显的凭据形状），不打码。
+func TestUpstreamErrorDetailPreservesUpstreamText(t *testing.T) {
 	upErr := newUpstreamError(http.StatusUnauthorized, []byte(`{"error":{"message":"bad key sk-live-sensitive-1234 rejected"}}`))
 	detailed := upErr.DetailedMessage()
 	if !strings.Contains(detailed, "sk-live-sensitive") {

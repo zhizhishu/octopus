@@ -439,7 +439,7 @@ func VideoPollHandler(c *gin.Context) {
 	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey, nil)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, nil)
-		status, code, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, "")...)
+		status, code, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, channelKey)...)
 		resp.ErrorWithCode(c, status, code, message)
 		return
 	}
@@ -482,7 +482,7 @@ func VideoContentHandler(c *gin.Context) {
 	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, true), channel, channelKey)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, nil)
-		status, code, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, "")...)
+		status, code, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, channelKey)...)
 		resp.ErrorWithCode(c, status, code, message)
 		return
 	}
