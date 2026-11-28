@@ -51,6 +51,24 @@ func sanitizeResponsesInputItemIDsRaw(raw json.RawMessage) (json.RawMessage, boo
 		if err := json.Unmarshal(itemRaw, &itemObject); err != nil {
 			continue
 		}
+		// Retype before dropping (sub2api responses_client_tools.go:310
+		// retypedResponsesToolCallItemID): a custom_tool_call replayed with the fc_
+		// prefix octopus used to mint is re-prefixed to ctc_ with the suffix kept,
+		// so the id stays stable and unique and the upstream accepts it. Only ids
+		// carrying no known tool-call prefix fall through to deletion.
+		if retyped := RetypeResponsesToolCallItemID(probe.ID, probe.Type); retyped != probe.ID && !ShouldDropResponsesInputItemID(probe.Type, retyped) {
+			idJSON, err := json.Marshal(retyped)
+			if err == nil {
+				itemObject["id"] = json.RawMessage(idJSON)
+				fixedItem, err := encodeJSONNoHTMLEscape(itemObject)
+				if err != nil {
+					continue
+				}
+				items[index] = fixedItem
+				changed = true
+				continue
+			}
+		}
 		delete(itemObject, "id")
 		fixedItem, err := encodeJSONNoHTMLEscape(itemObject)
 		if err != nil {
@@ -85,9 +103,12 @@ func ShouldDropResponsesInputItemID(itemType, id string) bool {
 	case "function_call":
 		return !hasResponsesIDPrefix(id, "fc_")
 	case "custom_tool_call":
-		// Real OpenAI mints ctc_ for custom tool call items; fc is accepted too since
-		// octopus (and sub2api) key both tool-call families to the fc prefix.
-		return !hasResponsesIDPrefix(id, "fc_") && !hasResponsesIDPrefix(id, "ctc_")
+		// Real OpenAI mints ctc_ for custom tool call items and strict upstreams
+		// reject anything else ("Expected an ID that begins with 'ctc'"). The
+		// earlier fc_-accepting premise was wrong for strict upstreams: fc_ ids on
+		// custom_tool_call are now retyped (see sanitizeResponsesInputItemIDsRaw)
+		// or dropped, never forwarded as-is.
+		return !hasResponsesIDPrefix(id, "ctc_")
 	case "reasoning":
 		return !hasResponsesIDPrefix(id, "rs_")
 	case "image_generation_call":
@@ -99,4 +120,45 @@ func ShouldDropResponsesInputItemID(itemType, id string) bool {
 
 func hasResponsesIDPrefix(id string, prefix string) bool {
 	return strings.HasPrefix(strings.TrimSpace(id), prefix)
+}
+
+// responsesToolCallItemIDPrefixes lists the Responses item id prefixes tied to a
+// specific tool-call item type. Copied from sub2api
+// backend/internal/pkg/apicompat/responses_client_tools.go:299.
+var responsesToolCallItemIDPrefixes = []string{"fc_", "ctc_", "tsc_"}
+
+// responsesToolCallItemIDPrefix reports the id prefix the Responses API validates
+// for itemType, or "" when the type constrains no prefix. Copied from sub2api
+// responses_client_tools.go:303 responsesToolCallItemIDPrefix.
+func responsesToolCallItemIDPrefix(itemType string) string {
+	switch itemType {
+	case "custom_tool_call":
+		return "ctc_"
+	case "tool_search_call":
+		return "tsc_"
+	case "function_call":
+		return "fc_"
+	default:
+		return ""
+	}
+}
+
+// RetypeResponsesToolCallItemID re-prefixes an item id so it agrees with the item
+// type. A client replaying a custom_tool_call whose id still carries the fc_
+// prefix octopus used to mint would otherwise be rejected upstream with
+// "Invalid 'input[N].id' ... Expected an ID that begins with 'ctc'".
+// The suffix is preserved so the id stays stable and unique per item. ids that
+// carry no known tool-call prefix are returned unchanged rather than guessed at.
+// Copied from sub2api responses_client_tools.go:310 retypedResponsesToolCallItemID.
+func RetypeResponsesToolCallItemID(id, itemType string) string {
+	want := responsesToolCallItemIDPrefix(itemType)
+	if want == "" || id == "" || strings.HasPrefix(id, want) {
+		return id
+	}
+	for _, known := range responsesToolCallItemIDPrefixes {
+		if known != want && strings.HasPrefix(id, known) {
+			return want + strings.TrimPrefix(id, known)
+		}
+	}
+	return id
 }

@@ -719,7 +719,14 @@ func sanitizeRawResponsesPayloadInputItemIDs(payload map[string]any) {
 		itemType, _ := itemObject["type"].(string)
 		itemID, _ := itemObject["id"].(string)
 		if openaiOutbound.ShouldDropResponsesInputItemID(itemType, itemID) {
-			delete(itemObject, "id")
+			// Same retype-before-drop repair as the transformed path: an fc_
+			// custom_tool_call becomes ctc_ with its suffix kept; anything else
+			// still loses the id.
+			if retyped := openaiOutbound.RetypeResponsesToolCallItemID(itemID, itemType); retyped != itemID && !openaiOutbound.ShouldDropResponsesInputItemID(itemType, retyped) {
+				itemObject["id"] = retyped
+			} else {
+				delete(itemObject, "id")
+			}
 		}
 	}
 }

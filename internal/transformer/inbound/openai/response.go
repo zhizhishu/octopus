@@ -976,6 +976,11 @@ func (i *ResponseInbound) handleToolCalls(toolCalls []model.ToolCall) [][]byte {
 				callID = generateToolCallID()
 			}
 			itemID := generateFunctionCallItemID()
+			if tc.Type == model.ToolCallTypeCustom {
+				// custom_tool_call must carry a ctc_ id or strict upstreams 400 the
+				// next-turn replay; fc_ stays correct for function_call / mcp_tool_call.
+				itemID = generateCustomToolCallItemID()
+			}
 
 			i.toolCalls[toolCallIndex] = &model.ToolCall{
 				Index: toolCallIndex,
@@ -2824,6 +2829,9 @@ func convertToResponsesAPIResponse(resp *model.InternalLLMResponse) *ResponsesRe
 				}
 				itemID := generateFunctionCallItemID()
 				if toolCall.Type == model.ToolCallTypeCustom {
+					itemID = generateCustomToolCallItemID()
+				}
+				if toolCall.Type == model.ToolCallTypeCustom {
 					// Custom (freeform) tool call: re-emit as a custom_tool_call
 					// carrying `input`, so a codex client that registered a custom
 					// tool receives the shape it expects (a function_call with the
@@ -3026,6 +3034,16 @@ func generateReasoningItemID() string {
 
 func generateFunctionCallItemID() string {
 	return fmt.Sprintf("fc_%s", lo.RandomString(16, lo.AlphanumericCharset))
+}
+
+// generateCustomToolCallItemID mints the item id for a custom (freeform) tool
+// call. Strict upstreams validate the prefix per item type and demand ctc_ for
+// custom_tool_call ("Invalid 'input[N].id' ... Expected an ID that begins with
+// 'ctc'"); reusing the fc_ function-call prefix here poisoned client history.
+// Fix modelled on sub2api responses_client_tools.go responsesToolCallItemIDPrefix
+// (:296): custom_tool_call -> ctc_, function_call -> fc_.
+func generateCustomToolCallItemID() string {
+	return fmt.Sprintf("ctc_%s", lo.RandomString(16, lo.AlphanumericCharset))
 }
 
 func generateToolCallID() string {

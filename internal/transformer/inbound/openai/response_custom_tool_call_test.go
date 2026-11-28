@@ -203,3 +203,21 @@ func TestResponseInboundFunctionCallStaysFunction(t *testing.T) {
 		t.Fatalf("expected a function_call output item, got %s", got)
 	}
 }
+
+// TestCustomToolCallItemIDUsesCtcPrefix pins the mint side of the fc_/ctc_ fix:
+// custom (freeform) tool calls must carry ctc_ item ids because strict upstreams
+// validate the prefix per item type; function calls keep fc_. Production 400 of
+// 2026-11-28: "Invalid 'input[8].id': 'fc_...'. Expected an ID that begins with
+// 'ctc'".
+func TestCustomToolCallItemIDUsesCtcPrefix(t *testing.T) {
+	id := generateCustomToolCallItemID()
+	if !strings.HasPrefix(id, "ctc_") {
+		t.Fatalf("custom tool call item id = %q, want ctc_ prefix", id)
+	}
+	if len(id) != len("ctc_")+16 {
+		t.Fatalf("custom tool call item id = %q, want ctc_ + 16 chars", id)
+	}
+	if strings.HasPrefix(generateFunctionCallItemID(), "ctc_") {
+		t.Fatalf("function call item id must keep the fc_ prefix")
+	}
+}
