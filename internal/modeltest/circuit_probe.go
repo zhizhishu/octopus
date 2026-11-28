@@ -725,8 +725,7 @@ func circuitProbeHistoryAnswer(text, channelKey string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	text = circuitProbeRedactExactKey(text, channelKey)
-	text = text
+	// pack-1128（用户 11-28）：探测回答原样保留，不再剔除选中密钥字节。
 	return circuitProbeTruncateRunes(text, circuitProbeAnswerLimit)
 }
 
