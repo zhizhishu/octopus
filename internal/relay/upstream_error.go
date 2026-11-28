@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"unicode"
 
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
@@ -218,7 +221,13 @@ func attemptStatusCode(statusCode int, err error) int {
 	return statusCode
 }
 
-func relayErrorResponse(err error) (status int, code string, message string) {
+func relayErrorResponse(err error, exactSecrets ...string) (status int, code string, message string) {
+	status, code, message = relayErrorResponseShaped(err)
+	// 唯一出口：所有回下游的报错文案在这里统一精确替换 + 形状打码。
+	return status, code, clientSafeUpstreamMessage(message, exactSecrets...)
+}
+
+func relayErrorResponseShaped(err error) (status int, code string, message string) {
 	if status, _, code, message, ok := terminalContentPolicyResponse(err); ok {
 		return status, code, message
 	}
@@ -372,7 +381,7 @@ func upstreamErrorUserMessage(err error) string {
 		if !upstreamErrorStatusPassthrough() {
 			return "upstream request failed"
 		}
-		return errSafeMessage(err)
+		return errSafeMessage(err) // 打码在唯一出口 relayErrorResponse 统一做
 	}
 }
 
@@ -443,6 +452,65 @@ func errSafeMessage(err error) string {
 	// 非 upstreamError 的任意错误文本同样统一打码：错误链路可能拼进上游
 	// 响应片段，漏了密钥形状的串就是泄我们自己的上游 key（fix-ui1127b-r2 N3）。
 	return redactUpstreamFreeText(err.Error())
+}
+
+// clientSafeUpstreamText 是返回下游客户端的报错文本专用打码（pack-1128 监工纠偏）：
+// 上游报错/传输错误里可能带平台自己的上游 key（URL ?key=…、sk-… 等），回下游前必须
+// 打码，否则等于把平台密钥发给终端用户。仅准用于客户端响应路径；落库/审计/管理端
+// 一律原样保留（用户 11-28 拍板），不得使用本函数。
+func clientSafeUpstreamText(s string) string {
+	return xredact.Secrets(xredact.URLSecrets(s))
+}
+
+// clientSafeUpstreamMessage 是所有返回下游客户端报错文本的唯一出口（Hark 00:3x 决策，
+// 参考 new-api relaykit/types/error.go 的 MaskSensitiveInfo 与 claude-code-hub
+// client-error-message.ts）：先做精确替换——本次 attempt 实际用的渠道 key 与渠道
+// base URL/host 原文换成 [已省略]（硬保证，不靠猜格式）；再跑 xredact 兜住
+// AIza/sk-/Bearer/?key= 等形状。日志/attempts/审计/管理端一律不经过这里，保持原样。
+func clientSafeUpstreamMessage(msg string, exactSecrets ...string) string {
+	if msg == "" {
+		return msg
+	}
+	out := msg
+	for _, secret := range exactSecrets {
+		if len(secret) < 4 {
+			continue
+		}
+		out = strings.ReplaceAll(out, secret, "[已省略]")
+	}
+	return clientSafeUpstreamText(out)
+}
+
+// attemptSecretValues 收集一次尝试实际使用的敏感原文：渠道 key 本体、渠道各 base URL
+// 原文及其 host。供 clientSafeUpstreamMessage 精确替换。
+func attemptSecretValues(channel *dbmodel.Channel, keyMaterial string) []string {
+	out := make([]string, 0, 4)
+	if keyMaterial != "" {
+		out = append(out, keyMaterial)
+	}
+	if channel != nil {
+		for _, bu := range channel.BaseUrls {
+			if bu.URL != "" {
+				out = append(out, bu.URL)
+				if parsed, err := url.Parse(bu.URL); err == nil && parsed.Host != "" {
+					out = append(out, parsed.Host)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// clientSafeMessage 与 errSafeMessage 同样的抽取口径，但结果过 clientSafeUpstreamText。
+func clientSafeMessage(err error) string {
+	var upErr *upstreamError
+	if errors.As(err, &upErr) && upErr != nil {
+		return clientSafeUpstreamText(upErr.Error())
+	}
+	if err == nil {
+		return ""
+	}
+	return clientSafeUpstreamText(err.Error())
 }
 
 func isClientAbortError(err error) bool {
@@ -832,7 +900,7 @@ func requestInvalidUserMessage(err error) string {
 	}
 	if upErr := upstreamErrorOf(err); upErr != nil {
 		if detail := upstreamBodySummary(upErr.body); detail != "" {
-			return detail
+			return detail // 打码在唯一出口 relayErrorResponse 统一做
 		}
 	}
 	return "upstream rejected this request as invalid"
@@ -849,7 +917,7 @@ func contextWindowUserMessage(err error) string {
 		var upErr *upstreamError
 		if errors.As(err, &upErr) && upErr != nil {
 			if msg := extractUpstreamErrorMessage([]byte(upErr.body)); msg != "" {
-				return msg
+				return msg // 打码在唯一出口 relayErrorResponse 统一做
 			}
 		}
 	}

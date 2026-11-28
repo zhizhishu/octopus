@@ -249,6 +249,7 @@ func handlerImpl(inboundType inbound.InboundType, c *gin.Context, testChannel *d
 		lastErr            error
 		retryAfterFloor    time.Duration // 距上次「已按上游 Retry-After 等待」以来见到的最大 Retry-After（0 = 上游没给）
 		allAttempts        []dbmodel.ChannelAttempt
+		attemptSecrets     []string // 本轮实际用过渠道的 key/base URL 原文，供回下游报错精确打码
 		triedReturnGroup   bool
 		interventionRounds int
 		fatalClientErr     error // 确定性客户端错误(上下文超长/请求体非法): 停止遍历与救援, 原样透传真实 4xx
@@ -699,6 +700,7 @@ attemptChannels:
 				usedKey:              usedKey,
 				firstTokenTimeOutSec: group.FirstTokenTimeOut,
 			}
+			attemptSecrets = append(attemptSecrets, attemptSecretValues(channel, usedKey.ChannelKey)...)
 
 			endAttempt := beginControlledAttempt()
 			result := ra.attempt()
@@ -1105,7 +1107,7 @@ attemptChannels:
 		stopInterventionKeepalive = nil
 	}
 	metrics.Save(originalRequest.Context(), false, finalErr, allAttempts)
-	status, code, message := relayErrorResponse(finalErr)
+	status, code, message := relayErrorResponse(finalErr, attemptSecrets...)
 	if gateExhausted {
 		status, code, message = http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage
 	}

@@ -183,6 +183,7 @@ func VideosHandlerKind(c *gin.Context, mediaKind string) {
 	var (
 		lastErr          error
 		allAttempts      []model.ChannelAttempt
+		attemptSecrets     []string
 		triedReturnGroup bool
 		// 渠道级硬限流闸门（见 balancer/channel_gate.go）整轮排队状态：gateSkippedCount/
 		// gateSkipReason 汇总被拒事实，gateSkippedChannels 收集被拒渠道（含上限配置）供
@@ -238,6 +239,7 @@ runIterator:
 		availableKeys = balancer.PrioritizeChannelKeysByHealth(availableKeys, channel.ID, item.ModelName, 0)
 
 		for keyIndex, usedKey := range availableKeys {
+			attemptSecrets = append(attemptSecrets, attemptSecretValues(channel, usedKey.ChannelKey)...)
 			if iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
 				continue
 			}
@@ -396,7 +398,7 @@ runIterator:
 		}
 	}
 	metrics.Save(ctx, false, finalErr, allAttempts)
-	status, code, message := relayErrorResponse(finalErr)
+	status, code, message := relayErrorResponse(finalErr, attemptSecrets...)
 	if gateExhausted {
 		// 头部未提交时才写得出节奏提示；Retry-After 口径与 relay.go 相同（固定 1s）。
 		status, code, message = http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage
@@ -437,7 +439,7 @@ func VideoPollHandler(c *gin.Context) {
 	statusCode, body, upstreamCT, fwdErr := videoForward(ctx, c, http.MethodGet, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, false), nil, entry.model, channel, channelKey, nil)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, nil)
-		status, code, message := relayErrorResponse(fwdErr)
+		status, code, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, "")...)
 		resp.ErrorWithCode(c, status, code, message)
 		return
 	}
@@ -480,7 +482,7 @@ func VideoContentHandler(c *gin.Context) {
 	statusCode, fwdErr := videoForwardContent(ctx, c, videoUpstreamPathForChannel(channel, entry.mediaKind, taskID, true), channel, channelKey)
 	if fwdErr != nil {
 		metrics.Save(ctx, false, fwdErr, nil)
-		status, code, message := relayErrorResponse(fwdErr)
+		status, code, message := relayErrorResponse(fwdErr, attemptSecretValues(channel, "")...)
 		resp.ErrorWithCode(c, status, code, message)
 		return
 	}

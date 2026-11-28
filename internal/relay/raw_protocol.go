@@ -175,6 +175,7 @@ func RawProtocolHandler(options RawProtocolOptions, c *gin.Context) {
 	var (
 		lastErr          error
 		allAttempts      []model.ChannelAttempt
+		attemptSecrets     []string // 实际用过渠道的 key/base URL 原文，供回下游报错精确打码
 		triedReturnGroup bool
 		// 渠道级硬限流闸门（见 balancer/channel_gate.go）整轮排队状态：gateSkippedCount/
 		// gateSkipReason 汇总被拒事实，gateSkippedChannels 收集被拒渠道（含上限配置）供
@@ -244,6 +245,7 @@ runIterator:
 		availableKeys = balancer.PrioritizeChannelKeysByHealth(availableKeys, channel.ID, item.ModelName, preferredKeyID)
 
 		for keyIndex, usedKey := range availableKeys {
+			attemptSecrets = append(attemptSecrets, attemptSecretValues(channel, usedKey.ChannelKey)...)
 			if iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
 				continue
 			}
@@ -441,7 +443,7 @@ runIterator:
 		}
 	}
 	metrics.Save(ctx, false, finalErr, allAttempts)
-	status, code, message := relayErrorResponse(finalErr)
+	status, code, message := relayErrorResponse(finalErr, attemptSecrets...)
 	if gateExhausted {
 		status, code, message = http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage
 		c.Header("Retry-After", strconv.Itoa(channelRateLimitedRetryAfterSeconds))

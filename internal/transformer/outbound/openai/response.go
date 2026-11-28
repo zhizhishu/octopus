@@ -12,6 +12,7 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/zhizhishu/octopus/internal/transformer/model"
+	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
@@ -1952,7 +1953,7 @@ func responsesStreamFailureReason(eventData []byte) string {
 	if typ := strings.TrimSpace(detail.Type); typ != "" {
 		parts = append(parts, "type: "+typ)
 	}
-	reason := strings.Join(parts, ", ")
+	reason := xredact.Secrets(strings.Join(parts, ", ")) // pack-1128：回下游的流错误 reason 打码
 	if reason == "" {
 		return generic
 	}

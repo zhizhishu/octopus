@@ -164,6 +164,7 @@ func GrokRealtimeHandler(c *gin.Context) {
 	var (
 		lastErr          error
 		allAttempts      []model.ChannelAttempt
+		attemptSecrets     []string
 		triedReturnGroup bool
 		// 渠道级硬限流闸门（见 balancer/channel_gate.go）整轮排队状态：gateSkippedCount/
 		// gateSkipReason 汇总被拒事实，gateSkippedChannels 收集被拒渠道（含上限配置）供
@@ -207,6 +208,7 @@ runIterator:
 		availableKeys = balancer.PrioritizeChannelKeysByHealth(availableKeys, channel.ID, item.ModelName, iter.StickyKeyIDForCurrentChannel(channel.ID))
 
 		for _, usedKey := range availableKeys {
+			attemptSecrets = append(attemptSecrets, attemptSecretValues(channel, usedKey.ChannelKey)...)
 			if iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
 				continue
 			}
@@ -366,7 +368,7 @@ runIterator:
 		}
 	}
 	metrics.Save(ctx, false, finalErr, allAttempts)
-	errStatus, errCode, errMessage := relayErrorResponse(finalErr)
+	errStatus, errCode, errMessage := relayErrorResponse(finalErr, attemptSecrets...)
 	if gateExhausted {
 		c.Header("Retry-After", strconv.Itoa(channelRateLimitedRetryAfterSeconds))
 		errStatus, errCode, errMessage = http.StatusTooManyRequests, channelRateLimitedCode, channelRateLimitedMessage
@@ -815,7 +817,7 @@ func runGrokRealtimeSession(ctx context.Context, client, upstream *websocket.Con
 	} else if ce != nil {
 		s.CloseCode, s.CloseText = ce.Code, ce.Text
 	} else if first.err != nil {
-		s.CloseText = errSafeMessage(first.err)
+		s.CloseText = clientSafeMessage(first.err) // pack-1128：回下游打码
 	}
 	return s
 }

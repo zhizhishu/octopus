@@ -82,16 +82,18 @@ func TestResponseStreamFailureReasonGenericNoDetail(t *testing.T) {
 	}
 }
 
-// TestResponseStreamFailureReasonPreservesSecretText pins pack-1128 (user 11-28):
-// failure reasons are kept verbatim in error text; no credential-shaped text
-// is scrubbed on the oct side.
+// TestResponseStreamFailureReasonPreservesSecretText pins pack-1128 监工纠偏:
+// 回下游客户端的流错误 reason 恢复打码（落库/审计仍原样）。
 func TestResponseStreamFailureReasonPreservesSecretText(t *testing.T) {
 	reason := responsesStreamFailureReason([]byte(`{
 		"type":"error",
 		"error":{"code":"auth","message":"invalid key Bearer sk-FAKEFAKEFAKE0000"}
 	}`))
-	if !strings.Contains(reason, "Bearer sk-FAKEFAKEFAKE0000") {
-		t.Fatalf("failure reason must be preserved verbatim, got %q", reason)
+	if strings.Contains(reason, "sk-FAKEFAKEFAKE0000") {
+		t.Fatalf("client-facing failure reason must redact provider key material, got %q", reason)
+	}
+	if !strings.Contains(reason, "[redacted]") {
+		t.Fatalf("expected redaction marker in client-facing reason, got %q", reason)
 	}
 }
 
