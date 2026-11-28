@@ -308,7 +308,7 @@ func TestPackingParityRelayVsRunner(t *testing.T) {
 			})
 			// 正式整装（relay 主链：RunChannel → RelaySender → HandlerForChannelTest）。
 			official := runPackingParityLeg(t, upstream, "正式整装", func() (dbmodel.ModelTestResponse, error) {
-				return RunChannel(ctx, stored, request)
+				return RunChannel(ctx, *stored, request)
 			})
 
 			if direct.method != official.method || direct.path != official.path {
