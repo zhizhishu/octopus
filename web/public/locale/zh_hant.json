@@ -694,6 +694,10 @@
           "skipTitle": "不探：",
           "skip": "圖片、影片只靠真實請求試水（半開）；上游給過 Retry-After 的，到點前不探。"
         }
+      },
+      "audit": {
+        "label": "上游前風控審查（決策模型）",
+        "hint": "預設全關。enabled+channel_id=審查走的上游渠道；rules 為自然語言規則（id 唯一、instructions 非空、action block|warn、threshold 0~1 預設 0.8）。下游 key 需在 Key 抽屜裡單獨開啟。失敗/逾時 2 秒放行並記未審查日誌。"
       }
     },
     "fingerprintProfile": {
@@ -2555,7 +2559,10 @@
       "total": "累計花費",
       "totalTip": "從建立到現在，不隨上面的時間段變。上限按這個數算。",
       "lastUsedTitle": "最近使用",
-      "viewLogs": "看它最近的請求"
+      "viewLogs": "看它最近的請求",
+      "requestAudit": "上游前風控審查",
+      "requestAuditHint": "發送上游前用決策模型審查請求內容，命中規則按配置警告或攔截",
+      "requestAuditThresholdPh": "閾值覆蓋（0~1，空=用規則預設0.8）"
     },
     "guide": {
       "title": "接入說明",

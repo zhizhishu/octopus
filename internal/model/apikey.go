@@ -47,6 +47,12 @@ type APIKey struct {
 	// 记录保留，日志 / 用量 / IP 还能按这把 Key 查。
 	RevokedAt int64 `json:"revoked_at,omitempty" gorm:"default:0"`
 
+	// RequestAudit：发上游前决策模型风控审查开关（feat/request-audit，工单 2026-11-28）。
+	// 默认 false=不审查。开了才走 internal/relay/requestaudit；审查本身失败/超时
+	// fail-open 放行并记日志。阈值 0 = 用规则自己的阈值（默认 0.8），非 0 则覆盖全部规则。
+	RequestAudit          bool    `json:"request_audit" gorm:"default:false"`
+	RequestAuditThreshold float64 `json:"request_audit_threshold,omitempty" gorm:"default:0"`
+
 	AccessPlanIDs       []int        `json:"access_plan_ids,omitempty" gorm:"-"`
 	DefaultAccessPlanID int          `json:"default_access_plan_id,omitempty" gorm:"-"`
 	AccessPlans         []AccessPlan `json:"access_plans,omitempty" gorm:"-"`

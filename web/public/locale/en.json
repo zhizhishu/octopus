@@ -694,6 +694,10 @@
           "skipTitle": "Not probed: ",
           "skip": "images and videos (real traffic with half-open only); anything upstream told us to wait for with Retry-After until that time passes."
         }
+      },
+      "audit": {
+        "label": "Pre-upstream audit (decisions model)",
+        "hint": "Off by default. enabled+channel_id = upstream channel used for auditing; rules are natural-language (unique id, non-empty instructions, action block|warn, threshold 0~1 default 0.8). Each downstream key must opt in from its key drawer. 2s timeout/failure fails open and logs unaudited."
       }
     },
     "fingerprintProfile": {
@@ -2555,7 +2559,10 @@
       "total": "Total spent",
       "totalTip": "Since creation; doesn't follow the range above. The cap uses this number.",
       "lastUsedTitle": "Last used",
-      "viewLogs": "View its recent requests"
+      "viewLogs": "View its recent requests",
+      "requestAudit": "Pre-upstream content audit",
+      "requestAuditHint": "Audit request content with the decisions model before sending upstream; hits warn or block per rule",
+      "requestAuditThresholdPh": "Threshold override (0~1, empty = rule default 0.8)"
     },
     "guide": {
       "title": "Setup guide",
