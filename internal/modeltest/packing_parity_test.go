@@ -465,7 +465,18 @@ func packingParityNormalize(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		path, value, ok := strings.Cut(line, "=")
-		if !ok || !packingParityVolatilePaths[path] {
+		// 对象根按前缀命中：jsonSkeleton 把嵌套对象拍平成全路径，写进表里的是
+		// "$.client_metadata" 这类根，实际行是它的子路径（next-1129 集成修正）。
+		volatile := false
+		if ok {
+			for root := range packingParityVolatilePaths {
+				if path == root || strings.HasPrefix(path, root+".") {
+					volatile = true
+					break
+				}
+			}
+		}
+		if !ok || !volatile {
 			out = append(out, line)
 			continue
 		}
