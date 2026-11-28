@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { useSettingList, useSetSetting, SettingKey } from '@/api/endpoints/setting';
 import { useProbeStats } from '@/api/endpoints/channel';
+import { ErrorRulesEditor } from './ErrorRulesEditor';
 import { toast } from '@/components/common/Toast';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 
@@ -25,6 +26,8 @@ export function SettingCircuitBreaker() {
     const initialMaxCooldown = useRef('');
     const [rules, setRules] = useState('');
     const initialRules = useRef('');
+    const [policyKeywords, setPolicyKeywords] = useState('');
+    const initialPolicyKeywords = useRef('');
 
     // 主动探测（P3）：开关存 'true'/'false'，上限/停手次数存十进制整数（与后端 seed 默认值同形）。
     const [probeOpen, setProbeOpen] = useState(false);
@@ -75,6 +78,11 @@ export function SettingCircuitBreaker() {
             if (rl && rl.value !== initialRules.current) {
                 queueMicrotask(() => setRules(prettyRules(rl.value)));
                 initialRules.current = rl.value;
+            }
+            const pk = settings.find(s => s.key === 'relay_content_policy_keywords');
+            if (pk && pk.value !== initialPolicyKeywords.current) {
+                queueMicrotask(() => setPolicyKeywords(pk.value));
+                initialPolicyKeywords.current = pk.value;
             }
             if (th) {
                 if (th.value !== initialThreshold.current) {
@@ -194,6 +202,20 @@ export function SettingCircuitBreaker() {
         });
     };
 
+    const handleSavePolicyKeywords = () => {
+        if (setSetting.isPending) return;
+        const compact = policyKeywords.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean).join(',');
+        if (compact === initialPolicyKeywords.current) return;
+        setSetting.mutate({ key: 'relay_content_policy_keywords', value: compact }, {
+            onSuccess: () => {
+                toast.success(t('saved'));
+                initialPolicyKeywords.current = compact;
+                setPolicyKeywords(compact);
+            },
+            onError: (error) => toast.error(error?.message || t('saveFailed')),
+        });
+    };
+
     // 折叠标题行的摘要：开关状态 + 今日已用/上限，一眼就能判断要不要点开。
     // 取不到统计时显示破折号，不拿 0 冒充「今天一次都没探」。
     const probeCapFromSettings = Number(probeDailyCap);
@@ -288,14 +310,26 @@ export function SettingCircuitBreaker() {
                     </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">{t('circuitBreaker.rules.hint')}</p>
-                <textarea
-                    value={rules}
-                    onChange={(e) => setRules(e.target.value)}
-                    placeholder={RULES_PLACEHOLDER}
-                    spellCheck={false}
-                    rows={8}
-                    className="w-full rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs"
-                />
+                <ErrorRulesEditor value={rules} onChange={setRules} disabled={setSetting.isPending} />
+                <p className="text-xs text-muted-foreground">{t('circuitBreaker.rules.builtinTitle')}: cyber_policy, cyber_policy_violation, bio_policy, misalignment_policy_violation, content_policy_violation, image_content_policy_violation, content_policy, safety_policy, safety, context_length_exceeded, invalid_prompt… {t('circuitBreaker.rules.builtinHint')}</p>
+
+                {/* 风控追加词：内置词表之外的自定义补充，逗号分隔，存 relay_content_policy_keywords */}
+                <div className="space-y-2 rounded-xl border border-border/60 p-2">
+                    <div className="flex items-center justify-between gap-4">
+                        <span className="text-sm font-medium">{t('circuitBreaker.rules.policyKeywordsLabel')}</span>
+                        <Button size="sm" variant="outline" className="rounded-xl" onClick={handleSavePolicyKeywords} disabled={setSetting.isPending}>
+                            {t('circuitBreaker.rules.save')}
+                        </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{t('circuitBreaker.rules.policyKeywordsHint')}</p>
+                    <Input
+                        value={policyKeywords}
+                        onChange={(e) => setPolicyKeywords(e.target.value)}
+                        placeholder={t('circuitBreaker.rules.policyKeywordsPh')}
+                        aria-label={t('circuitBreaker.rules.policyKeywordsLabel')}
+                        className="rounded-xl font-mono text-xs"
+                    />
+                </div>
             </div>
 
             {/* 主动探测（P3）：整块可折叠，标题行就是摘要（开关状态 + 今日已用/上限）。 */}
