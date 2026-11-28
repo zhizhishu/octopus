@@ -12,7 +12,6 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/zhizhishu/octopus/internal/transformer/model"
-	"github.com/zhizhishu/octopus/internal/utils/xredact"
 	"github.com/zhizhishu/octopus/internal/utils/xurl"
 )
 
