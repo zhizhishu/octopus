@@ -312,6 +312,26 @@ func TestSystemoneUsageIsBilledFromDecisionResponse(t *testing.T) {
 func TestSystemoneUnpricedModelWarnsOnceAndStillSucceeds(t *testing.T) {
 	const modelName = "octopus-systemone-unpriced-fixture"
 
+	// warn-once 是进程级 sync.Map（生产语义正确），-count>1 时上一次迭代已记下
+	// 这个 fixture 模型，第二次永远不再 warn -> 0.00s 假失败。每个迭代进门前清掉
+	// 该模型的全局记忆，离场再清一次，免得污染别的用例（next-1129 不稳测试修复）。
+	unpricedRawProtocolWarned.Delete(modelName)
+	unpricedRawProtocolWarnCount.Delete(modelName)
+	t.Cleanup(func() {
+		unpricedRawProtocolWarned.Delete(modelName)
+		unpricedRawProtocolWarnCount.Delete(modelName)
+	})
+
+	// warn-once 是进程级 sync.Map（生产语义正确），-count>1 时上一次迭代已记下
+	// 这个 fixture 模型，第二次永远不再 warn -> 0.00s 假失败。每个迭代进门前清掉
+	// 该模型的全局记忆，离场再清一次，免得污染别的用例（next-1129 不稳测试修复）。
+	unpricedRawProtocolWarned.Delete(modelName)
+	unpricedRawProtocolWarnCount.Delete(modelName)
+	t.Cleanup(func() {
+		unpricedRawProtocolWarned.Delete(modelName)
+		unpricedRawProtocolWarnCount.Delete(modelName)
+	})
+
 	var logged atomic.Int32
 	previous := missingRawProtocolPriceLogf
 	missingRawProtocolPriceLogf = func(string, ...any) { logged.Add(1) }

@@ -88,10 +88,15 @@ func tokenUpstream(t *testing.T) *fakeRealtimeUpstream {
 	})
 }
 
-// audioUpstream：收到任何东西就回一块音频 delta（触发按分钟计费）。
+// audioUpstream：收到 input_audio_buffer.append 才回一块音频 delta（触发按分钟计费）。
+// 早先对任何消息（含握手期 session 配置）都回音频，按分钟计费在 started 计时点之前
+// 就开始累积，-race 下握手快慢直接决定 cutoff 落在 200ms 下界内外的抖动——这是
+// TestGrokRealtimeCutsOffPerMinuteSessionWhenFundsRunOut 偶发失败的真原因（next-1129）。
 func audioUpstream(t *testing.T) *fakeRealtimeUpstream {
 	return newFakeRealtimeUpstream(t, 0, nil, func(conn *websocket.Conn, mt int, data []byte) {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_audio.delta","delta":"UklGRg=="}`))
+		if mt == websocket.TextMessage && strings.Contains(string(data), `"input_audio_buffer.append"`) {
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_audio.delta","delta":"UklGRg=="}`))
+		}
 	})
 }
 
