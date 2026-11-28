@@ -14,6 +14,7 @@ import (
 	"github.com/zhizhishu/octopus/internal/conf"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/relay/balancer"
+	"github.com/zhizhishu/octopus/internal/relay/errorjudge"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/model"
 )
@@ -476,12 +477,13 @@ type relayAttempt struct {
 
 // attemptResult 封装单次尝试的结果
 type attemptResult struct {
-	Success    bool  // 是否成功
-	Written    bool  // 流式响应是否已开始写入（不可重试）
-	Err        error // 失败时的错误
-	StatusCode int   // upstream status for retry decisions
-	Retryable  bool  // 上游空流等瞬态失败且未写入下游，可安全重试
-	Fatal      bool  // 上下文超长等确定性错误：换任何渠道/key 都会同样失败，停止遍历
+	Success        bool                      // 是否成功
+	Written        bool                      // 流式响应是否已开始写入（不可重试）
+	Err            error                     // 失败时的错误
+	StatusCode     int                       // upstream status for retry decisions
+	Retryable      bool                      // 上游空流等瞬态失败且未写入下游，可安全重试
+	RetryDirection errorjudge.RetryDirection // unified judge 给本轮失败选定的重试方向
+	Fatal          bool                      // 上下文超长等确定性错误：换任何渠道/key 都会同样失败，停止遍历
 	// RetryAfter 是上游给的 Retry-After 提示（限流/过载时要求多久后再来），
 	// 缺省为 0 表示上游没给。转发层用它给下游定节奏，重试轮次用它避免自己打自己。
 	RetryAfter time.Duration

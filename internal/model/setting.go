@@ -182,6 +182,10 @@ const (
 	// MaxRelayNoBreakerRetryBudgetSeconds (300s). It never extends the unified automatic-
 	// recovery window (also 300s from the first rescuable failure) — it can only tighten it.
 	SettingKeyRelayNoBreakerRetryBudgetSec SettingKey = "relay_no_breaker_retry_budget_seconds"
+	// SettingKeyRelayContentPolicyKeywords is a comma-separated additive list of
+	// upstream type/code/message markers treated as terminal content-policy rejections.
+	// Built-ins already include cyber_policy/content_policy_violation/content_policy/safety_policy.
+	SettingKeyRelayContentPolicyKeywords SettingKey = "relay_content_policy_keywords"
 
 	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由默认模式: spread=轮询, fill_first=优先填充；不覆盖 ModeLocked 规则
 	SettingKeyRouteStickyCacheFirst   SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
@@ -693,6 +697,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayCodexTextVerbosity, Value: "true"},                                         // 默认开: 走 Codex /v1/responses 形状且调用方没发顶层 text 时, 补黄金样本的 {"verbosity":"low"}; 关=不补                                          // 默认开: 非 CLI 调用方经 Anthropic 渠道出站补齐真 CLI 必发的 thinking/context_management/output_config(值取 22/22 黄金样本); 关=完全按调用方原样发
 		{Key: SettingKeyRelayInterventionTimeoutSec, Value: "1800"},                                     // 人工接管等待上限(秒); 自动救援总计已封顶300s, 此值仅可再收紧(<300), 超时后原错误照常返回客户端
 		{Key: SettingKeyRelayNoBreakerRetryBudgetSec, Value: "300"},                                     // 无熔断渠道自动猛打预算(秒): 按画布既定顺序反复重试; 最大300(自动救援总计上限), 0=关闭
+		{Key: SettingKeyRelayContentPolicyKeywords, Value: ""},                                          // 额外内容风控关键词(逗号分隔); 内置 cyber_policy/content_policy_violation/content_policy/safety_policy
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},

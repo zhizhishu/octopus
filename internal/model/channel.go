@@ -267,7 +267,11 @@ type ChannelKey struct {
 	// response (self-heal). Persisted alongside StatusCode so the reason survives a
 	// restart instead of silently retrying a known-bad key.
 	DisabledReason string `json:"disabled_reason,omitempty"`
-	DisabledAt     int64  `json:"disabled_at,omitempty"`
+	// DisabledAt is the FIRST time the current quarantine/disable reason was seen.
+	// LastAuthErrorAt is the most recent auth-error hit; keeping them separate stops
+	// repeated 401 retries from rewriting the first-seen evidence timestamp.
+	DisabledAt      int64 `json:"disabled_at,omitempty"`
+	LastAuthErrorAt int64 `json:"last_auth_error_at,omitempty"`
 }
 
 // ChannelUpdateRequest 渠道更新请求 - 仅包含变更的数据

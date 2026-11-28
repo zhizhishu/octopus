@@ -29,12 +29,17 @@ const (
 // AND the error text contains any of Keywords (empty = no text condition, case-insensitive).
 // At least one of the two conditions must be set. The first matching rule wins.
 type CircuitErrorRule struct {
-	Name            string   `json:"name"`
-	StatusCodes     []int    `json:"status_codes,omitempty"`
-	Keywords        []string `json:"keywords,omitempty"`
-	Scope           string   `json:"scope"`
-	CooldownSeconds int      `json:"cooldown_seconds"`
-	Disabled        bool     `json:"disabled,omitempty"`
+	Name        string   `json:"name"`
+	StatusCodes []int    `json:"status_codes,omitempty"`
+	Keywords    []string `json:"keywords,omitempty"`
+	// Scope + CooldownSeconds are the legacy hold-only form. Retry/Effect extend
+	// the same rule into the unified judge vocabulary, following gpt-load
+	// internal/health/error_rules.go:18-24. Empty Retry/Effect preserve legacy behavior.
+	Scope           string `json:"scope,omitempty"`
+	CooldownSeconds int    `json:"cooldown_seconds,omitempty"`
+	Retry           string `json:"retry,omitempty"`
+	Effect          string `json:"effect,omitempty"`
+	Disabled        bool   `json:"disabled,omitempty"`
 }
 
 // ParseCircuitErrorRules strictly validates and normalises the rule list; an empty or
@@ -62,13 +67,31 @@ func ParseCircuitErrorRules(raw string) ([]CircuitErrorRule, error) {
 		if rule.Name == "" {
 			rule.Name = fmt.Sprintf("rule-%d", i+1)
 		}
-		switch rule.Scope {
-		case CircuitRuleScopeModel, CircuitRuleScopeKey, CircuitRuleScopeChannel:
-		default:
-			return nil, fmt.Errorf("circuit error rule %q: scope must be model, key or channel", rule.Name)
+		if rule.Scope != "" {
+			switch rule.Scope {
+			case CircuitRuleScopeModel, CircuitRuleScopeKey, CircuitRuleScopeChannel:
+			default:
+				return nil, fmt.Errorf("circuit error rule %q: scope must be model, key or channel", rule.Name)
+			}
 		}
-		if rule.CooldownSeconds < 1 || rule.CooldownSeconds > maxCircuitRuleCooldownSeconds {
+		rule.Retry = strings.ToLower(strings.TrimSpace(rule.Retry))
+		rule.Effect = strings.ToLower(strings.TrimSpace(rule.Effect))
+		if rule.Retry != "" && !validCircuitRuleRetry(rule.Retry) {
+			return nil, fmt.Errorf("circuit error rule %q: unknown retry action %q", rule.Name, rule.Retry)
+		}
+		if rule.Effect != "" && !validCircuitRuleEffect(rule.Effect) {
+			return nil, fmt.Errorf("circuit error rule %q: unknown effect %q", rule.Name, rule.Effect)
+		}
+		legacyHold := rule.Retry == "" && rule.Effect == ""
+		effectNeedsCooldown := legacyHold || rule.Effect == "cooldown_key" || rule.Effect == "cooldown_credential" || rule.Effect == "cooldown_model" || rule.Effect == "cooldown_channel" || rule.Effect == "skip_group"
+		if legacyHold && rule.Scope == "" {
+			return nil, fmt.Errorf("circuit error rule %q: legacy hold rules need scope", rule.Name)
+		}
+		if effectNeedsCooldown && (rule.CooldownSeconds < 1 || rule.CooldownSeconds > maxCircuitRuleCooldownSeconds) {
 			return nil, fmt.Errorf("circuit error rule %q: cooldown_seconds must be 1..%d", rule.Name, maxCircuitRuleCooldownSeconds)
+		}
+		if !effectNeedsCooldown && rule.CooldownSeconds < 0 {
+			return nil, fmt.Errorf("circuit error rule %q: cooldown_seconds must be non-negative", rule.Name)
 		}
 		if len(rule.StatusCodes) > maxCircuitRuleStatusCodesCount {
 			return nil, fmt.Errorf("circuit error rule %q: at most %d status codes", rule.Name, maxCircuitRuleStatusCodesCount)
@@ -124,6 +147,22 @@ func (r CircuitErrorRule) Match(statusCode int, lowerText string) bool {
 		if strings.Contains(lowerText, keyword) {
 			return true
 		}
+	}
+	return false
+}
+
+func validCircuitRuleRetry(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "none", "no_retry", "stop", "same_key", "same_credential", "next_key", "refresh_credential", "next_credential", "next_channel", "next_candidate", "retry":
+		return true
+	}
+	return false
+}
+
+func validCircuitRuleEffect(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "none", "cooldown_key", "cooldown_credential", "cooldown_model", "cooldown_channel", "skip_group", "record_failure", "record_credential_failure", "disable_key", "disable_credential", "disable_channel":
+		return true
 	}
 	return false
 }

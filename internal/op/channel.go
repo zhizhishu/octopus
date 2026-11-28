@@ -141,11 +141,50 @@ func ChannelKeyRecordUse(key model.ChannelKey, statusCode int, usedAt int64, cos
 		switch {
 		case statusCode == 401:
 			current.DisabledReason = "auth error 401 (key likely invalid/revoked)"
-			current.DisabledAt = usedAt
+			if current.DisabledAt == 0 {
+				current.DisabledAt = usedAt
+			}
+			current.LastAuthErrorAt = usedAt
 		case statusCode >= 200 && statusCode < 300:
 			current.DisabledReason = ""
 			current.DisabledAt = 0
+			current.LastAuthErrorAt = 0
 		}
+		return current, true
+	})
+	if err := channelCacheSetKey(key.ChannelID, updated); err != nil {
+		return err
+	}
+	markChannelKeyDirty(key.ID)
+	return nil
+}
+
+// ChannelKeyHardDisable immediately disables a key whose upstream gave strong
+// dead-credential evidence. It updates the shared in-memory channel cache first
+// (borrowed from axonhub internal/server/biz/channel_auto_disable.go's
+// disable-then-refresh-cache shape) and marks the row dirty for the normal
+// ChannelKeySaveDB flush; routing reads the cache, so the key stops being selected
+// without waiting for persistence.
+func ChannelKeyHardDisable(key model.ChannelKey, reason string, at int64) error {
+	if key.ID == 0 || key.ChannelID == 0 {
+		return fmt.Errorf("invalid channel key")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "strong auth error (key/account disabled upstream)"
+	}
+	updated, _ := channelKeyCache.Update(key.ID, func(current model.ChannelKey, exists bool) (model.ChannelKey, bool) {
+		if !exists {
+			current = key
+		}
+		current.Enabled = false
+		current.StatusCode = 401
+		current.LastUseTimeStamp = at
+		current.DisabledReason = reason
+		if current.DisabledAt == 0 {
+			current.DisabledAt = at
+		}
+		current.LastAuthErrorAt = at
 		return current, true
 	})
 	if err := channelCacheSetKey(key.ChannelID, updated); err != nil {
@@ -605,7 +644,7 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 }
 
 // channelQueueSettingsAfterUpdate 返回「老行 + 本次 patch」合并后的
-//（maxConcurrent, queueSize, queueTimeoutMs）。nil 字段沿用库里的值。
+// （maxConcurrent, queueSize, queueTimeoutMs）。nil 字段沿用库里的值。
 func channelQueueSettingsAfterUpdate(oldChannel model.Channel, req *model.ChannelUpdateRequest) (maxConcurrent, queueSize, queueTimeoutMs int) {
 	maxConcurrent, queueSize, queueTimeoutMs = oldChannel.MaxConcurrent, oldChannel.QueueSize, oldChannel.QueueTimeoutMs
 	if req == nil {

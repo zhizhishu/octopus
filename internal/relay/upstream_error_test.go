@@ -8,14 +8,15 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/zhizhishu/octopus/internal/db"
 	dbmodel "github.com/zhizhishu/octopus/internal/model"
 	"github.com/zhizhishu/octopus/internal/op"
 	"github.com/zhizhishu/octopus/internal/transformer/inbound"
 	"github.com/zhizhishu/octopus/internal/transformer/outbound"
-	"github.com/gin-gonic/gin"
 )
 
 func TestHandlerPassesThroughUpstreamStatusWithSanitizedError(t *testing.T) {
@@ -98,6 +99,75 @@ func TestHandlerPassesThroughUpstreamStatusWithSanitizedError(t *testing.T) {
 	}
 	if strings.Contains(logs[0].Error, "sk-live-sensitive") || strings.Contains(logs[0].Error, "leaked by provider") {
 		t.Fatalf("relay log error leaked upstream body: %s", logs[0].Error)
+	}
+}
+
+func TestHandlerStrongAuthHardDisablesKeyAndLastResortCannotReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayErrorDB(t)
+	if err := op.SettingSetString(dbmodel.SettingKeyUpstreamErrorStatusPass, "true"); err != nil {
+		t.Fatalf("set status passthrough: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"invalid_api_key","message":"User account is not active"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := dbmodel.Channel{
+		Name:     "strong-auth-channel",
+		Type:     outbound.OutboundTypeOpenAIChat,
+		Enabled:  true,
+		Model:    "strong-auth-model",
+		Priority: 1,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstream.URL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "dead-key"}},
+	}
+	if err := op.ChannelCreate(&channel, ctx); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	newRequest := func() (*gin.Context, *httptest.ResponseRecorder) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+			"model":"strong-auth-model",
+			"messages":[{"role":"user","content":"ping"}]
+		}`))
+		req.Header.Set("Content-Type", "application/json")
+		c.Request = req
+		c.Set("api_key_id", 0)
+		c.Set("user_id", 0)
+		c.Set("request_ip", "127.0.0.1")
+		return c, rec
+	}
+
+	c, rec := newRequest()
+	Handler(inbound.InboundTypeOpenAIChat, c)
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("strong-auth first request must hit upstream exactly once, got %d status=%d body=%s", upstreamHits.Load(), rec.Code, rec.Body.String())
+	}
+
+	stored, err := op.ChannelGet(channel.ID, ctx)
+	if err != nil || len(stored.Keys) != 1 {
+		t.Fatalf("reload channel: keys=%v err=%v", len(stored.Keys), err)
+	}
+	key := stored.Keys[0]
+	if key.Enabled || key.DisabledAt == 0 || key.LastAuthErrorAt == 0 {
+		t.Fatalf("strong-auth key must be hard-disabled with first/latest auth timestamps, got %+v", key)
+	}
+	if got := stored.GetAvailableChannelKeysLastResort(); len(got) != 0 {
+		t.Fatalf("hard-disabled key must not be resurrected by last-resort, got %+v", got)
+	}
+
+	c, rec = newRequest()
+	Handler(inbound.InboundTypeOpenAIChat, c)
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("second request must not replay the hard-disabled key upstream, hits=%d status=%d body=%s", upstreamHits.Load(), rec.Code, rec.Body.String())
 	}
 }
 
