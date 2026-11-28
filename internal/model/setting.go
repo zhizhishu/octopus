@@ -189,10 +189,28 @@ const (
 	// SettingKeyRequestAudit：发上游前决策模型审查配置(JSON)；校验委托 requestaudit.ParseConfig。
 	SettingKeyRequestAudit SettingKey = "request_audit"
 	// SettingKeyRelayCircuitRescueWait keeps circuit-open/no-candidate failures inside
-	// the automatic-rescue hold instead of fast-failing. Default false preserves the
-	// 2026-11-28 fast-fail rollout; when enabled, Decision.Cooldown carries the earliest
-	// known breaker/cooldown recovery wait for the rescue loop/policy layer.
+	// the automatic-rescue hold so they wait for the earliest known breaker/cooldown
+	// recovery time instead of fast-failing. It ships ON (seed value "true",
+	// model.DefaultSettings) — the shipped behaviour is 「等到最早恢复时间再试」, NOT the
+	// older fast-fail rollout: with it on, Decision.Cooldown carries that earliest
+	// recovery wait to the rescue loop, which sleeps until then instead of polling the
+	// same closed breaker every second. Setting it to false is what fast-fails
+	// (immediate 503 octopus_channel_circuit_open / octopus_no_available_channel).
 	SettingKeyRelayCircuitRescueWait SettingKey = "relay_circuit_rescue_wait"
+	// SettingKeyRelayFirstTokenTimeoutSwitchChannel defaults to "true" (「首字超时后立即
+	// 换渠道」, user rule 2026-11-29 02:56). When on, an attempt that got upstream
+	// response headers but produced no content before the group's first_token_time_out
+	// deadline is classified by the failure referee as
+	// upstream.first_token_timeout_uncommitted: retry the next candidate key/channel
+	// immediately, WITHOUT charging the circuit breaker, and stay rescuable so the
+	// existing 300s automatic-recovery hold still retries the same channel when no other
+	// candidate exists. The switch is the whole policy gate — the deadline itself
+	// (first_token_time_out / first_token_time_out_default) is untouched. Once real
+	// content reached the downstream the stream is committed and never switches
+	// channels, whatever this switch says. Off = the pre-change judgement (the timeout
+	// falls into the generic ambiguous branch: no retry of this channel's remaining keys,
+	// and only the existing candidate sweep / rescue loop reaches the next candidate).
+	SettingKeyRelayFirstTokenTimeoutSwitchChannel SettingKey = "relay_first_token_timeout_switch_channel"
 
 	SettingKeyRouteModeOverride       SettingKey = "route_mode_override"      // 路由默认模式: spread=轮询, fill_first=优先填充；不覆盖 ModeLocked 规则
 	SettingKeyRouteStickyCacheFirst   SettingKey = "route_sticky_cache_first" // 轮询类分组里纯优化型会话(prompt_cache_key/user/safety_identifier/oct 自造指纹)的粘性取舍: false=分摊优先(默认, 不粘、真轮转), true=缓存优先(非空来源也粘, 换上游 prompt-cache 命中)。语义详见 internal/relay/route_sticky.go
@@ -707,6 +725,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyRelayContentPolicyKeywords, Value: ""},                                          // 额外内容风控关键词(逗号分隔); 内置 cyber_policy/content_policy_violation/content_policy/safety_policy
 		{Key: SettingKeyRequestAudit, Value: ""},                                                        // 发上游前决策模型审查配置(JSON); 空=全关; 形状见 internal/relay/requestaudit
 		{Key: SettingKeyRelayCircuitRescueWait, Value: "true"},                                          // 默认开: 熔断/冷却全满时在300秒救援窗内等到最早恢复; 关=立即503
+		{Key: SettingKeyRelayFirstTokenTimeoutSwitchChannel, Value: "true"},                             // 默认开: 未提交首字超时当场换下一个候选(Key/渠道)、不计熔断、不失救援; 关=回到改动前的通用判定(只靠救援循环重试)
 		{Key: SettingKeyRouteModeOverride, Value: DefaultRouteModeOverride},                             // 默认优先填充；已有独立模式的规则不受影响
 		{Key: SettingKeyRouteStickyCacheFirst, Value: "false"},                                          // 默认 false=分摊优先(现行为不变); 设 true 切「缓存优先」: 轮询分组里非空的纯优化型会话也保留粘性
 		{Key: SettingKeyPromptOverrideSystem, Value: ""},
@@ -961,7 +980,8 @@ func (s *Setting) Validate() error {
 		SettingKeyRelayLogReclaimEnabled, SettingKeyAsyncImageEnabled, SettingKeyBatchImageEnabled,
 		SettingKeyPriceAutoSyncEnabled, SettingKeyPriceSyncHoldBigChange,
 		SettingKeyCircuitProbeEnabled, SettingKeyCircuitProbeEmbeddingsEnabled,
-		SettingKeyUserAccessAlertNewIP, SettingKeyUserAccessAlertNewClient:
+		SettingKeyUserAccessAlertNewIP, SettingKeyUserAccessAlertNewClient,
+		SettingKeyRelayFirstTokenTimeoutSwitchChannel:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("%s must be true or false", s.Key)
 		}

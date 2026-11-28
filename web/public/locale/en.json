@@ -515,9 +515,25 @@
       "description": "Prevents a stalled upstream stream from being kept alive forever by downstream keepalive writes.",
       "disabledHint": "0 seconds disables",
       "envHint": "can still provide the first deployment default.",
-      "placeholder": "900",
+      "placeholder": "300",
       "seconds": "sec",
       "invalid": "Stream idle timeout must be 0 or a positive integer number of seconds"
+    },
+    "firstTokenTimeOutDefault": {
+      "label": "First-token timeout (global default)",
+      "defaultHint": "used when the group's own value is 0",
+      "hint": "Caps how long each attempt may wait for the upstream's first real content. When the upstream sends response headers but never produces content, the switch below decides whether the attempt moves to the next candidate. 0 disables this deadline (a group-level value still wins).",
+      "description": "Absolute deadline for an upstream that answers with headers and then stays silent; the group's value wins, this is the fallback.",
+      "placeholder": "120",
+      "seconds": "sec",
+      "invalid": "First-token timeout must be 0 or a positive integer number of seconds"
+    },
+    "firstTokenTimeoutSwitch": {
+      "label": "Switch channel on first-token timeout",
+      "hint": "On (default): when the upstream sent response headers but produced no content before the first-token deadline, the attempt is judged an uncommitted first-token timeout — switch to the next candidate channel / key immediately, without charging the circuit breaker and without marking the channel broken; RPM counting (counted when sent) is unchanged. With no other candidate the current channel is retried.\nOff: keep the previous behaviour — the attempt is left to the existing rescue loop (one round per second).\nA stream that already delivered content to the client never switches channels, whatever this switch says.",
+      "description": "Governs only the attempt that has not produced content yet; a stall after real output keeps the existing broken-stream ending.",
+      "stateOn": "On",
+      "stateOff": "Off"
     },
     "upstreamHeaderTimeout": {
       "label": "Upstream response header timeout",

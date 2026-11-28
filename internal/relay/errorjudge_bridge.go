@@ -33,6 +33,10 @@ func failureEvidenceFromError(err error, statusCode int, upstreamAnswered bool, 
 		TransientCapacity:       isTransientCapacityUpstreamError(err),
 		NonRescuable:            isClientAbortError(err),
 		AllowCircuitRescue:      circuitRescueWaitEnabled(),
+		// 「首字超时后立即换渠道」(relay_first_token_timeout_switch_channel, 默认开).
+		// 关掉时这里保持 false，首字超时回到改动前的通用判定（fallback.ambiguous → 不重试本渠道
+		// 剩余 Key），候选循环/救援循环照旧跑，也就是「维持现状」。
+		FirstTokenTimeout: isFirstTokenTimeoutError(err) && firstTokenTimeoutSwitchChannelEnabled(),
 	}
 	if ev.RetryAfter == 0 {
 		ev.RetryAfter, _ = retryAfterFromError(err)
@@ -90,6 +94,18 @@ func failureEvidenceFromError(err error, statusCode int, upstreamAnswered bool, 
 func circuitRescueWaitEnabled() bool {
 	enabled, err := op.SettingGetBool(model.SettingKeyRelayCircuitRescueWait)
 	return err == nil && enabled
+}
+
+// firstTokenTimeoutSwitchChannelEnabled reports the operator switch for 「首字超时后
+// 立即换渠道」. Default ON: an unreadable/missing setting must keep the new behaviour
+// (switch candidates on a pre-commit first-token timeout) instead of silently
+// reverting to the old one on a fresh/partially-migrated deployment.
+func firstTokenTimeoutSwitchChannelEnabled() bool {
+	enabled, err := op.SettingGetBool(model.SettingKeyRelayFirstTokenTimeoutSwitchChannel)
+	if err != nil {
+		return true
+	}
+	return enabled
 }
 
 func configuredContentPolicyTerms() []string {

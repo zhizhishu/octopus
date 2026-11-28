@@ -50,17 +50,24 @@ const (
 )
 
 type Evidence struct {
-	StatusCode              int
-	Type                    string
-	Code                    string
-	Message                 string
-	ErrorText               string
-	StreamError             bool
-	LocalRoute              bool
-	CircuitOpen             bool
-	NoCandidates            bool
-	UpstreamAnswered        bool
-	DownstreamCommitted     bool
+	StatusCode          int
+	Type                string
+	Code                string
+	Message             string
+	ErrorText           string
+	StreamError         bool
+	LocalRoute          bool
+	CircuitOpen         bool
+	NoCandidates        bool
+	UpstreamAnswered    bool
+	DownstreamCommitted bool
+	// FirstTokenTimeout marks the relay's own "no content before the first-token
+	// deadline" failure (relay.go handleStreamResponse / the aggregation path /
+	// images.go). It is a fact about THIS attempt only: the upstream sent response
+	// headers and then nothing meaningful before the group's first_token_time_out
+	// budget expired. DownstreamCommitted stays the separate gate for whether that
+	// attempt may still be replayed elsewhere (see baseDecision's pre-commit branch).
+	FirstTokenTimeout       bool
 	RetryAfter              time.Duration
 	ExplicitClientRejection bool
 	TransientCapacity       bool
@@ -150,6 +157,23 @@ func baseDecision(ev Evidence) Decision {
 		return Decision{Category: CategoryClientError, Retry: RetryNone, KeyEffect: EffectNone, ChannelEffect: EffectNone, Rescue: false, CountFailure: false, RuleID: "request.explicit_rejection", Reason: "deterministic request rejection"}
 	}
 
+	// Pre-commit first-token timeout (user rule 2026-11-29 02:56: 「未提交首字超时」→ 换候选
+	// 渠道/Key、不计熔断、RPM 口径不变). The retry shape is axonhub
+	// llm/pipeline/pipeline.go:344-390: a first-event timeout is excluded from the
+	// same-channel retry branch (timeoutRetry skips step 1 at :349) and the loop goes
+	// straight to step 2 at :367-385, the next channel. The replay half is sub2api's
+	// committed boundary (backend/internal/service/openai_first_output_timeout.go:287
+	// sets SafeToFailoverAfterWrite for a first-output timeout, and
+	// openai_gateway_passthrough.go:1256-1267 counts only real model output as
+	// "started", so keepalive comments still allow a safe retry). octopus keeps that
+	// boundary as Evidence.DownstreamCommitted, which the relay fills from
+	// wroteMeaningfulDownstream (real content only) — openers/heartbeats do not commit.
+	// CountFailure is deliberately false: a slow upstream is not a broken channel, so
+	// this must not charge the circuit breaker or the runtime health score.
+	if ev.FirstTokenTimeout && !ev.DownstreamCommitted {
+		return Decision{Category: CategoryUpstreamError, Retry: RetryNextChannel, KeyEffect: EffectNone, ChannelEffect: EffectNone, Rescue: true, CountFailure: false, RuleID: "upstream.first_token_timeout_uncommitted", Reason: "no content before the first-token deadline with nothing committed downstream"}
+	}
+
 	if ev.TransientCapacity && (ev.StatusCode == http.StatusBadRequest || ev.StatusCode == http.StatusUnprocessableEntity) {
 		return Decision{Category: CategoryRateLimited, Retry: RetryNextChannel, KeyEffect: EffectCooldownKey, ChannelEffect: EffectRecordFailure, Rescue: true, CountFailure: true, Cooldown: maxDuration(5*time.Second, ev.RetryAfter), RuleID: "upstream.transient_capacity", Reason: "400/422 body carries generic transient-capacity evidence"}
 	}
@@ -227,10 +251,18 @@ func Judge(ev Evidence, rules []model.CircuitErrorRule) Decision {
 	// or duplicate visible output. Terminal deterministic decisions are unaffected
 	// because they already carry RetryNone.
 	if (ev.UpstreamAnswered || ev.DownstreamCommitted) && d.Retry != RetryNone {
-		d.Retry = RetryNone
-		d.Rescue = false
-		d.RuleID = "safety.replay_unknown"
-		d.Reason = "upstream/downstream already started; replay is not safe"
+		// The pre-commit first-token timeout is the ONE exception to this tightening:
+		// the upstream did start answering (headers arrived, so UpstreamAnswered is
+		// true) yet produced no content and nothing reached the client — exactly the
+		// window axonhub pipeline.go:344-390 and sub2api's pre-commit boundary retry on
+		// another candidate. Once real content reached the client (DownstreamCommitted)
+		// the general rule applies again and the stream is never replayed.
+		if !(ev.FirstTokenTimeout && !ev.DownstreamCommitted) {
+			d.Retry = RetryNone
+			d.Rescue = false
+			d.RuleID = "safety.replay_unknown"
+			d.Reason = "upstream/downstream already started; replay is not safe"
+		}
 	}
 	return d
 }

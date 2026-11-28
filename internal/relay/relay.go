@@ -3262,7 +3262,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		case <-firstTokenC:
 			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
 			_ = response.Body.Close()
-			return fmt.Errorf("first token timeout (%ds)", ra.firstTokenTimeOutSec)
+			return newFirstTokenTimeoutError(ra.firstTokenTimeOutSec)
 		case <-keepaliveC:
 			if time.Since(lastWriteAt) >= keepaliveInterval {
 				if err := writeStreamData(ra.streamKeepaliveData()); err != nil {
@@ -3868,7 +3868,7 @@ readLoop:
 		case <-firstTokenC:
 			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
 			_ = response.Body.Close()
-			return fmt.Errorf("first token timeout (%ds)", ra.firstTokenTimeOutSec)
+			return newFirstTokenTimeoutError(ra.firstTokenTimeOutSec)
 		case <-dataTimeoutC:
 			log.Warnf("forced responses stream data interval timeout (%s), closing upstream stream", dataIntervalTimeout)
 			_ = response.Body.Close()

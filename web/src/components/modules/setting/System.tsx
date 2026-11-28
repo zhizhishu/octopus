@@ -118,9 +118,15 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
     const [anthropicAutoCacheControl, setAnthropicAutoCacheControl] = useState(true);
     const [openAIAutoPromptCacheKey, setOpenAIAutoPromptCacheKey] = useState(true);
     const [streamKeepaliveInterval, setStreamKeepaliveInterval] = useState('15');
-    const [streamDataTimeoutInterval, setStreamDataTimeoutInterval] = useState('900');
+    // 后端默认 300（model.DefaultRelayStreamDataIntervalTimeoutSeconds）；前端以前写 900，
+    // 导致设置页展示值与实际生效值不一致。以后端 300 为准。
+    const [streamDataTimeoutInterval, setStreamDataTimeoutInterval] = useState('300');
     const [upstreamHeaderTimeout, setUpstreamHeaderTimeout] = useState('0');
     const [firstByteKeepaliveDelay, setFirstByteKeepaliveDelay] = useState('0');
+    // 首字超时全局默认（seconds）：分组自身值为 0 时回退用它；后端出厂 120。
+    const [firstTokenTimeOutDefault, setFirstTokenTimeOutDefault] = useState('120');
+    // 「首字超时后立即换渠道」：未提交首字超时时当场换下一个候选 Key/渠道，默认开。
+    const [firstTokenTimeoutSwitchChannel, setFirstTokenTimeoutSwitchChannel] = useState(true);
     const [responsesSessionTTL, setResponsesSessionTTL] = useState('3600');
     const [claudeHeaderUserAgent, setClaudeHeaderUserAgent] = useState('claude-cli/2.1.281 (external, sdk-cli)');
     const [claudeHeaderPackageVersion, setClaudeHeaderPackageVersion] = useState('0.112.1');
@@ -179,9 +185,11 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
     const initialAnthropicAutoCacheControl = useRef(true);
     const initialOpenAIAutoPromptCacheKey = useRef(true);
     const initialStreamKeepaliveInterval = useRef('15');
-    const initialStreamDataTimeoutInterval = useRef('900');
+    const initialStreamDataTimeoutInterval = useRef('300');
     const initialUpstreamHeaderTimeout = useRef('0');
     const initialFirstByteKeepaliveDelay = useRef('0');
+    const initialFirstTokenTimeOutDefault = useRef('120');
+    const initialFirstTokenTimeoutSwitchChannel = useRef(true);
     const initialResponsesSessionTTL = useRef('3600');
     const initialClaudeHeaderUserAgent = useRef('claude-cli/2.1.281 (external, sdk-cli)');
     const initialClaudeHeaderPackageVersion = useRef('0.112.1');
@@ -233,6 +241,8 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
             const dataTimeout = settings.find(s => s.key === SettingKey.RelayStreamDataIntervalTimeoutSeconds);
             const upstreamHeader = settings.find(s => s.key === SettingKey.UpstreamHeaderTimeoutSeconds);
             const firstByteKeepalive = settings.find(s => s.key === SettingKey.FirstByteKeepaliveDelaySeconds);
+            const firstTokenDefault = settings.find(s => s.key === SettingKey.FirstTokenTimeOutDefault);
+            const firstTokenSwitch = settings.find(s => s.key === SettingKey.RelayFirstTokenTimeoutSwitchChannel);
             const responsesTTL = settings.find(s => s.key === SettingKey.ResponsesSessionTTLSeconds);
             const claudeUA = settings.find(s => s.key === SettingKey.ClaudeHeaderUserAgent);
             const claudePackage = settings.find(s => s.key === SettingKey.ClaudeHeaderPackageVersion);
@@ -313,11 +323,26 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                 }
             }
             if (dataTimeout) {
-                const value = dataTimeout.value || '900';
+                const value = dataTimeout.value || '300';
                 if (value !== initialStreamDataTimeoutInterval.current) {
                     queueMicrotask(() => setStreamDataTimeoutInterval(value));
                     initialStreamDataTimeoutInterval.current = value;
                 }
+            }
+            if (firstTokenDefault) {
+                const value = firstTokenDefault.value || '120';
+                if (value !== initialFirstTokenTimeOutDefault.current) {
+                    queueMicrotask(() => setFirstTokenTimeOutDefault(value));
+                    initialFirstTokenTimeOutDefault.current = value;
+                }
+            }
+            if (firstTokenSwitch) {
+                // Same reading as the backend (firstTokenTimeoutSwitchChannelEnabled):
+                // only an explicit "false" turns it off, so a missing/empty row keeps the
+                // default ON instead of silently reverting to the old behaviour.
+                const enabled = firstTokenSwitch.value !== 'false';
+                queueMicrotask(() => setFirstTokenTimeoutSwitchChannel(enabled));
+                initialFirstTokenTimeoutSwitchChannel.current = enabled;
             }
             if (upstreamHeader) {
                 const value = upstreamHeader.value || '0';
@@ -588,6 +613,8 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                     initialUpstreamHeaderTimeout.current = value;
                 } else if (key === SettingKey.FirstByteKeepaliveDelaySeconds) {
                     initialFirstByteKeepaliveDelay.current = value;
+                } else if (key === SettingKey.FirstTokenTimeOutDefault) {
+                    initialFirstTokenTimeOutDefault.current = value;
                 } else if (key === SettingKey.ResponsesSessionTTLSeconds) {
                     initialResponsesSessionTTL.current = value;
                 } else if (key === SettingKey.CORSAllowOrigins) {
@@ -659,11 +686,13 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                 if (key === SettingKey.RelayStreamKeepaliveIntervalSeconds) {
                     setStreamKeepaliveInterval(initialStreamKeepaliveInterval.current || '15');
                 } else if (key === SettingKey.RelayStreamDataIntervalTimeoutSeconds) {
-                    setStreamDataTimeoutInterval(initialStreamDataTimeoutInterval.current || '900');
+                    setStreamDataTimeoutInterval(initialStreamDataTimeoutInterval.current || '300');
                 } else if (key === SettingKey.UpstreamHeaderTimeoutSeconds) {
                     setUpstreamHeaderTimeout(initialUpstreamHeaderTimeout.current || '0');
                 } else if (key === SettingKey.FirstByteKeepaliveDelaySeconds) {
                     setFirstByteKeepaliveDelay(initialFirstByteKeepaliveDelay.current || '0');
+                } else if (key === SettingKey.FirstTokenTimeOutDefault) {
+                    setFirstTokenTimeOutDefault(initialFirstTokenTimeOutDefault.current || '120');
                 } else if (key === SettingKey.ResponsesSessionTTLSeconds) {
                     setResponsesSessionTTL(initialResponsesSessionTTL.current || '3600');
                 }
@@ -692,7 +721,7 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
         const rawValue = streamDataTimeoutInterval.trim();
         const numericValue = Number(rawValue);
         if (!rawValue || !Number.isInteger(numericValue) || numericValue < 0) {
-            setStreamDataTimeoutInterval(initialStreamDataTimeoutInterval.current || '900');
+            setStreamDataTimeoutInterval(initialStreamDataTimeoutInterval.current || '300');
             toast.error(t('streamDataTimeout.invalid'));
             return;
         }
@@ -721,6 +750,45 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
             SettingKey.UpstreamHeaderTimeoutSeconds,
             normalizedValue,
             initialUpstreamHeaderTimeout.current
+        );
+    };
+
+    // 首字超时全局默认（分组自身值为 0 时的回退值）。后端 Validate 只接受非负整数，
+    // 这里用同一口径。
+    const handleFirstTokenTimeOutDefaultBlur = () => {
+        const rawValue = firstTokenTimeOutDefault.trim();
+        const numericValue = Number(rawValue);
+        if (!rawValue || !Number.isInteger(numericValue) || numericValue < 0) {
+            setFirstTokenTimeOutDefault(initialFirstTokenTimeOutDefault.current || '120');
+            toast.error(t('firstTokenTimeOutDefault.invalid'));
+            return;
+        }
+        const normalizedValue = String(numericValue);
+        setFirstTokenTimeOutDefault(normalizedValue);
+        handleSave(
+            SettingKey.FirstTokenTimeOutDefault,
+            normalizedValue,
+            initialFirstTokenTimeOutDefault.current
+        );
+    };
+
+    const handleFirstTokenTimeoutSwitchChannelChange = (checked: boolean) => {
+        if (setSetting.isPending) return;
+        setFirstTokenTimeoutSwitchChannel(checked);
+        if (checked === initialFirstTokenTimeoutSwitchChannel.current) return;
+
+        setSetting.mutate(
+            { key: SettingKey.RelayFirstTokenTimeoutSwitchChannel, value: checked ? 'true' : 'false' },
+            {
+                onSuccess: () => {
+                    toast.success(t('saved'));
+                    initialFirstTokenTimeoutSwitchChannel.current = checked;
+                },
+                onError: () => {
+                    toast.error(t('saveFailed'));
+                    setFirstTokenTimeoutSwitchChannel(initialFirstTokenTimeoutSwitchChannel.current);
+                }
+            }
         );
     };
 
@@ -1691,6 +1759,85 @@ export function SettingSystem({ section, className = '' }: { section?: SettingSy
                             className="w-24 rounded-xl sm:w-28"
                         />
                         <span className="min-w-0 text-xs text-muted-foreground">{t('streamDataTimeout.seconds')}</span>
+                    </div>
+                </div>
+                {/* 首字超时（未提交首字）：deadline 与超出后的取扱放在同一行，用户心智在一处。 */}
+                <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <Clock className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('firstTokenTimeOutDefault.label')}</span>
+                                <span className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    {t('firstTokenTimeOutDefault.defaultHint')}
+                                </span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            {t('firstTokenTimeOutDefault.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {t('firstTokenTimeOutDefault.description')}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex w-full min-w-0 items-center gap-2 self-start sm:w-auto sm:shrink-0 sm:self-center">
+                        <Input
+                            type="number"
+                            min="0"
+                            step="1"
+                            inputMode="numeric"
+                            value={firstTokenTimeOutDefault}
+                            onChange={(event) => setFirstTokenTimeOutDefault(event.target.value)}
+                            onBlur={handleFirstTokenTimeOutDefaultBlur}
+                            placeholder={t('firstTokenTimeOutDefault.placeholder')}
+                            aria-label={t('firstTokenTimeOutDefault.label')}
+                            className="w-24 rounded-xl sm:w-28"
+                        />
+                        <span className="min-w-0 text-xs text-muted-foreground">{t('firstTokenTimeOutDefault.seconds')}</span>
+                    </div>
+                </div>
+                {/* 首字超时后立即换渠道：默认开。只管「未吐字」这一次尝试的去向。 */}
+                <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <Radio className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium">{t('firstTokenTimeoutSwitch.label')}</span>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs whitespace-pre-line">
+                                            {t('firstTokenTimeoutSwitch.hint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                            </div>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {t('firstTokenTimeoutSwitch.description')}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 self-start sm:shrink-0 sm:self-center">
+                        <span className="text-xs text-muted-foreground">
+                            {firstTokenTimeoutSwitchChannel
+                                ? t('firstTokenTimeoutSwitch.stateOn')
+                                : t('firstTokenTimeoutSwitch.stateOff')}
+                        </span>
+                        <Switch
+                            checked={firstTokenTimeoutSwitchChannel}
+                            onCheckedChange={handleFirstTokenTimeoutSwitchChannelChange}
+                            aria-label={t('firstTokenTimeoutSwitch.label')}
+                            className="shrink-0"
+                        />
                     </div>
                 </div>
                 <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-start sm:justify-between">

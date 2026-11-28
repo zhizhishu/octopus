@@ -1448,7 +1448,7 @@ func proxySSEWithOptions(ctx context.Context, c *gin.Context, respUp *http.Respo
 		case <-firstTokenC:
 			log.Warnf("first token timeout (%ds), switching channel", firstTokenTimeOutSec)
 			_ = respUp.Body.Close()
-			return completedScanner.Usage(), c.Writer.Written(), idScanner.ID(), fmt.Errorf("first token timeout (%ds)", firstTokenTimeOutSec)
+			return completedScanner.Usage(), c.Writer.Written(), idScanner.ID(), newFirstTokenTimeoutError(firstTokenTimeOutSec)
 
 		case <-keepaliveC:
 			// 仅在距离上次下游写入已超过一个心跳间隔时才注入，避免与正常数据流叠加；

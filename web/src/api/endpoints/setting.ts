@@ -56,6 +56,8 @@ export const SettingKey = {
     ResponsesSessionTTLSeconds: 'responses_session_ttl_seconds',
     SessionKeepTimeDefault: 'session_keep_time_default',
     FirstTokenTimeOutDefault: 'first_token_time_out_default',
+    // 首字超时后立即换渠道：默认开。关掉时首字超时回到改动前的通用判定。
+    RelayFirstTokenTimeoutSwitchChannel: 'relay_first_token_timeout_switch_channel',
     RouteModeOverride: 'route_mode_override',
     ClaudeHeaderUserAgent: 'claude_header_defaults_user_agent',
     ClaudeHeaderPackageVersion: 'claude_header_defaults_package_version',

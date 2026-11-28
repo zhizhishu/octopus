@@ -178,6 +178,37 @@ func localRelayErrorDetails(err error) (status int, code string, strategy string
 	return localErr.status, localErr.code, localErr.strategy, true
 }
 
+// firstTokenTimeoutError is the relay's own "the upstream answered but produced no
+// content before the group's first-token budget" failure. It is a dedicated type so
+// the unified failure referee can recognise the pre-commit first-token timeout
+// without re-parsing text — a first-token timeout must switch candidates instead of
+// being lost in fallback.ambiguous (see errorjudge baseDecision).
+//
+// Error() is byte-identical to the plain error these call sites used to return, so
+// audit messages, logs and the client-visible failure shape are unchanged: the type
+// carries information to the referee only, never to the wire.
+type firstTokenTimeoutError struct{ seconds int }
+
+func (e *firstTokenTimeoutError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("first token timeout (%ds)", e.seconds)
+}
+
+// newFirstTokenTimeoutError builds the pre-content deadline failure. Every producer of
+// that deadline (handleStreamResponse, the non-stream aggregation path, images.go)
+// returns this one type so the referee has a single, protocol-independent signal.
+func newFirstTokenTimeoutError(seconds int) error {
+	return &firstTokenTimeoutError{seconds: seconds}
+}
+
+// isFirstTokenTimeoutError reports whether err (possibly wrapped) is that deadline.
+func isFirstTokenTimeoutError(err error) bool {
+	var ftErr *firstTokenTimeoutError
+	return errors.As(err, &ftErr) && ftErr != nil
+}
+
 func clientAbortErrorDetails(err error) (status int, code string, strategy string, ok bool) {
 	if err == nil {
 		return 0, "", "", false
