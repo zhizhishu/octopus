@@ -131,14 +131,13 @@ func TestShouldHoldForOperator(t *testing.T) {
 			wantHold: false,
 		},
 		{
-			// invalid_api_key 是强 401：按 2026-11-28 拍板当场硬禁 key，不进救援。
-			// 说不清的 401 才照旧救援。
-			name:              "strong 401 invalid_api_key is ineligible -> false",
+			// invalid_api_key 是强 401：当场硬禁这个 key，但救援可以换别的 key/渠道。
+			name:              "strong 401 invalid_api_key may fail over after hard-disable -> true",
 			enabled:           true,
 			streamPrefers:     &streamTrue,
 			wroteBusinessData: false,
 			finalErr:          newUpstreamError(http.StatusUnauthorized, []byte(`{"error":{"message":"Invalid API key","code":"invalid_api_key"}}`)),
-			wantHold:          false,
+			wantHold:          true,
 		},
 		{
 			// 403 不在这次放开范围：权限拒绝（区域封锁/模型无权）更像真确定性。

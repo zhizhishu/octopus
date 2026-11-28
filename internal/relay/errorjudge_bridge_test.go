@@ -20,7 +20,7 @@ func TestJudgeBridgeCyberPolicyIsTerminal(t *testing.T) {
 func TestJudgeBridgeStrongAuthDisablesKey(t *testing.T) {
 	err := newUpstreamError(http.StatusUnauthorized, []byte(`{"error":{"code":"invalid_api_key","message":"User account is not active"}}`))
 	d := judgeFailureEvidence(err, http.StatusUnauthorized, true, false)
-	if d.Category != errorjudge.CategoryStrongAuth || d.KeyEffect != errorjudge.EffectDisableKey || d.Rescue {
+	if d.Category != errorjudge.CategoryStrongAuth || d.KeyEffect != errorjudge.EffectDisableKey || !d.Rescue {
 		t.Fatalf("strong auth decision = %+v", d)
 	}
 }

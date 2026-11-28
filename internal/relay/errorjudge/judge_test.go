@@ -21,19 +21,19 @@ func TestContentPolicyTerminalNoRescueNoBreaker(t *testing.T) {
 	}
 }
 
-func TestBareSafetyTypeIsTerminal(t *testing.T) {
+func TestBareSafetyTypeIsNotInCLIPolicyList(t *testing.T) {
 	d := Judge(Evidence{StatusCode: http.StatusBadRequest, Type: "safety", Message: "blocked"}, nil)
-	if d.Category != CategoryContentPolicy || d.Rescue || d.CountFailure {
-		t.Fatalf("safety decision = %+v", d)
+	if d.Category == CategoryContentPolicy {
+		t.Fatalf("bare safety is not in the CLIProxyAPI terminal list: %+v", d)
 	}
 }
 
-func TestStrongAuthDisablesKeyImmediatelyAndDoesNotRescue(t *testing.T) {
+func TestStrongAuthDisablesKeyImmediatelyAndAllowsFailover(t *testing.T) {
 	d := Judge(Evidence{
 		StatusCode: http.StatusUnauthorized,
 		Message:    "User account is not active",
 	}, nil)
-	if d.Category != CategoryStrongAuth || d.KeyEffect != EffectDisableKey || d.Rescue || d.CountFailure {
+	if d.Category != CategoryStrongAuth || d.KeyEffect != EffectDisableKey || !d.Rescue || d.CountFailure {
 		t.Fatalf("strong 401 decision = %+v", d)
 	}
 	if d.Retry != RetryNextKey {

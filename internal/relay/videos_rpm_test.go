@@ -99,6 +99,7 @@ func TestVideosCreateCountsEstimatedInputTPM(t *testing.T) {
 	ctx := setupRelayErrorDB(t)
 	balancer.ResetChannelGates()
 	t.Cleanup(balancer.ResetChannelGates)
+	t.Cleanup(func() { _ = op.RelayLogClear(context.Background(), nil) })
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
