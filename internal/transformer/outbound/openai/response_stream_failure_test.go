@@ -82,18 +82,20 @@ func TestResponseStreamFailureReasonGenericNoDetail(t *testing.T) {
 	}
 }
 
-// TestResponseStreamFailureReasonPreservesSecretText pins pack-1128 监工纠偏:
-// 回下游客户端的流错误 reason 恢复打码（落库/审计仍原样）。
-func TestResponseStreamFailureReasonPreservesSecretText(t *testing.T) {
+// TestResponseStreamFailureReasonPreservesTextVerbatim pins pack-1128 审查 P2:
+// reason 在 transformer 层原样保留（它会烤进 error 本体经 attempts.Msg/relayLogs.Error
+// 落库，按拍板必须 verbatim）；回下游客户端的打码由唯一出口
+// clientSafeUpstreamMessage 统一做（relay 层三路径测试钉住），不在此重复。
+func TestResponseStreamFailureReasonPreservesTextVerbatim(t *testing.T) {
 	reason := responsesStreamFailureReason([]byte(`{
 		"type":"error",
 		"error":{"code":"auth","message":"invalid key Bearer sk-FAKEFAKEFAKE0000"}
 	}`))
-	if strings.Contains(reason, "sk-FAKEFAKEFAKE0000") {
-		t.Fatalf("client-facing failure reason must redact provider key material, got %q", reason)
+	if !strings.Contains(reason, "sk-FAKEFAKEFAKE0000") {
+		t.Fatalf("local failure reason must preserve upstream text verbatim, got %q", reason)
 	}
-	if !strings.Contains(reason, "[redacted]") {
-		t.Fatalf("expected redaction marker in client-facing reason, got %q", reason)
+	if strings.Contains(reason, "[redacted]") {
+		t.Fatalf("no redaction may happen at this layer, got %q", reason)
 	}
 }
 
